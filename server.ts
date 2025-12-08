@@ -522,6 +522,27 @@ app.get('/api/project/active', async (req, res) => {
     }
 });
 
+// Update Active Project Metadata
+app.post('/api/project/active', async (req, res) => {
+    const { meta } = req.body;
+
+    const requiredFields: (keyof ProjectMeta)[] = ['name', 'version', 'created_at', 'updated_at', 'author'];
+    const missingField = requiredFields.find(field => !meta || typeof meta[field] !== 'string');
+
+    if (missingField) {
+        res.status(400).json({ error: `${missingField} is required and must be a string` });
+        return;
+    }
+
+    try {
+        await projectService.setActiveProjectMeta(meta);
+        res.json({ status: 'success', meta });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
 // Trace Endpoint
 app.get('/api/traces', (req, res) => {
     res.json(traceService.getTraces());

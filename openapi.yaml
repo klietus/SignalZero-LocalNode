@@ -6,6 +6,16 @@ info:
 servers:
   - url: http://localhost:3000/api
 paths:
+  /health:
+    get:
+      summary: Check service health status
+      responses:
+        '200':
+          description: Current health and dependency status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
   /chat:
     post:
       summary: Send a message to the chat
@@ -619,6 +629,29 @@ paths:
                   meta:
                     $ref: '#/components/schemas/ProjectMeta'
                     nullable: true
+    post:
+      summary: Update the active project metadata
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                meta:
+                  $ref: '#/components/schemas/ProjectMeta'
+      responses:
+        '200':
+          description: Active project metadata saved to Redis
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  meta:
+                    $ref: '#/components/schemas/ProjectMeta'
   /traces:
     get:
       summary: Get all traces
@@ -633,6 +666,25 @@ paths:
                   $ref: '#/components/schemas/TraceData'
 components:
   schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          description: Overall health status of the service
+        services:
+          type: object
+          properties:
+            redis:
+              type: string
+              description: Redis connection status
+            vector:
+              type: string
+              description: Vector store connection status
+        timestamp:
+          type: string
+          format: date-time
+          description: Time the health check was performed
     Sender:
       type: string
       enum:
