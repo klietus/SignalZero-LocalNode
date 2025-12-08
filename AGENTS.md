@@ -45,3 +45,6 @@ When modifying the system, you must preserve the integrity of the **Symbolic Tri
 
 ### 5. Vector Store
 *   `vectorService.ts` handles embeddings. Ensure that any new symbol operations correctly update the vector index if needed.
+
+### 6. Quality Gate
+*   Always run the automated test suite (`npx vitest run`) before completing your work.

@@ -1,14 +1,56 @@
+import { ChromaClient, type Collection } from 'chromadb';
 import { SymbolDef, VectorSearchResult } from '../types.ts';
 import { settingsService } from './settingsService.ts';
 
-export const vectorService = {
-    
-    async healthCheck(): Promise<boolean> {
-        const config = settingsService.getVectorSettings();
-        const baseUrl = config.chromaUrl;
+let chromaClient: ChromaClient | null = null;
+let cachedCollection: Collection | null = null;
+let cachedCollectionName: string | null = null;
+let cachedClientPath: string | null = null;
+
+function resetCache() {
+    chromaClient = null;
+    cachedCollection = null;
+    cachedCollectionName = null;
+    cachedClientPath = null;
+}
+
+function getClient(): ChromaClient {
+    const { chromaUrl } = settingsService.getVectorSettings();
+    if (!chromaClient || cachedClientPath !== chromaUrl) {
+        chromaClient = new ChromaClient({ path: chromaUrl, version: 'v2' });
+        cachedClientPath = chromaUrl;
+        cachedCollection = null;
+        cachedCollectionName = null;
+    }
+    return chromaClient;
+}
+
+async function getCollectionInstance(): Promise<Collection | null> {
+    const config = settingsService.getVectorSettings();
+    const collectionName = config.collectionName;
+
+    if (cachedCollection && cachedCollectionName === collectionName) {
+        return cachedCollection;
+    }
+
         try {
-            const res = await fetch(`${baseUrl}/api/v2/heartbeat`);
-            return res.ok;
+            const collection = await getClient().getOrCreateCollection({ name: collectionName });
+            cachedCollection = collection;
+            cachedCollectionName = collectionName;
+            console.log(`[VectorService] Connected to collection '${collectionName}' (${collection.id})`);
+        return collection;
+    } catch (e) {
+        console.error(`[VectorService] Connection failed to ${config.chromaUrl} for collection ${collectionName}`, e);
+        return null;
+    }
+}
+
+export const vectorService = {
+
+    async healthCheck(): Promise<boolean> {
+        try {
+            const heartbeat = await getClient().heartbeat();
+            return typeof heartbeat === 'number' || typeof heartbeat === 'string';
         } catch (e) {
             return false;
         }
@@ -17,33 +59,8 @@ export const vectorService = {
     // --- Core Operations ---
 
     async getOrCreateCollection(): Promise<string | null> {
-        const config = settingsService.getVectorSettings();
-        
-        // Always enforce external URL usage now
-        const baseUrl = config.chromaUrl;
-        const collectionName = config.collectionName;
-        
-        try {
-            // UPDATED: API v2
-            const res = await fetch(`${baseUrl}/api/v2/collections`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: collectionName, get_or_create: true })
-            });
-            
-            if (!res.ok) {
-                const errText = await res.text();
-                console.warn(`[VectorService] Failed to get/create collection: ${res.status} ${errText}`);
-                console.warn(`[VectorService] Target URL: ${baseUrl}/api/v2/collections`);
-                return null;
-            }
-            const data = await res.json() as any;
-            console.log(`[VectorService] Connected to collection '${collectionName}' (${data.id})`);
-            return data.id; // Returns collection UUID
-        } catch (e) {
-            console.error(`[VectorService] Connection failed to ${baseUrl}/api/v2/collections`, e);
-            return null;
-        }
+        const collection = await getCollectionInstance();
+        return collection?.id ?? null;
     },
 
     async indexSymbol(symbol: SymbolDef): Promise<boolean> {
@@ -61,15 +78,11 @@ export const vectorService = {
             Persona: ${symbol.kind === 'persona' ? JSON.stringify(symbol.persona) : 'N/A'}
         `.trim().replace(/\s+/g, ' ');
 
-        const config = settingsService.getVectorSettings();
-        const baseUrl = config.chromaUrl;
-        const collectionId = await this.getOrCreateCollection();
-        if (!collectionId) return false;
+        const collection = await getCollectionInstance();
+        if (!collection) return false;
 
         try {
-            // UPDATED: API v2
-            // We do NOT send embeddings; ChromaDB (server) will generate them via its default EF
-            const payload = {
+            await collection.upsert({
                 ids: [symbol.id],
                 metadatas: [{
                     id: symbol.id,
@@ -79,22 +92,10 @@ export const vectorService = {
                     kind: symbol.kind || 'pattern'
                 }],
                 documents: [content]
-            };
-
-            const res = await fetch(`${baseUrl}/api/v2/collections/${collectionId}/upsert`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
             });
 
-            if (res.ok) {
-                console.log(`[VectorService:Chroma] Indexed ${symbol.id}`);
-                return true;
-            } else {
-                console.error(`[VectorService:Chroma] Index failed for ${symbol.id}`, await res.text());
-                return false;
-            }
-
+            console.log(`[VectorService:Chroma] Indexed ${symbol.id}`);
+            return true;
         } catch (e) {
             console.error("[VectorService:Chroma] Indexing error", e);
             return false;
@@ -121,19 +122,12 @@ export const vectorService = {
     },
 
     async deleteSymbol(symbolId: string): Promise<boolean> {
-        const config = settingsService.getVectorSettings();
-        const baseUrl = config.chromaUrl;
-        const collectionId = await this.getOrCreateCollection();
-        if (!collectionId) return false;
+        const collection = await getCollectionInstance();
+        if (!collection) return false;
 
         try {
-            // UPDATED: API v2
-            const res = await fetch(`${baseUrl}/api/v2/collections/${collectionId}/delete`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ids: [symbolId] })
-            });
-            return res.ok;
+            await collection.delete({ ids: [symbolId] });
+            return true;
         } catch (e) {
             console.error("[VectorService] Delete failed", e);
             return false;
@@ -141,37 +135,20 @@ export const vectorService = {
     },
 
     async search(query: string, nResults: number = 5): Promise<VectorSearchResult[]> {
-        const config = settingsService.getVectorSettings();
-        const baseUrl = config.chromaUrl;
-        const collectionId = await this.getOrCreateCollection();
-        if (!collectionId) return [];
+        const collection = await getCollectionInstance();
+        if (!collection) return [];
 
         try {
-            console.log(`[VectorService] Querying Chroma: ${baseUrl} (Collection: ${collectionId})`);
-            // UPDATED: API v2
-            // Send query_texts (let ChromaDB generate embedding)
-            const res = await fetch(`${baseUrl}/api/v2/collections/${collectionId}/query`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    query_texts: [query],
-                    n_results: nResults,
-                    include: ["metadatas", "documents", "distances"]
-                })
+            const data = await collection.query({
+                queryTexts: [query],
+                nResults: nResults,
+                include: ["metadatas", "documents", "distances"]
             });
 
-            if (!res.ok) {
-                const errText = await res.text();
-                console.error(`[VectorService] Query failed: ${res.status}`, errText);
-                return [];
-            }
-
-            const data = await res.json() as any;
-            
-            const ids = data.ids[0] || [];
-            const metadatas = data.metadatas[0] || [];
-            const documents = data.documents[0] || [];
-            const distances = data.distances[0] || [];
+            const ids = data.ids?.[0] || [];
+            const metadatas = data.metadatas?.[0] || [];
+            const documents = data.documents?.[0] || [];
+            const distances = data.distances?.[0] || [];
 
             const results: VectorSearchResult[] = ids.map((id: string, idx: number) => ({
                 id,
@@ -189,14 +166,18 @@ export const vectorService = {
     },
 
     async resetCollection(): Promise<boolean> {
-        const config = settingsService.getVectorSettings();
-        const baseUrl = config.chromaUrl;
-        const collectionName = config.collectionName;
         try {
-            await fetch(`${baseUrl}/api/v2/collections/${collectionName}`, { method: 'DELETE' });
+            const config = settingsService.getVectorSettings();
+            await getClient().deleteCollection({ name: config.collectionName });
+            cachedCollection = null;
+            cachedCollectionName = null;
             return true;
         } catch (e) {
             return false;
         }
     }
+};
+
+export const __vectorTestUtils = {
+    resetCache
 };
