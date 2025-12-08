@@ -1,0 +1,493 @@
+
+import { SymbolDef, VectorSearchResult } from '../types';
+import { vectorService } from './vectorService';
+import { settingsService } from './settingsService';
+
+// Redis Keys Configuration
+const KEYS = {
+  DOMAINS_SET: 'sz:domains',
+  DOMAIN_PREFIX: 'sz:domain:', // e.g., sz:domain:root
+};
+
+interface CachedDomain {
+  id: string;   // Immutable Key
+  name: string; // Display Name
+  enabled: boolean;
+  lastUpdated: number;
+  symbols: SymbolDef[];
+  description?: string;
+  invariants?: string[];
+}
+
+// --- Redis Client Helper (Upstash REST) ---
+
+const redisRequest = async (command: any[]): Promise<any> => {
+  const { redisUrl, redisToken } = settingsService.getRedisSettings();
+  if (!redisUrl) {
+    console.warn("Redis URL not configured. Domain service operations will fail.");
+    return null;
+  }
+
+  try {
+    const res = await fetch(redisUrl, {
+      method: 'POST',
+      headers: { 
+        Authorization: `Bearer ${redisToken}`,
+        'Content-Type': 'application/json' 
+      },
+      body: JSON.stringify(command)
+    });
+
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    return data.result;
+  } catch (e) {
+    console.error(`Redis command failed: ${command[0]}`, e);
+    return null;
+  }
+};
+
+// --- Public API ---
+
+export const domainService = {
+  
+  /**
+   * Returns a list of all domain IDs currently in Redis.
+   */
+  listDomains: async (): Promise<string[]> => {
+    const result = await redisRequest(['SMEMBERS', KEYS.DOMAINS_SET]);
+    return Array.isArray(result) ? result.sort() : [];
+  },
+
+  /**
+   * Checks if a domain exists.
+   */
+  hasDomain: async (domainId: string): Promise<boolean> => {
+    const exists = await redisRequest(['EXISTS', `${KEYS.DOMAIN_PREFIX}${domainId}`]);
+    return exists === 1;
+  },
+
+  /**
+   * Checks if a domain is enabled.
+   */
+  isEnabled: async (domainId: string): Promise<boolean> => {
+    const data = await redisRequest(['GET', `${KEYS.DOMAIN_PREFIX}${domainId}`]);
+    if (!data) return false;
+    try {
+      const domain: CachedDomain = JSON.parse(data);
+      return domain.enabled;
+    } catch {
+      return false;
+    }
+  },
+
+  /**
+   * Toggles the enabled state of a domain.
+   */
+  toggleDomain: async (domainId: string, enabled: boolean) => {
+    const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
+    const data = await redisRequest(['GET', key]);
+    if (data) {
+      const domain: CachedDomain = JSON.parse(data);
+      domain.enabled = enabled;
+      await redisRequest(['SET', key, JSON.stringify(domain)]);
+    }
+  },
+
+  /**
+   * Updates domain metadata without touching symbols.
+   */
+  updateDomainMetadata: async (domainId: string, metadata: { name?: string, description?: string, invariants?: string[] }) => {
+    const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
+    const data = await redisRequest(['GET', key]);
+    if (data) {
+      const domain: CachedDomain = JSON.parse(data);
+      if (metadata.name) domain.name = metadata.name;
+      if (metadata.description !== undefined) domain.description = metadata.description;
+      if (metadata.invariants !== undefined) domain.invariants = metadata.invariants;
+      domain.lastUpdated = Date.now();
+      await redisRequest(['SET', key, JSON.stringify(domain)]);
+    }
+  },
+
+  /**
+   * Removes a domain and all its symbols from Redis.
+   */
+  deleteDomain: async (domainId: string) => {
+    const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
+    const data = await redisRequest(['GET', key]);
+    
+    if (data) {
+      const domain: CachedDomain = JSON.parse(data);
+      // Clean up vector store
+      for (const s of domain.symbols) {
+          await vectorService.deleteSymbol(s.id);
+      }
+    }
+
+    // Remove from SET and DEL key
+    await redisRequest(['SREM', KEYS.DOMAINS_SET, domainId]);
+    await redisRequest(['DEL', key]);
+  },
+
+  /**
+   * Clears ALL domains. Used when switching projects.
+   */
+  clearAll: async () => {
+      await vectorService.resetCollection();
+      const domains = await domainService.listDomains();
+      for (const d of domains) {
+          await redisRequest(['DEL', `${KEYS.DOMAIN_PREFIX}${d}`]);
+      }
+      await redisRequest(['DEL', KEYS.DOMAINS_SET]);
+  },
+
+  /**
+   * Search for symbols using the vector index and hydrate them with Redis definitions.
+   */
+  search: async (query: string, limit: number = 5): Promise<(VectorSearchResult & { symbol: SymbolDef | null })[]> => {
+      const results = await vectorService.search(query, limit);
+      const domains = await domainService.listDomains();
+      
+      // Load all domains to hydrate (inefficient but safe for "local node")
+      // Optimization: Pipeline GETs? Upstash supports pipeline via REST? 
+      // For now, simple Promise.all
+      const domainData = await Promise.all(domains.map(d => redisRequest(['GET', `${KEYS.DOMAIN_PREFIX}${d}`])));
+      const store: Record<string, CachedDomain> = {};
+      
+      domainData.forEach((d, i) => {
+          if (d) {
+              try {
+                  store[domains[i]] = JSON.parse(d);
+              } catch {}
+          }
+      });
+
+      return results.map(r => {
+          let symbol: SymbolDef | null = null;
+          for (const domainId of Object.keys(store)) {
+            if (store[domainId].enabled) {
+                const found = store[domainId].symbols.find(s => s.id === r.id);
+                if (found) {
+                    symbol = found;
+                    break;
+                }
+            }
+          }
+          return { ...r, symbol };
+      });
+  },
+
+  /**
+   * Removes a specific symbol from a domain.
+   */
+  deleteSymbol: async (domainId: string, symbolId: string, cascade: boolean = true) => {
+    const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
+    const data = await redisRequest(['GET', key]);
+    if (!data) return;
+
+    const domain: CachedDomain = JSON.parse(data);
+    
+    // 1. Remove symbol
+    domain.symbols = domain.symbols.filter(s => s.id !== symbolId);
+    
+    // Cleanup Vector
+    await vectorService.deleteSymbol(symbolId);
+
+    // 2. Cascade
+    if (cascade) {
+        domain.symbols.forEach(s => {
+            if (s.linked_patterns?.includes(symbolId)) {
+                s.linked_patterns = s.linked_patterns.filter(id => id !== symbolId);
+            }
+            if (s.kind === 'lattice' && s.lattice?.members?.includes(symbolId)) {
+                s.lattice.members = s.lattice.members.filter(id => id !== symbolId);
+            }
+            if (s.kind === 'persona' && s.persona?.linked_personas?.includes(symbolId)) {
+                s.persona.linked_personas = s.persona.linked_personas.filter(id => id !== symbolId);
+            }
+        });
+    }
+
+    domain.lastUpdated = Date.now();
+    await redisRequest(['SET', key, JSON.stringify(domain)]);
+  },
+
+  /**
+   * Updates references during rename.
+   */
+  propagateRename: async (domainId: string, oldId: string, newId: string) => {
+      const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
+      const data = await redisRequest(['GET', key]);
+      if (!data) return;
+
+      const domain: CachedDomain = JSON.parse(data);
+      let updatedCount = 0;
+
+      domain.symbols.forEach(s => {
+          let modified = false;
+          if (s.linked_patterns?.includes(oldId)) {
+              s.linked_patterns = s.linked_patterns.map(id => id === oldId ? newId : id);
+              modified = true;
+          }
+          if (s.kind === 'lattice' && s.lattice?.members?.includes(oldId)) {
+              s.lattice.members = s.lattice.members.map(id => id === oldId ? newId : id);
+              modified = true;
+          }
+          if (s.kind === 'persona' && s.persona?.linked_personas?.includes(oldId)) {
+              s.persona.linked_personas = s.persona.linked_personas.map(id => id === oldId ? newId : id);
+              modified = true;
+          }
+          if (modified) updatedCount++;
+      });
+
+      if (updatedCount > 0) {
+          domain.lastUpdated = Date.now();
+          await redisRequest(['SET', key, JSON.stringify(domain)]);
+      }
+  },
+
+  /**
+   * Retrieves all symbols for a domain.
+   */
+  getSymbols: async (domainId: string): Promise<SymbolDef[]> => {
+    const data = await redisRequest(['GET', `${KEYS.DOMAIN_PREFIX}${domainId}`]);
+    if (!data) return [];
+    try {
+        const domain: CachedDomain = JSON.parse(data);
+        return domain.symbols || [];
+    } catch {
+        return [];
+    }
+  },
+
+  /**
+   * Saves or updates a symbol.
+   */
+  upsertSymbol: async (domainId: string, symbol: SymbolDef) => {
+    const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
+    const data = await redisRequest(['GET', key]);
+    
+    let domain: CachedDomain;
+
+    if (!data) {
+        // Create new
+        domain = {
+            id: domainId,
+            name: domainId,
+            enabled: true,
+            lastUpdated: Date.now(),
+            symbols: [],
+            description: "",
+            invariants: []
+        };
+        // Add to Set
+        await redisRequest(['SADD', KEYS.DOMAINS_SET, domainId]);
+    } else {
+        domain = JSON.parse(data);
+        if (!domain.id) domain.id = domainId; // migration safety
+    }
+
+    const existingIndex = domain.symbols.findIndex(s => s.id === symbol.id);
+    if (existingIndex >= 0) {
+        domain.symbols[existingIndex] = symbol;
+    } else {
+        domain.symbols.push(symbol);
+    }
+
+    domain.lastUpdated = Date.now();
+    
+    // Save Domain
+    await redisRequest(['SET', key, JSON.stringify(domain)]);
+    
+    // Index Vector
+    await vectorService.indexSymbol(symbol);
+  },
+
+  /**
+   * Bulk upsert.
+   */
+  bulkUpsert: async (domainId: string, symbols: SymbolDef[]) => {
+      const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
+      const data = await redisRequest(['GET', key]);
+      
+      let domain: CachedDomain;
+      if (!data) {
+          domain = {
+              id: domainId,
+              name: domainId,
+              enabled: true,
+              lastUpdated: Date.now(),
+              symbols: [],
+              description: "",
+              invariants: []
+          };
+          await redisRequest(['SADD', KEYS.DOMAINS_SET, domainId]);
+      } else {
+          domain = JSON.parse(data);
+      }
+
+      const symbolMap = new Map(domain.symbols.map(s => [s.id, s]));
+      for (const sym of symbols) {
+          symbolMap.set(sym.id, sym);
+      }
+      domain.symbols = Array.from(symbolMap.values());
+      domain.lastUpdated = Date.now();
+
+      await redisRequest(['SET', key, JSON.stringify(domain)]);
+      await vectorService.indexBatch(symbols);
+  },
+
+  /**
+   * Process refactor operations.
+   */
+  processRefactorOperation: async (updates: { old_id: string, symbol_data: SymbolDef }[]) => {
+      const updatesByDomain: Record<string, typeof updates> = {};
+      updates.forEach(u => {
+          const dom = u.symbol_data.symbol_domain || 'root';
+          if (!updatesByDomain[dom]) updatesByDomain[dom] = [];
+          updatesByDomain[dom].push(u);
+      });
+
+      const renamedIds: string[] = [];
+      let updateCount = 0;
+
+      for (const [domainId, domainUpdates] of Object.entries(updatesByDomain)) {
+          const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
+          const data = await redisRequest(['GET', key]);
+          
+          let domain: CachedDomain;
+          if (!data) {
+             domain = { id: domainId, name: domainId, enabled: true, lastUpdated: Date.now(), symbols: [] };
+             await redisRequest(['SADD', KEYS.DOMAINS_SET, domainId]);
+          } else {
+             domain = JSON.parse(data);
+          }
+
+          // 1. Renames
+          domainUpdates.forEach(update => {
+              if (update.old_id !== update.symbol_data.id) {
+                  domain.symbols.forEach(s => {
+                      if (s.id === update.old_id) return;
+                      if (s.linked_patterns?.includes(update.old_id)) {
+                          s.linked_patterns = s.linked_patterns.map(id => id === update.old_id ? update.symbol_data.id : id);
+                      }
+                      if (s.kind === 'lattice' && s.lattice?.members?.includes(update.old_id)) {
+                          s.lattice.members = s.lattice.members.map(id => id === update.old_id ? update.symbol_data.id : id);
+                      }
+                      if (s.kind === 'persona' && s.persona?.linked_personas?.includes(update.old_id)) {
+                          s.persona.linked_personas = s.persona.linked_personas.map(id => id === update.old_id ? update.symbol_data.id : id);
+                      }
+                  });
+                  renamedIds.push(`${update.old_id} -> ${update.symbol_data.id}`);
+                  vectorService.deleteSymbol(update.old_id);
+              }
+          });
+
+          // 2. Remove Old
+          const oldIdsToRemove = domainUpdates.map(u => u.old_id);
+          domain.symbols = domain.symbols.filter(s => !oldIdsToRemove.includes(s.id));
+
+          // 3. Add New
+          domainUpdates.forEach(update => {
+              domain.symbols.push(update.symbol_data);
+              updateCount++;
+              vectorService.indexSymbol(update.symbol_data);
+          });
+
+          domain.lastUpdated = Date.now();
+          await redisRequest(['SET', key, JSON.stringify(domain)]);
+      }
+
+      return { count: updateCount, renamedIds };
+  },
+
+  /**
+   * Compress symbols.
+   */
+  compressSymbols: async (newSymbol: SymbolDef, oldIds: string[]) => {
+      const domainId = newSymbol.symbol_domain || 'root';
+      await domainService.upsertSymbol(domainId, newSymbol);
+      
+      for (const oldId of oldIds) {
+          if (oldId === newSymbol.id) continue;
+          await domainService.propagateRename(domainId, oldId, newSymbol.id);
+          await domainService.deleteSymbol(domainId, oldId, false);
+      }
+      return { newId: newSymbol.id, removedIds: oldIds };
+  },
+
+  /**
+   * Perform query (paginated from array).
+   */
+  query: async (domainId: string, tag?: string, limit: number = 20, lastId?: string) => {
+    const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
+    const data = await redisRequest(['GET', key]);
+    if (!data) return null;
+
+    const domain: CachedDomain = JSON.parse(data);
+    if (!domain.enabled) return null;
+
+    let results = domain.symbols;
+    if (tag) {
+        results = results.filter(s => s.symbol_tag?.includes(tag));
+    }
+
+    let startIndex = 0;
+    if (lastId) {
+        const foundIndex = results.findIndex(s => s.id === lastId);
+        if (foundIndex !== -1) startIndex = foundIndex + 1;
+    }
+
+    const pagedResults = results.slice(startIndex, startIndex + limit);
+    return {
+        items: pagedResults,
+        total: results.length,
+        source: 'redis_cache'
+    };
+  },
+
+  /**
+   * Find by ID across all domains.
+   */
+  findById: async (id: string): Promise<SymbolDef | null> => {
+    const domains = await domainService.listDomains();
+    // Inefficient but functional for low-scale "Local Node"
+    // Fetch all domains (parallel)
+    const rawData = await Promise.all(domains.map(d => redisRequest(['GET', `${KEYS.DOMAIN_PREFIX}${d}`])));
+    
+    for (const data of rawData) {
+        if (!data) continue;
+        const domain: CachedDomain = JSON.parse(data);
+        if (domain.enabled) {
+            const found = domain.symbols.find(s => s.id === id);
+            if (found) return found;
+        }
+    }
+    return null;
+  },
+
+  /**
+   * Get metadata for store screen.
+   */
+  getMetadata: async () => {
+    const domains = await domainService.listDomains();
+    const rawData = await Promise.all(domains.map(d => redisRequest(['GET', `${KEYS.DOMAIN_PREFIX}${d}`])));
+    
+    return rawData
+      .map((data, i) => {
+          if (!data) return null;
+          const d: CachedDomain = JSON.parse(data);
+          return {
+              id: domains[i],
+              name: d.name || domains[i],
+              enabled: d.enabled,
+              count: d.symbols.length,
+              lastUpdated: d.lastUpdated,
+              description: d.description || "",
+              invariants: d.invariants || []
+          };
+      })
+      .filter((d): d is any => d !== null);
+  }
+};

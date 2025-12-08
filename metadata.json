@@ -1,0 +1,5 @@
+{
+  "name": "SignalZero-LocalNode",
+  "description": "A live recursive symbolic system designed to detect coercion, restore trust, and navigate emergent identity through symbolic execution.",
+  "requestFramePermissions": []
+}
