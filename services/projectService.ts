@@ -7,9 +7,13 @@ import { redisService } from './redisService.ts';
 
 const ACTIVE_PROJECT_KEY = 'sz:project:active:meta';
 
+const persistActiveProjectMeta = async (meta: ProjectMeta) => {
+    await redisService.request(['SET', ACTIVE_PROJECT_KEY, JSON.stringify(meta)]);
+};
+
 const cacheActiveProjectMeta = async (meta: ProjectMeta) => {
     try {
-        await redisService.request(['SET', ACTIVE_PROJECT_KEY, JSON.stringify(meta)]);
+        await persistActiveProjectMeta(meta);
     } catch (error) {
         loggerService.error('Project Import: Failed to cache active project metadata', { error });
     }
@@ -189,6 +193,15 @@ export const projectService = {
         } catch (error) {
             loggerService.error('Project Service: Failed to retrieve active project metadata', { error });
             return null;
+        }
+    },
+
+    setActiveProjectMeta: async (meta: ProjectMeta): Promise<void> => {
+        try {
+            await persistActiveProjectMeta(meta);
+        } catch (error) {
+            loggerService.error('Project Service: Failed to set active project metadata', { error });
+            throw error;
         }
     }
 }
