@@ -4,6 +4,7 @@ import { toolDeclarations } from "./toolsService.ts";
 import { ACTIVATION_PROMPT } from '../symbolic_system/activation_prompt.ts';
 import { EvaluationMetrics, TraceData, TestMeta, SymbolDef } from '../types.ts';
 import { domainService } from './domainService.ts';
+import { embedText } from './embeddingService.ts';
 
 // Initialize the client strictly with process.env.API_KEY
 // Export for use in vectorService
@@ -37,16 +38,7 @@ export const resetChatSession = () => {
 
 // --- Embedding Helper ---
 export const generateEmbedding = async (text: string): Promise<number[]> => {
-    try {
-        const result = await ai.models.embedContent({
-            model: 'text-embedding-004',
-            contents: [{ parts: [{ text }] }]
-        });
-        return result.embeddings?.[0]?.values || [];
-    } catch (error) {
-        console.error("Embedding generation failed:", error);
-        return [];
-    }
+    return embedText(text);
 };
 
 // Standalone function for Symbol Synthesis (Symbol Forge)

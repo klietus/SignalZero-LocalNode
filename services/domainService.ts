@@ -468,5 +468,30 @@ export const domainService = {
           };
       })
       .filter((d): d is any => d !== null);
+  },
+
+  /**
+   * Retrieve all symbols across domains.
+   * By default, returns only enabled domain symbols.
+   */
+  getAllSymbols: async (includeDisabled: boolean = false): Promise<SymbolDef[]> => {
+      const domains = await domainService.listDomains();
+      const rawData = await Promise.all(domains.map(d => redisService.request(['GET', `${KEYS.DOMAIN_PREFIX}${d}`])));
+
+      const allSymbols: SymbolDef[] = [];
+
+      rawData.forEach((data) => {
+          if (!data) return;
+          try {
+              const domain: CachedDomain = JSON.parse(data);
+              if (includeDisabled || domain.enabled) {
+                  allSymbols.push(...(domain.symbols || []));
+              }
+          } catch (e) {
+              console.error('[DomainService] Failed to parse domain while collecting symbols', e);
+          }
+      });
+
+      return allSymbols;
   }
 };

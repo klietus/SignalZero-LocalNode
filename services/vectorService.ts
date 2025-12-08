@@ -1,4 +1,5 @@
-import { ChromaClient, type Collection } from 'chromadb';
+import { ChromaClient, type Collection, type EmbeddingFunction } from 'chromadb';
+import { embedTexts, resetEmbeddingCache } from './embeddingService.ts';
 import { SymbolDef, VectorSearchResult } from '../types.ts';
 import { settingsService } from './settingsService.ts';
 
@@ -6,12 +7,15 @@ let chromaClient: ChromaClient | null = null;
 let cachedCollection: Collection | null = null;
 let cachedCollectionName: string | null = null;
 let cachedClientPath: string | null = null;
+let cachedEmbeddingFn: EmbeddingFunction | null = null;
 
 function resetCache() {
     chromaClient = null;
     cachedCollection = null;
     cachedCollectionName = null;
     cachedClientPath = null;
+    cachedEmbeddingFn = null;
+    resetEmbeddingCache();
 }
 
 function getClient(): ChromaClient {
@@ -25,19 +29,35 @@ function getClient(): ChromaClient {
     return chromaClient;
 }
 
+function getEmbeddingFunction(): EmbeddingFunction {
+    if (!cachedEmbeddingFn) {
+        cachedEmbeddingFn = {
+            async generate(texts: string[]): Promise<number[][]> {
+                return embedTexts(texts);
+            }
+        };
+    }
+
+    return cachedEmbeddingFn!;
+}
+
 async function getCollectionInstance(): Promise<Collection | null> {
     const config = settingsService.getVectorSettings();
     const collectionName = config.collectionName;
+    const embeddingFunction = getEmbeddingFunction();
 
     if (cachedCollection && cachedCollectionName === collectionName) {
         return cachedCollection;
     }
 
-        try {
-            const collection = await getClient().getOrCreateCollection({ name: collectionName });
-            cachedCollection = collection;
-            cachedCollectionName = collectionName;
-            console.log(`[VectorService] Connected to collection '${collectionName}' (${collection.id})`);
+    try {
+        const collection = await getClient().getOrCreateCollection({
+            name: collectionName,
+            embeddingFunction
+        });
+        cachedCollection = collection;
+        cachedCollectionName = collectionName;
+        console.log(`[VectorService] Connected to collection '${collectionName}' (${collection.id})`);
         return collection;
     } catch (e) {
         console.error(`[VectorService] Connection failed to ${config.chromaUrl} for collection ${collectionName}`, e);
@@ -174,6 +194,19 @@ export const vectorService = {
             return true;
         } catch (e) {
             return false;
+        }
+    },
+
+    async countCollection(): Promise<number> {
+        const collection = await getCollectionInstance();
+        if (!collection) return 0;
+
+        try {
+            const count = await collection.count();
+            return typeof count === 'number' ? count : 0;
+        } catch (e) {
+            console.error("[VectorService] Failed to count collection", e);
+            return 0;
         }
     }
 };
