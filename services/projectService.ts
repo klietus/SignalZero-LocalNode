@@ -3,6 +3,17 @@ import JSZip from 'jszip';
 import { domainService } from './domainService.ts';
 import { testService } from './testService.ts';
 import { ProjectMeta, ProjectImportStats, DomainImportStat } from '../types.ts';
+import { redisService } from './redisService.ts';
+
+const ACTIVE_PROJECT_KEY = 'sz:project:active:meta';
+
+const cacheActiveProjectMeta = async (meta: ProjectMeta) => {
+    try {
+        await redisService.request(['SET', ACTIVE_PROJECT_KEY, JSON.stringify(meta)]);
+    } catch (error) {
+        loggerService.error('Project Import: Failed to cache active project metadata', { error });
+    }
+};
 
 export const projectService = {
     /**
@@ -149,8 +160,10 @@ export const projectService = {
             }
             loggerService.info("Project Import: All domains processed. Project loading complete.");
 
+            await cacheActiveProjectMeta(meta);
+
             console.groupEnd();
-            
+
             return {
                 systemPrompt,
                 stats: {
@@ -165,6 +178,17 @@ export const projectService = {
             loggerService.error("Project Import: Import failed", { error });
             console.groupEnd();
             throw error;
+        }
+    },
+
+    getActiveProjectMeta: async (): Promise<ProjectMeta | null> => {
+        try {
+            const cached = await redisService.request(['GET', ACTIVE_PROJECT_KEY]);
+            if (!cached) return null;
+            return JSON.parse(cached);
+        } catch (error) {
+            loggerService.error('Project Service: Failed to retrieve active project metadata', { error });
+            return null;
         }
     }
 }
