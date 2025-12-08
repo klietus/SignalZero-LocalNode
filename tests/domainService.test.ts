@@ -1,18 +1,12 @@
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { domainService } from '../services/domainService.ts';
-import { settingsService } from '../services/settingsService.ts';
 import { vectorService } from '../services/vectorService.ts';
+import { __redisTestUtils, redisService } from '../services/redisService.ts';
 
 describe('DomainService', () => {
-    const fetchMock = vi.fn();
-
     beforeEach(() => {
-        vi.stubGlobal('fetch', fetchMock);
-        vi.spyOn(settingsService, 'getRedisSettings').mockReturnValue({
-            redisUrl: 'http://mock-redis',
-            redisToken: 'mock-token'
-        });
+        __redisTestUtils.resetMock();
 
         // Mock vector service to avoid side effects
         vi.spyOn(vectorService, 'indexSymbol').mockResolvedValue(true);
@@ -22,51 +16,33 @@ describe('DomainService', () => {
     });
 
     afterEach(() => {
-        vi.unstubAllGlobals();
         vi.restoreAllMocks();
+        __redisTestUtils.resetMock();
     });
 
     it('should list domains', async () => {
-        // Mock SMEMBERS response
-        fetchMock.mockResolvedValueOnce({
-            json: async () => ({ result: ['domain-a', 'domain-b'] })
-        });
+        await redisService.request(['SADD', 'sz:domains', 'domain-a', 'domain-b']);
 
         const domains = await domainService.listDomains();
         expect(domains).toEqual(['domain-a', 'domain-b']);
-        expect(fetchMock).toHaveBeenCalledWith('http://mock-redis', expect.anything());
     });
 
     it('should check if domain exists', async () => {
-        fetchMock.mockResolvedValueOnce({
-            json: async () => ({ result: 1 })
-        });
+        await redisService.request(['SET', 'sz:domain:test-domain', JSON.stringify({ id: 'test-domain', symbols: [] })]);
 
         const exists = await domainService.hasDomain('test-domain');
         expect(exists).toBe(true);
     });
 
     it('should upsert a symbol', async () => {
-        // Mock GET domain (returns null first time -> create new)
-        fetchMock.mockResolvedValueOnce({
-            json: async () => ({ result: null })
-        });
-
-        // Mock SADD (add domain to set)
-        fetchMock.mockResolvedValueOnce({
-            json: async () => ({ result: 1 })
-        });
-
-        // Mock SET (save domain)
-        fetchMock.mockResolvedValueOnce({
-            json: async () => ({ result: 'OK' })
-        });
-
         const symbol: any = { id: 'sym-1', name: 'Symbol 1' };
         await domainService.upsertSymbol('new-domain', symbol);
 
-        expect(fetchMock).toHaveBeenCalledTimes(3);
         expect(vectorService.indexSymbol).toHaveBeenCalledWith(symbol);
+        const stored = await redisService.request(['GET', 'sz:domain:new-domain']);
+        const domain = JSON.parse(stored);
+        expect(domain.symbols).toHaveLength(1);
+        expect(domain.symbols[0].id).toBe('sym-1');
     });
 
     it('should get symbols for a domain', async () => {
@@ -75,9 +51,7 @@ describe('DomainService', () => {
             symbols: [{ id: 's1', name: 'S1' }]
         };
 
-        fetchMock.mockResolvedValueOnce({
-            json: async () => ({ result: JSON.stringify(mockDomain) })
-        });
+        await redisService.request(['SET', 'sz:domain:test-domain', JSON.stringify(mockDomain)]);
 
         const symbols = await domainService.getSymbols('test-domain');
         expect(symbols).toHaveLength(1);
@@ -90,30 +64,13 @@ describe('DomainService', () => {
             symbols: [{ id: 's1' }, { id: 's2' }]
         };
 
-        // Mock GET domain
-        fetchMock.mockResolvedValueOnce({
-            json: async () => ({ result: JSON.stringify(mockDomain) })
-        });
-
-        // Mock SET domain (after deletion)
-        fetchMock.mockResolvedValueOnce({
-            json: async () => ({ result: 'OK' })
-        });
+        await redisService.request(['SET', 'sz:domain:test-domain', JSON.stringify(mockDomain)]);
 
         await domainService.deleteSymbol('test-domain', 's1');
 
         expect(vectorService.deleteSymbol).toHaveBeenCalledWith('s1');
-        // Check that SET was called with updated domain
-        const setCall = fetchMock.mock.calls[1];
-        const body = JSON.parse(setCall[1].body);
-        
-        // Actually redisRequest sends ['SET', key, val]
-        // body is array
-        
-        // Let's inspect the args passed to redisRequest logic via fetch
-        // The fetch body is stringified array
-        expect(body[0]).toBe('SET');
-        const domainObj = JSON.parse(body[2]);
+        const updated = await redisService.request(['GET', 'sz:domain:test-domain']);
+        const domainObj = JSON.parse(updated);
         expect(domainObj.symbols).toHaveLength(1);
         expect(domainObj.symbols[0].id).toBe('s2');
     });

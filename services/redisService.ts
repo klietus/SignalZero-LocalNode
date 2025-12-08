@@ -2,13 +2,76 @@ import { Redis } from 'ioredis';
 import { settingsService } from './settingsService.js';
 import { loggerService } from './loggerService.js';
 
+const isTestEnv = process.env.NODE_ENV === 'test';
+
+// Lightweight in-memory mock to avoid real Redis connections during tests
+const mockStore = new Map<string, string>();
+const mockSets = new Map<string, Set<string>>();
+
+const getMockSet = (key: string) => {
+    if (!mockSets.has(key)) mockSets.set(key, new Set<string>());
+    return mockSets.get(key)!;
+};
+
+const handleMockCommand = async (command: any[]): Promise<any> => {
+    const [cmd, ...args] = command;
+    switch (cmd) {
+    case 'SMEMBERS': {
+        const set = getMockSet(args[0]);
+        return Array.from(set);
+    }
+    case 'SADD': {
+        const set = getMockSet(args[0]);
+        let added = 0;
+        args.slice(1).forEach((val) => {
+            if (!set.has(val)) {
+                set.add(val);
+                added++;
+            }
+        });
+        return added;
+    }
+    case 'SREM': {
+        const set = getMockSet(args[0]);
+        let removed = 0;
+        args.slice(1).forEach((val) => {
+            if (set.delete(val)) removed++;
+        });
+        return removed;
+    }
+    case 'DEL': {
+        let removed = 0;
+        args.forEach((key) => {
+            if (mockStore.delete(key)) removed++;
+            if (mockSets.delete(key)) removed++;
+        });
+        return removed;
+    }
+    case 'EXISTS': {
+        return mockStore.has(args[0]) ? 1 : 0;
+    }
+    case 'GET': {
+        return mockStore.get(args[0]) ?? null;
+    }
+    case 'SET': {
+        mockStore.set(args[0], String(args[1]));
+        return 'OK';
+    }
+    case 'PING': {
+        return 'PONG';
+    }
+    default:
+        throw new Error(`Unsupported mock command: ${cmd}`);
+    }
+};
+
 let client: Redis | null = null;
 
 const getClient = (): Redis => {
     if (client) return client;
 
     const { redisUrl } = settingsService.getRedisSettings();
-    
+
     // Fix common misconfiguration where http is used instead of redis protocol
     let connectionUrl = redisUrl;
     if (connectionUrl.startsWith('http://')) {
@@ -21,7 +84,7 @@ const getClient = (): Redis => {
     }
 
     loggerService.info(`Initializing Redis Client with URL: ${connectionUrl}`);
-    
+
     client = new Redis(connectionUrl, {
         lazyConnect: true,
         retryStrategy(times: number) {
@@ -47,8 +110,12 @@ export const redisService = {
      * Compatible with the previous array-based signature: ['CMD', arg1, arg2]
      */
     request: async (command: any[]): Promise<any> => {
+        if (isTestEnv) {
+            return handleMockCommand(command);
+        }
+
         const redis = getClient();
-        
+
         // Ensure connection
         if (redis.status === 'wait' || redis.status === 'end') {
              await redis.connect();
@@ -65,8 +132,10 @@ export const redisService = {
             throw error;
         }
     },
-    
+
     healthCheck: async (): Promise<boolean> => {
+         if (isTestEnv) return true;
+
          try {
              const redis = getClient();
              if (redis.status === 'wait' || redis.status === 'end') {
@@ -80,9 +149,22 @@ export const redisService = {
     },
 
     disconnect: async () => {
+        if (isTestEnv) {
+            mockStore.clear();
+            mockSets.clear();
+            return;
+        }
+
         if (client) {
             await client.quit();
             client = null;
         }
+    }
+};
+
+export const __redisTestUtils = {
+    resetMock: () => {
+        mockStore.clear();
+        mockSets.clear();
     }
 };
