@@ -1,3 +1,4 @@
+
 # SignalZero Agent Modification Guidelines
 
 This document outlines the architectural patterns and constraints for AI agents tasked with modifying the SignalZero codebase.
@@ -15,7 +16,7 @@ When modifying the system, you must preserve the integrity of the **Symbolic Tri
 
 *   `src/components/`: UI components. `ChatMessage.tsx` is critical for parsing symbolic tags.
 *   `src/services/`: Core logic.
-    *   `gemini.ts`: Interaction with LLM. Handles the `sz_trace` parsing.
+    *   `inferenceService.ts`: Interaction with LLM. Handles the `sz_trace` parsing.
     *   `domainService.ts`: CRUD for symbols in `localStorage`.
     *   `vectorService.ts`: Handles semantic search and embedding generation.
     *   `toolsService.ts`: Defines the function calling schema for the LLM.
@@ -34,7 +35,7 @@ The application relies on specific XML-like tags in the LLM response to render i
 ### 2. Service Layer Pattern
 *   All state persistence logic resides in `services/`.
 *   Components should **never** access `localStorage` directly for domain data; use `domainService`.
-*   Components should **never** call the LLM directly (except for streaming chat); use `gemini.ts`.
+*   Components should **never** call the LLM directly (except for streaming chat); use `inferenceService.ts`.
 
 ### 3. Vector Database
 *   The system supports a dual-mode vector store:

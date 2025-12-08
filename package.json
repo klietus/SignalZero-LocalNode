@@ -1,29 +1,27 @@
 {
-  "name": "signal-zero-local",
-  "version": "1.0.0",
+  "name": "signal-zero-kernel",
+  "version": "2.0.0",
   "type": "module",
+  "description": "SignalZero Recursive Symbolic Kernel - Backend Server",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview"
+    "start": "tsx server.ts",
+    "dev": "tsx watch server.ts",
+    "build": "tsc"
   },
   "dependencies": {
     "@google/genai": "^0.1.1",
     "@xenova/transformers": "^2.17.2",
-    "buffer": "^6.0.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
     "jszip": "^3.10.1",
-    "long": "^5.2.3",
-    "lucide-react": "^0.378.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-markdown": "^9.0.1",
-    "remark-gfm": "^4.0.0"
+    "long": "^5.2.3"
   },
   "devDependencies": {
-    "@types/react": "^18.3.1",
-    "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "^4.2.1",
-    "typescript": "^5.4.5",
-    "vite": "^5.2.11"
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.12.7",
+    "tsx": "^4.7.2",
+    "typescript": "^5.4.5"
   }
 }

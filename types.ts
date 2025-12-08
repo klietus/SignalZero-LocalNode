@@ -142,6 +142,31 @@ export interface TestResult {
   error?: string;
 }
 
+export interface TestSet {
+  id: string;
+  name: string;
+  description: string;
+  tests: string[]; // Array of prompts
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TestRun {
+  id: string;
+  testSetId: string;
+  testSetName: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  startTime: string;
+  endTime?: string;
+  results: TestResult[];
+  summary: {
+    total: number;
+    completed: number;
+    passed: number; // Based on some logic, or just completion
+    failed: number;
+  };
+}
+
 export interface ProjectMeta {
     name: string;
     version: string;

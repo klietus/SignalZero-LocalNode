@@ -1,4 +1,3 @@
-
 import JSZip from 'jszip';
 import { domainService } from './domainService';
 import { testService } from './testService';
@@ -6,7 +5,7 @@ import { ProjectMeta, ProjectImportStats, DomainImportStat } from '../types';
 
 export const projectService = {
     /**
-     * Exports the current project state (System Prompt, Domains, Tests, Meta) to a .szproject (zip) file.
+     * Exports the current project state to a .szproject (zip) blob.
      */
     export: async (meta: ProjectMeta, systemPrompt: string): Promise<Blob> => {
         console.group("Project Export");
@@ -19,16 +18,13 @@ export const projectService = {
                 updated_at: new Date().toISOString()
             };
             zip.file("metadata.json", JSON.stringify(currentMeta, null, 2));
-            console.log("Metadata packaged.");
 
             // 2. System Prompt
             zip.file("system_prompt.txt", systemPrompt);
-            console.log("System prompt packaged.");
 
             // 3. Tests
             const tests = testService.getTests();
             zip.file("tests.json", JSON.stringify(tests, null, 2));
-            console.log(`Test suite packaged (${tests.length} tests).`);
 
             // 4. Domains
             const domainsFolder = zip.folder("domains");
@@ -48,11 +44,8 @@ export const projectService = {
                 };
                 domainsFolder?.file(`${id}.json`, JSON.stringify(domainData, null, 2));
             }
-            console.log(`Domains packaged (${domainIds.length} domains).`);
 
-            // Generate
             const content = await zip.generateAsync({ type: "blob" });
-            console.log("Zip generation complete.");
             console.groupEnd();
             return content;
 
@@ -64,10 +57,9 @@ export const projectService = {
     },
 
     /**
-     * Imports a .szproject zip file, restoring context, domains, and tests.
-     * Returns statistics about the import.
+     * Imports a .szproject zip file.
      */
-    import: async (file: File): Promise<{ systemPrompt: string, stats: ProjectImportStats }> => {
+    import: async (file: Blob | File | ArrayBuffer | Uint8Array | Buffer): Promise<{ systemPrompt: string, stats: ProjectImportStats }> => {
         console.group("Project Import");
         try {
             const zip = await JSZip.loadAsync(file);
@@ -88,14 +80,12 @@ export const projectService = {
             if (metaFile) {
                 const metaStr = await metaFile.async("string");
                 meta = JSON.parse(metaStr);
-                console.log("Metadata loaded:", meta.name);
             }
 
             // 2. System Prompt
             const promptFile = zip.file("system_prompt.txt");
             if (promptFile) {
                 systemPrompt = await promptFile.async("string");
-                console.log("System Prompt loaded.");
             }
 
             // 3. Tests
@@ -105,16 +95,13 @@ export const projectService = {
                 const tests = JSON.parse(tText);
                 testService.setTests(tests);
                 testCount = tests.length;
-                console.log(`Test suite loaded (${testCount} tests).`);
             }
 
-            // 4. Domains (Wipe & Load)
-            console.log("Clearing existing domains...");
+            // 4. Domains
             await domainService.clearAll();
 
             const domainsFolder = zip.folder("domains");
             if (domainsFolder) {
-                // Collect promises to ensure all files are processed
                 const filePromises: Promise<void>[] = [];
 
                 domainsFolder.forEach((relativePath, file) => {
@@ -139,7 +126,6 @@ export const projectService = {
                                         symbolCount: json.items.length
                                     });
                                     totalSymbols += json.items.length;
-                                    console.log(`Loaded domain: ${id} (${json.items.length} symbols)`);
                                 }
                             } catch (e) {
                                 console.error(`Failed to parse domain file ${relativePath}`, e);

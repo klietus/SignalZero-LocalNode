@@ -1,18 +1,18 @@
-
-
 import { SymbolDef, VectorSearchResult } from '../types';
 // @ts-ignore
 import { pipeline } from '@xenova/transformers';
 import { settingsService } from './settingsService';
 
-const LOCAL_STORAGE_KEY = 'signalzero_local_vectors_v2'; 
-
+// In-memory store for "Local" mode in Node.js
+// In production, this should be Redis/File/DB
 interface LocalVectorDoc {
     id: string;
     embedding: number[];
     metadata: any;
     document: string;
 }
+
+const memoryStore: Record<string, LocalVectorDoc> = {};
 
 // Helper: Cosine Similarity
 const cosineSimilarity = (vecA: number[], vecB: number[]): number => {
@@ -31,24 +31,6 @@ const cosineSimilarity = (vecA: number[], vecB: number[]): number => {
     return dotProduct / (magnitudeA * magnitudeB);
 };
 
-// Helper: Local Storage Management
-const getLocalStore = (): Record<string, LocalVectorDoc> => {
-    try {
-        const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
-        return raw ? JSON.parse(raw) : {};
-    } catch {
-        return {};
-    }
-};
-
-const setLocalStore = (store: Record<string, LocalVectorDoc>) => {
-    try {
-        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(store));
-    } catch (e) {
-        console.warn("LocalStorage quota exceeded for vector store", e);
-    }
-};
-
 // --- Local Embedding Pipeline ---
 let embeddingPipeline: any = null;
 
@@ -56,7 +38,7 @@ const generateLocalEmbedding = async (text: string): Promise<number[]> => {
     try {
         if (!embeddingPipeline) {
             console.log("[VectorService] Initializing local embedding model (Xenova/all-MiniLM-L6-v2)...");
-            // Use quantized version by default (approx 23MB download once)
+            // Use quantized version by default
             embeddingPipeline = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
         }
         
@@ -129,8 +111,7 @@ export const vectorService = {
         // --- STRATEGY: LOCAL ---
         if (!config.useExternal) {
             try {
-                const store = getLocalStore();
-                store[symbol.id] = {
+                memoryStore[symbol.id] = {
                     id: symbol.id,
                     embedding: embedding,
                     metadata: {
@@ -142,7 +123,6 @@ export const vectorService = {
                     },
                     document: content
                 };
-                setLocalStore(store);
                 console.log(`[VectorService:Local] Indexed ${symbol.id}`);
                 return true;
             } catch (e) {
@@ -196,7 +176,6 @@ export const vectorService = {
         console.group(`[VectorService] Batch Indexing ${symbols.length} symbols`);
         
         let successCount = 0;
-        // Process in chunks to avoid blocking the main thread too heavily with inference
         const CHUNK_SIZE = 5;
         
         for (let i = 0; i < symbols.length; i += CHUNK_SIZE) {
@@ -216,10 +195,8 @@ export const vectorService = {
 
         // --- STRATEGY: LOCAL ---
         if (!config.useExternal) {
-            const store = getLocalStore();
-            if (store[symbolId]) {
-                delete store[symbolId];
-                setLocalStore(store);
+            if (memoryStore[symbolId]) {
+                delete memoryStore[symbolId];
                 return true;
             }
             return false;
@@ -252,8 +229,7 @@ export const vectorService = {
 
         // --- STRATEGY: LOCAL ---
         if (!config.useExternal) {
-            const store = getLocalStore();
-            const docs = Object.values(store);
+            const docs = Object.values(memoryStore);
             if (docs.length === 0) return [];
 
             // Brute force cosine similarity
@@ -295,9 +271,7 @@ export const vectorService = {
             }
 
             const data = await res.json();
-            console.log("[VectorService] Chroma Query Response:", data);
-
-            // Chroma returns arrays of arrays (one per query)
+            
             const ids = data.ids[0] || [];
             const metadatas = data.metadatas[0] || [];
             const documents = data.documents[0] || [];
@@ -307,7 +281,7 @@ export const vectorService = {
                 id,
                 metadata: metadatas[idx],
                 document: documents[idx],
-                score: 1 - (distances[idx] || 0) // Convert distance to similarity score approx
+                score: 1 - (distances[idx] || 0)
             }));
 
             return results;
@@ -323,7 +297,7 @@ export const vectorService = {
 
         // --- STRATEGY: LOCAL ---
         if (!config.useExternal) {
-            localStorage.removeItem(LOCAL_STORAGE_KEY);
+            for (const key in memoryStore) delete memoryStore[key];
             return true;
         }
 
@@ -331,7 +305,6 @@ export const vectorService = {
         const baseUrl = config.chromaUrl;
         const collectionName = config.collectionName;
         try {
-            // UPDATED: API v2
             await fetch(`${baseUrl}/api/v2/collections/${collectionName}`, { method: 'DELETE' });
             return true;
         } catch (e) {
