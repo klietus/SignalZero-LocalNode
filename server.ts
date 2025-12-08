@@ -511,6 +511,17 @@ app.post('/api/project/import', async (req, res) => {
     }
 });
 
+// Active Project Metadata
+app.get('/api/project/active', async (req, res) => {
+    try {
+        const meta = await projectService.getActiveProjectMeta();
+        res.json({ meta });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
 // Trace Endpoint
 app.get('/api/traces', (req, res) => {
     res.json(traceService.getTraces());

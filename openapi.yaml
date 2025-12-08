@@ -81,6 +81,36 @@ paths:
                 properties:
                   status:
                     type: string
+  /index/reindex:
+    post:
+      summary: Reindex all symbols
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                includeDisabled:
+                  type: boolean
+                  description: Include disabled domains in the reindex process
+      responses:
+        '200':
+          description: Reindex operation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReindexResult'
+  /index/status:
+    get:
+      summary: Get the current indexing status
+      responses:
+        '200':
+          description: Current status of the vector index
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexStatus'
   /domains:
     get:
       summary: List all domains
@@ -575,6 +605,20 @@ paths:
                     type: string
                   stats:
                     type: object
+  /project/active:
+    get:
+      summary: Get the active project metadata
+      responses:
+        '200':
+          description: Active project metadata cached in Redis
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meta:
+                    $ref: '#/components/schemas/ProjectMeta'
+                    nullable: true
   /traces:
     get:
       summary: Get all traces
@@ -925,6 +969,48 @@ components:
             $ref: '#/components/schemas/DomainImportStat'
         totalSymbols:
           type: number
+    IndexQueueState:
+      type: object
+      properties:
+        pending:
+          type: integer
+        total:
+          type: integer
+        running:
+          type: boolean
+    ReindexResult:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - completed
+            - already-running
+        resetPerformed:
+          type: boolean
+        indexedCount:
+          type: integer
+        totalSymbols:
+          type: integer
+        failedIds:
+          type: array
+          items:
+            type: string
+        lastReindexAt:
+          type: string
+          format: date-time
+        queue:
+          $ref: '#/components/schemas/IndexQueueState'
+    IndexStatus:
+      type: object
+      properties:
+        queue:
+          $ref: '#/components/schemas/IndexQueueState'
+        collectionCount:
+          type: integer
+        lastReindexAt:
+          type: string
+          format: date-time
     VectorSearchResult:
       type: object
       properties:
