@@ -15,6 +15,7 @@ import { loggerService } from './services/loggerService.js';
 import { fileURLToPath } from 'url';
 
 import { vectorService } from './services/vectorService.js';
+import { indexingService } from './services/indexingService.js';
 
 dotenv.config();
 
@@ -50,6 +51,28 @@ app.get('/api/health', async (req, res) => {
         },
         timestamp: new Date().toISOString()
     });
+});
+
+// Index Management
+app.post('/api/index/reindex', async (req, res) => {
+    try {
+        const includeDisabled = req.body?.includeDisabled === true;
+        const result = await indexingService.reindexSymbols(includeDisabled);
+        res.json(result);
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+app.get('/api/index/status', async (req, res) => {
+    try {
+        const status = await indexingService.getStatus();
+        res.json(status);
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
 });
 
 // Initialize Chat

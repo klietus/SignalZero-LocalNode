@@ -4,6 +4,7 @@ import { domainService } from "./domainService.ts";
 import { testService } from "./testService.ts";
 import { traceService } from "./traceService.ts";
 import { TraceData } from "../types.ts";
+import { indexingService } from "./indexingService.ts";
 
 // Shared Symbol Data Schema Properties for reuse in tools
 const SYMBOL_DATA_SCHEMA = {
@@ -260,6 +261,19 @@ export const toolDeclarations: FunctionDeclaration[] = [
     },
   },
   {
+    name: 'reindex_vector_store',
+    description: 'Reset the ChromaDB collection and rebuild the vector index from the current symbol store.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        include_disabled: {
+          type: Type.BOOLEAN,
+          description: 'If true, include symbols from disabled domains in the reindex job.'
+        }
+      }
+    }
+  },
+  {
     name: 'log_trace',
     description: 'Log a symbolic reasoning trace. This must be called for every symbolic operation or deduction chain to maintain the recursive log.',
     parameters: {
@@ -505,14 +519,28 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
           return {
               count: results.length,
               results: results,
-              query: query
+                query: query
+            };
+        }
+
+      case 'reindex_vector_store': {
+          const { include_disabled } = args || {};
+          const result = await indexingService.reindexSymbols(include_disabled === true);
+          return {
+              status: result.status,
+              indexed: result.indexedCount,
+              total: result.totalSymbols,
+              reset_performed: result.resetPerformed,
+              failed_ids: result.failedIds,
+              last_reindex_at: result.lastReindexAt,
+              queue: result.queue
           };
       }
 
       case 'log_trace': {
           const { trace } = args;
           if (!trace) return { error: "Missing trace argument" };
-          
+
           traceService.addTrace(trace as TraceData);
           return { status: "Trace logged successfully." };
       }

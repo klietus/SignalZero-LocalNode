@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { settingsService } from '../services/settingsService.ts';
 import { vectorService, __vectorTestUtils } from '../services/vectorService.ts';
+import * as embeddingService from '../services/embeddingService.ts';
 
 const collectionMock = {
     id: 'col-uuid',
@@ -20,6 +21,12 @@ vi.mock('chromadb', () => ({
         heartbeat: heartbeatMock,
         deleteCollection: deleteCollectionMock
     }))
+}));
+
+vi.mock('../services/embeddingService.ts', () => ({
+    __esModule: true,
+    embedTexts: vi.fn(async (texts: string[]) => texts.map(() => [0.1, 0.2])),
+    resetEmbeddingCache: vi.fn()
 }));
 
 describe('VectorService', () => {
@@ -59,7 +66,10 @@ describe('VectorService', () => {
         const result = await vectorService.indexSymbol(symbol);
         expect(result).toBe(true);
 
-        expect(getOrCreateCollectionMock).toHaveBeenCalledWith({ name: 'test-col' });
+        expect(getOrCreateCollectionMock).toHaveBeenCalledWith({
+            name: 'test-col',
+            embeddingFunction: expect.any(Object)
+        });
         expect(collectionMock.upsert).toHaveBeenCalledTimes(1);
         const upsertPayload = collectionMock.upsert.mock.calls[0][0];
         expect(upsertPayload.documents).toBeDefined();
