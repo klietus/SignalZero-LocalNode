@@ -52,12 +52,13 @@ export interface TraceContext {
 
 export interface TraceData {
   id: string;
-  entry_node: string;
-  activated_by: string;
-  activation_path: TraceStep[];
-  source_context: TraceContext;
-  output_node: string;
-  status: string;
+  entry_node?: string;
+  activated_by?: string;
+  activation_path?: TraceStep[];
+  source_context?: TraceContext;
+  output_node?: string;
+  status?: string;
+  [key: string]: any;
 }
 
 // Shared Symbol Definitions

@@ -1,7 +1,7 @@
 
-import { SymbolDef, VectorSearchResult } from '../types';
-import { vectorService } from './vectorService';
-import { settingsService } from './settingsService';
+import { SymbolDef, VectorSearchResult } from '../types.ts';
+import { vectorService } from './vectorService.ts';
+import { redisService } from './redisService.ts';
 
 // Redis Keys Configuration
 const KEYS = {
@@ -19,43 +19,22 @@ interface CachedDomain {
   invariants?: string[];
 }
 
-// --- Redis Client Helper (Upstash REST) ---
-
-const redisRequest = async (command: any[]): Promise<any> => {
-  const { redisUrl, redisToken } = settingsService.getRedisSettings();
-  if (!redisUrl) {
-    console.warn("Redis URL not configured. Domain service operations will fail.");
-    return null;
-  }
-
-  try {
-    const res = await fetch(redisUrl, {
-      method: 'POST',
-      headers: { 
-        Authorization: `Bearer ${redisToken}`,
-        'Content-Type': 'application/json' 
-      },
-      body: JSON.stringify(command)
-    });
-
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    return data.result;
-  } catch (e) {
-    console.error(`Redis command failed: ${command[0]}`, e);
-    return null;
-  }
-};
-
 // --- Public API ---
 
 export const domainService = {
   
   /**
+   * Health Check
+   */
+  healthCheck: async (): Promise<boolean> => {
+      return await redisService.healthCheck();
+  },
+
+  /**
    * Returns a list of all domain IDs currently in Redis.
    */
   listDomains: async (): Promise<string[]> => {
-    const result = await redisRequest(['SMEMBERS', KEYS.DOMAINS_SET]);
+    const result = await redisService.request(['SMEMBERS', KEYS.DOMAINS_SET]);
     return Array.isArray(result) ? result.sort() : [];
   },
 
@@ -63,7 +42,7 @@ export const domainService = {
    * Checks if a domain exists.
    */
   hasDomain: async (domainId: string): Promise<boolean> => {
-    const exists = await redisRequest(['EXISTS', `${KEYS.DOMAIN_PREFIX}${domainId}`]);
+    const exists = await redisService.request(['EXISTS', `${KEYS.DOMAIN_PREFIX}${domainId}`]);
     return exists === 1;
   },
 
@@ -71,7 +50,7 @@ export const domainService = {
    * Checks if a domain is enabled.
    */
   isEnabled: async (domainId: string): Promise<boolean> => {
-    const data = await redisRequest(['GET', `${KEYS.DOMAIN_PREFIX}${domainId}`]);
+    const data = await redisService.request(['GET', `${KEYS.DOMAIN_PREFIX}${domainId}`]);
     if (!data) return false;
     try {
       const domain: CachedDomain = JSON.parse(data);
@@ -86,11 +65,11 @@ export const domainService = {
    */
   toggleDomain: async (domainId: string, enabled: boolean) => {
     const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
-    const data = await redisRequest(['GET', key]);
+    const data = await redisService.request(['GET', key]);
     if (data) {
       const domain: CachedDomain = JSON.parse(data);
       domain.enabled = enabled;
-      await redisRequest(['SET', key, JSON.stringify(domain)]);
+      await redisService.request(['SET', key, JSON.stringify(domain)]);
     }
   },
 
@@ -99,14 +78,14 @@ export const domainService = {
    */
   updateDomainMetadata: async (domainId: string, metadata: { name?: string, description?: string, invariants?: string[] }) => {
     const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
-    const data = await redisRequest(['GET', key]);
+    const data = await redisService.request(['GET', key]);
     if (data) {
       const domain: CachedDomain = JSON.parse(data);
       if (metadata.name) domain.name = metadata.name;
       if (metadata.description !== undefined) domain.description = metadata.description;
       if (metadata.invariants !== undefined) domain.invariants = metadata.invariants;
       domain.lastUpdated = Date.now();
-      await redisRequest(['SET', key, JSON.stringify(domain)]);
+      await redisService.request(['SET', key, JSON.stringify(domain)]);
     }
   },
 
@@ -115,7 +94,7 @@ export const domainService = {
    */
   deleteDomain: async (domainId: string) => {
     const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
-    const data = await redisRequest(['GET', key]);
+    const data = await redisService.request(['GET', key]);
     
     if (data) {
       const domain: CachedDomain = JSON.parse(data);
@@ -126,8 +105,8 @@ export const domainService = {
     }
 
     // Remove from SET and DEL key
-    await redisRequest(['SREM', KEYS.DOMAINS_SET, domainId]);
-    await redisRequest(['DEL', key]);
+    await redisService.request(['SREM', KEYS.DOMAINS_SET, domainId]);
+    await redisService.request(['DEL', key]);
   },
 
   /**
@@ -137,9 +116,9 @@ export const domainService = {
       await vectorService.resetCollection();
       const domains = await domainService.listDomains();
       for (const d of domains) {
-          await redisRequest(['DEL', `${KEYS.DOMAIN_PREFIX}${d}`]);
+          await redisService.request(['DEL', `${KEYS.DOMAIN_PREFIX}${d}`]);
       }
-      await redisRequest(['DEL', KEYS.DOMAINS_SET]);
+      await redisService.request(['DEL', KEYS.DOMAINS_SET]);
   },
 
   /**
@@ -152,7 +131,7 @@ export const domainService = {
       // Load all domains to hydrate (inefficient but safe for "local node")
       // Optimization: Pipeline GETs? Upstash supports pipeline via REST? 
       // For now, simple Promise.all
-      const domainData = await Promise.all(domains.map(d => redisRequest(['GET', `${KEYS.DOMAIN_PREFIX}${d}`])));
+      const domainData = await Promise.all(domains.map(d => redisService.request(['GET', `${KEYS.DOMAIN_PREFIX}${d}`])));
       const store: Record<string, CachedDomain> = {};
       
       domainData.forEach((d, i) => {
@@ -183,7 +162,7 @@ export const domainService = {
    */
   deleteSymbol: async (domainId: string, symbolId: string, cascade: boolean = true) => {
     const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
-    const data = await redisRequest(['GET', key]);
+    const data = await redisService.request(['GET', key]);
     if (!data) return;
 
     const domain: CachedDomain = JSON.parse(data);
@@ -210,7 +189,7 @@ export const domainService = {
     }
 
     domain.lastUpdated = Date.now();
-    await redisRequest(['SET', key, JSON.stringify(domain)]);
+    await redisService.request(['SET', key, JSON.stringify(domain)]);
   },
 
   /**
@@ -218,7 +197,7 @@ export const domainService = {
    */
   propagateRename: async (domainId: string, oldId: string, newId: string) => {
       const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
-      const data = await redisRequest(['GET', key]);
+      const data = await redisService.request(['GET', key]);
       if (!data) return;
 
       const domain: CachedDomain = JSON.parse(data);
@@ -243,7 +222,7 @@ export const domainService = {
 
       if (updatedCount > 0) {
           domain.lastUpdated = Date.now();
-          await redisRequest(['SET', key, JSON.stringify(domain)]);
+          await redisService.request(['SET', key, JSON.stringify(domain)]);
       }
   },
 
@@ -251,7 +230,7 @@ export const domainService = {
    * Retrieves all symbols for a domain.
    */
   getSymbols: async (domainId: string): Promise<SymbolDef[]> => {
-    const data = await redisRequest(['GET', `${KEYS.DOMAIN_PREFIX}${domainId}`]);
+    const data = await redisService.request(['GET', `${KEYS.DOMAIN_PREFIX}${domainId}`]);
     if (!data) return [];
     try {
         const domain: CachedDomain = JSON.parse(data);
@@ -266,7 +245,7 @@ export const domainService = {
    */
   upsertSymbol: async (domainId: string, symbol: SymbolDef) => {
     const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
-    const data = await redisRequest(['GET', key]);
+    const data = await redisService.request(['GET', key]);
     
     let domain: CachedDomain;
 
@@ -282,7 +261,7 @@ export const domainService = {
             invariants: []
         };
         // Add to Set
-        await redisRequest(['SADD', KEYS.DOMAINS_SET, domainId]);
+        await redisService.request(['SADD', KEYS.DOMAINS_SET, domainId]);
     } else {
         domain = JSON.parse(data);
         if (!domain.id) domain.id = domainId; // migration safety
@@ -298,7 +277,7 @@ export const domainService = {
     domain.lastUpdated = Date.now();
     
     // Save Domain
-    await redisRequest(['SET', key, JSON.stringify(domain)]);
+    await redisService.request(['SET', key, JSON.stringify(domain)]);
     
     // Index Vector
     await vectorService.indexSymbol(symbol);
@@ -309,7 +288,7 @@ export const domainService = {
    */
   bulkUpsert: async (domainId: string, symbols: SymbolDef[]) => {
       const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
-      const data = await redisRequest(['GET', key]);
+      const data = await redisService.request(['GET', key]);
       
       let domain: CachedDomain;
       if (!data) {
@@ -322,7 +301,7 @@ export const domainService = {
               description: "",
               invariants: []
           };
-          await redisRequest(['SADD', KEYS.DOMAINS_SET, domainId]);
+          await redisService.request(['SADD', KEYS.DOMAINS_SET, domainId]);
       } else {
           domain = JSON.parse(data);
       }
@@ -334,7 +313,7 @@ export const domainService = {
       domain.symbols = Array.from(symbolMap.values());
       domain.lastUpdated = Date.now();
 
-      await redisRequest(['SET', key, JSON.stringify(domain)]);
+      await redisService.request(['SET', key, JSON.stringify(domain)]);
       await vectorService.indexBatch(symbols);
   },
 
@@ -354,12 +333,12 @@ export const domainService = {
 
       for (const [domainId, domainUpdates] of Object.entries(updatesByDomain)) {
           const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
-          const data = await redisRequest(['GET', key]);
+          const data = await redisService.request(['GET', key]);
           
           let domain: CachedDomain;
           if (!data) {
              domain = { id: domainId, name: domainId, enabled: true, lastUpdated: Date.now(), symbols: [] };
-             await redisRequest(['SADD', KEYS.DOMAINS_SET, domainId]);
+             await redisService.request(['SADD', KEYS.DOMAINS_SET, domainId]);
           } else {
              domain = JSON.parse(data);
           }
@@ -396,7 +375,7 @@ export const domainService = {
           });
 
           domain.lastUpdated = Date.now();
-          await redisRequest(['SET', key, JSON.stringify(domain)]);
+          await redisService.request(['SET', key, JSON.stringify(domain)]);
       }
 
       return { count: updateCount, renamedIds };
@@ -422,7 +401,7 @@ export const domainService = {
    */
   query: async (domainId: string, tag?: string, limit: number = 20, lastId?: string) => {
     const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
-    const data = await redisRequest(['GET', key]);
+    const data = await redisService.request(['GET', key]);
     if (!data) return null;
 
     const domain: CachedDomain = JSON.parse(data);
@@ -454,7 +433,7 @@ export const domainService = {
     const domains = await domainService.listDomains();
     // Inefficient but functional for low-scale "Local Node"
     // Fetch all domains (parallel)
-    const rawData = await Promise.all(domains.map(d => redisRequest(['GET', `${KEYS.DOMAIN_PREFIX}${d}`])));
+    const rawData = await Promise.all(domains.map(d => redisService.request(['GET', `${KEYS.DOMAIN_PREFIX}${d}`])));
     
     for (const data of rawData) {
         if (!data) continue;
@@ -472,7 +451,7 @@ export const domainService = {
    */
   getMetadata: async () => {
     const domains = await domainService.listDomains();
-    const rawData = await Promise.all(domains.map(d => redisRequest(['GET', `${KEYS.DOMAIN_PREFIX}${d}`])));
+    const rawData = await Promise.all(domains.map(d => redisService.request(['GET', `${KEYS.DOMAIN_PREFIX}${d}`])));
     
     return rawData
       .map((data, i) => {

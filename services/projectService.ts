@@ -1,7 +1,8 @@
+import { loggerService } from './loggerService.ts';
 import JSZip from 'jszip';
-import { domainService } from './domainService';
-import { testService } from './testService';
-import { ProjectMeta, ProjectImportStats, DomainImportStat } from '../types';
+import { domainService } from './domainService.ts';
+import { testService } from './testService.ts';
+import { ProjectMeta, ProjectImportStats, DomainImportStat } from '../types.ts';
 
 export const projectService = {
     /**
@@ -60,9 +61,12 @@ export const projectService = {
      * Imports a .szproject zip file.
      */
     import: async (file: Blob | File | ArrayBuffer | Uint8Array | Buffer): Promise<{ systemPrompt: string, stats: ProjectImportStats }> => {
-        console.group("Project Import");
+        loggerService.info("Project Import: Starting import process.");
         try {
+            loggerService.info("Project Import: Cracking the zip file.");
             const zip = await JSZip.loadAsync(file);
+            loggerService.info("Project Import: Zip file cracked. Parsing contents.");
+
             let systemPrompt = "";
             let meta: ProjectMeta = {
                 name: "Imported Project",
@@ -80,12 +84,14 @@ export const projectService = {
             if (metaFile) {
                 const metaStr = await metaFile.async("string");
                 meta = JSON.parse(metaStr);
+                loggerService.info(`Project Import: Parsed metadata for project '${meta.name}'.`);
             }
 
             // 2. System Prompt
             const promptFile = zip.file("system_prompt.txt");
             if (promptFile) {
                 systemPrompt = await promptFile.async("string");
+                loggerService.info("Project Import: Parsed system prompt.");
             }
 
             // 3. Tests
@@ -95,10 +101,13 @@ export const projectService = {
                 const tests = JSON.parse(tText);
                 testService.setTests(tests);
                 testCount = tests.length;
+                loggerService.info(`Project Import: Loaded ${testCount} test cases.`);
             }
 
             // 4. Domains
+            loggerService.info("Project Import: Clearing existing domains.");
             await domainService.clearAll();
+            loggerService.info("Project Import: Processing domains from zip.");
 
             const domainsFolder = zip.folder("domains");
             if (domainsFolder) {
@@ -126,9 +135,10 @@ export const projectService = {
                                         symbolCount: json.items.length
                                     });
                                     totalSymbols += json.items.length;
+                                    loggerService.info(`Project Import: Loaded domain '${id}' with ${json.items.length} symbols.`);
                                 }
                             } catch (e) {
-                                console.error(`Failed to parse domain file ${relativePath}`, e);
+                                loggerService.error(`Project Import: Failed to parse domain file ${relativePath}`, { error: e });
                             }
                         })();
                         filePromises.push(p);
@@ -137,6 +147,7 @@ export const projectService = {
 
                 await Promise.all(filePromises);
             }
+            loggerService.info("Project Import: All domains processed. Project loading complete.");
 
             console.groupEnd();
             
@@ -151,7 +162,7 @@ export const projectService = {
             };
 
         } catch (error) {
-            console.error("Import failed", error);
+            loggerService.error("Project Import: Import failed", { error });
             console.groupEnd();
             throw error;
         }

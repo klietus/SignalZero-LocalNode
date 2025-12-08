@@ -1,16 +1,20 @@
-
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { getChatSession, resetChatSession, sendMessageAndHandleTools, runSignalZeroTest } from './services/inferenceService';
-import { createToolExecutor } from './services/toolsService';
-import { settingsService } from './services/settingsService';
-import { ACTIVATION_PROMPT } from './symbolic_system/activation_prompt';
-import { domainService } from './services/domainService';
-import { traceService } from './services/traceService';
-import { projectService } from './services/projectService';
-import { testService } from './services/testService';
-import { ProjectMeta } from './types';
+import fs from 'fs';
+import { getChatSession, resetChatSession, sendMessageAndHandleTools, runSignalZeroTest } from './services/inferenceService.js';
+import { createToolExecutor } from './services/toolsService.js';
+import { settingsService } from './services/settingsService.js';
+import { ACTIVATION_PROMPT } from './symbolic_system/activation_prompt.js';
+import { domainService } from './services/domainService.js';
+import { traceService } from './services/traceService.js';
+import { projectService } from './services/projectService.js';
+import { testService } from './services/testService.js';
+import { ProjectMeta } from './types.js';
+import { loggerService } from './services/loggerService.js';
+import { fileURLToPath } from 'url';
+
+import { vectorService } from './services/vectorService.js';
 
 dotenv.config();
 
@@ -20,7 +24,33 @@ app.use(cors());
 // @ts-ignore
 app.use(express.json({ limit: '50mb' }));
 
-const PORT = process.env.PORT || 3000;
+// Request Logging Middleware
+app.use((req, res, next) => {
+    loggerService.info(`Request: ${req.method} ${req.url}`, {
+        query: req.query,
+        body: req.method === 'POST' || req.method === 'PATCH' ? req.body : undefined
+    });
+    next();
+});
+
+const PORT = process.env.PORT || 3001;
+
+// Health Check Endpoint
+app.get('/api/health', async (req, res) => {
+    const redis = await domainService.healthCheck();
+    const vector = await vectorService.healthCheck();
+    
+    const status = redis && vector ? 'healthy' : 'degraded';
+    
+    res.json({
+        status,
+        services: {
+            redis: redis ? 'up' : 'down',
+            vector: vector ? 'up' : 'down'
+        },
+        timestamp: new Date().toISOString()
+    });
+});
 
 // Initialize Chat
 let activeSystemPrompt = ACTIVATION_PROMPT;
@@ -39,7 +69,6 @@ app.post('/api/chat', async (req, res) => {
     const toolExecutor = createToolExecutor(() => settingsService.getApiKey());
     
     // Use the streaming helper but collect the full response for the HTTP response
-    // Ideally, we would stream SSE, but for simplicity we await full execution here.
     const stream = sendMessageAndHandleTools(chat, message, toolExecutor);
     
     let fullResponseText = "";
@@ -57,7 +86,7 @@ app.post('/api/chat', async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Chat Error:", error);
+    loggerService.error("Chat Error", { error });
     res.status(500).json({ error: String(error) });
   }
 });
@@ -93,6 +122,7 @@ app.get('/api/domains', async (req, res) => {
         const domains = await domainService.getMetadata();
         res.json(domains);
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -103,6 +133,7 @@ app.get('/api/domains/:id/exists', async (req, res) => {
         const exists = await domainService.hasDomain(req.params.id);
         res.json({ exists });
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -113,6 +144,7 @@ app.get('/api/domains/:id/enabled', async (req, res) => {
         const enabled = await domainService.isEnabled(req.params.id);
         res.json({ enabled });
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -128,6 +160,7 @@ app.post('/api/domains/:id/toggle', async (req, res) => {
         await domainService.toggleDomain(req.params.id, enabled);
         res.json({ status: 'success', domainId: req.params.id, enabled });
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -139,6 +172,7 @@ app.patch('/api/domains/:id', async (req, res) => {
         await domainService.updateDomainMetadata(req.params.id, { name, description, invariants });
         res.json({ status: 'success' });
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -149,6 +183,7 @@ app.delete('/api/domains/:id', async (req, res) => {
         await domainService.deleteDomain(req.params.id);
         res.json({ status: 'success' });
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -159,6 +194,7 @@ app.post('/api/admin/clear-all', async (req, res) => {
         await domainService.clearAll();
         res.json({ status: 'success' });
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -176,6 +212,7 @@ app.get('/api/symbols/search', async (req, res) => {
         const results = await domainService.search(q as string, limit ? Number(limit) : 5);
         res.json(results);
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -191,6 +228,7 @@ app.post('/api/symbols/refactor', async (req, res) => {
         const result = await domainService.processRefactorOperation(updates);
         res.json(result);
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -206,6 +244,7 @@ app.post('/api/symbols/compress', async (req, res) => {
         const result = await domainService.compressSymbols(newSymbol, oldIds);
         res.json(result);
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -217,6 +256,7 @@ app.get('/api/symbols/:id', async (req, res) => {
         if (symbol) res.json(symbol);
         else res.status(404).json({ error: 'Symbol not found' });
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -227,6 +267,7 @@ app.get('/api/domains/:id/symbols', async (req, res) => {
         const symbols = await domainService.getSymbols(req.params.id);
         res.json(symbols);
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -243,6 +284,7 @@ app.get('/api/domains/:id/query', async (req, res) => {
         );
         res.json(result || { items: [], total: 0 });
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -258,6 +300,7 @@ app.post('/api/domains/:id/symbols', async (req, res) => {
         await domainService.upsertSymbol(req.params.id, symbol);
         res.json({ status: 'success', id: symbol.id });
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -273,6 +316,7 @@ app.post('/api/domains/:id/symbols/bulk', async (req, res) => {
         await domainService.bulkUpsert(req.params.id, symbols);
         res.json({ status: 'success', count: symbols.length });
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -284,6 +328,7 @@ app.delete('/api/domains/:domainId/symbols/:symbolId', async (req, res) => {
         await domainService.deleteSymbol(req.params.domainId, req.params.symbolId, cascade === 'true');
         res.json({ status: 'success' });
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -299,6 +344,7 @@ app.post('/api/domains/:domainId/symbols/rename', async (req, res) => {
         await domainService.propagateRename(req.params.domainId, oldId, newId);
         res.json({ status: 'success' });
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -311,6 +357,7 @@ app.get('/api/tests/sets', async (req, res) => {
         const sets = await testService.listTestSets();
         res.json(sets);
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -326,6 +373,7 @@ app.post('/api/tests/sets', async (req, res) => {
         await testService.createOrUpdateTestSet(testSet);
         res.json({ status: 'success' });
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -336,6 +384,7 @@ app.delete('/api/tests/sets/:id', async (req, res) => {
         await testService.deleteTestSet(req.params.id);
         res.json({ status: 'success' });
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -358,6 +407,7 @@ app.post('/api/tests/runs', async (req, res) => {
         const run = await testService.startTestRun(testSetId, runnerFn);
         res.json({ status: 'started', runId: run.id });
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -368,6 +418,7 @@ app.get('/api/tests/runs', async (req, res) => {
         const runs = await testService.listTestRuns();
         res.json(runs);
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -379,6 +430,7 @@ app.get('/api/tests/runs/:id', async (req, res) => {
         if (run) res.json(run);
         else res.status(404).json({ error: 'Run not found' });
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -406,6 +458,7 @@ app.post('/api/project/export', async (req, res) => {
         res.setHeader('Content-Disposition', 'attachment; filename="project.szproject"');
         res.send(buffer);
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -430,6 +483,7 @@ app.post('/api/project/import', async (req, res) => {
 
         res.json({ status: 'success', stats: result.stats });
     } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -439,6 +493,20 @@ app.get('/api/traces', (req, res) => {
     res.json(traceService.getTraces());
 });
 
-app.listen(PORT, () => {
-  console.log(`SignalZero Kernel Server running on port ${PORT}`);
-});
+export { app };
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+    app.listen(PORT, async () => {
+        loggerService.info(`SignalZero Kernel Server running on port ${PORT}`);
+        
+        // Startup Health Check
+        loggerService.info("Performing startup health checks...");
+        const redisHealth = await domainService.healthCheck();
+        if (redisHealth) loggerService.info("Redis Connection: OK");
+        else loggerService.error("Redis Connection: FAILED");
+
+        const vectorHealth = await vectorService.healthCheck();
+        if (vectorHealth) loggerService.info("Vector DB Connection: OK");
+        else loggerService.error("Vector DB Connection: FAILED");
+    });
+}

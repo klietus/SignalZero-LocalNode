@@ -1,4 +1,4 @@
-import { UserProfile } from '../types';
+import { UserProfile } from '../types.ts';
 import dotenv from 'dotenv';
 dotenv.config();
 

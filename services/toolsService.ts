@@ -1,9 +1,9 @@
 
 import { FunctionDeclaration, Type } from "@google/genai";
-import { domainService } from "./domainService";
-import { testService } from "./testService";
-import { traceService } from "./traceService";
-import { TraceData } from "../types";
+import { domainService } from "./domainService.ts";
+import { testService } from "./testService.ts";
+import { traceService } from "./traceService.ts";
+import { TraceData } from "../types.ts";
 
 // Shared Symbol Data Schema Properties for reuse in tools
 const SYMBOL_DATA_SCHEMA = {
@@ -47,14 +47,14 @@ const SYMBOL_DATA_SCHEMA = {
                 temporal: { type: Type.STRING },
                 invariants: { type: Type.ARRAY, items: { type: Type.STRING } }
             },
-            required: ['function', 'topology', 'commit']
+            required: ['function', 'topology', 'commit', 'gate', 'substrate', 'temporal', 'invariants']
         },
         symbol_domain: { type: Type.STRING },
         symbol_tag: { type: Type.STRING },
         failure_mode: { type: Type.STRING },
         linked_patterns: { type: Type.ARRAY, items: { type: Type.STRING } }
     },
-    required: ['id', 'triad']
+    required: ['id', 'kind', 'triad', 'macro', 'role', 'name', 'facets', 'symbol_domain', 'failure_mode', 'linked_patterns']
 };
 
 const TRACE_DATA_SCHEMA = {

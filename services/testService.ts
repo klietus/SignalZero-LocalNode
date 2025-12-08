@@ -1,6 +1,7 @@
 
-import { settingsService } from './settingsService';
-import { TestSet, TestRun, TestResult } from '../types';
+import { settingsService } from './settingsService.js';
+import { TestSet, TestRun, TestResult } from '../types.js';
+import { redisService } from './redisService.js';
 
 const KEYS = {
   TEST_SETS: 'sz:test_sets',
@@ -17,36 +18,12 @@ const DEFAULT_TESTS = [
   "Load the trust-topology domain."
 ];
 
-// --- Redis Helper (Duplicated for isolation) ---
-const redisRequest = async (command: any[]): Promise<any> => {
-  const { redisUrl, redisToken } = settingsService.getRedisSettings();
-  if (!redisUrl) return null;
-
-  try {
-    const res = await fetch(redisUrl, {
-      method: 'POST',
-      headers: { 
-        Authorization: `Bearer ${redisToken}`,
-        'Content-Type': 'application/json' 
-      },
-      body: JSON.stringify(command)
-    });
-
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    return data.result;
-  } catch (e) {
-    console.error(`Redis command failed: ${command[0]}`, e);
-    return null;
-  }
-};
-
 export const testService = {
   
   // --- Test Set Management ---
 
   listTestSets: async (): Promise<TestSet[]> => {
-    const ids = await redisRequest(['SMEMBERS', KEYS.TEST_SETS]);
+    const ids = await redisService.request(['SMEMBERS', KEYS.TEST_SETS]);
     if (!ids || ids.length === 0) {
         // Seed default if empty
         const defaultSet: TestSet = {
@@ -65,7 +42,7 @@ export const testService = {
     // Note: In a real Redis client we'd use MGET or pipeline. 
     // REST API doesn't always support pipeline easily without specific endpoint. 
     // We'll do parallel fetch for this scale.
-    const promises = ids.map((id: string) => redisRequest(['GET', `${KEYS.TEST_SET_PREFIX}${id}`]));
+    const promises = ids.map((id: string) => redisService.request(['GET', `${KEYS.TEST_SET_PREFIX}${id}`]));
     const results = await Promise.all(promises);
     
     return results
@@ -75,7 +52,7 @@ export const testService = {
   },
 
   getTestSet: async (id: string): Promise<TestSet | null> => {
-    const data = await redisRequest(['GET', `${KEYS.TEST_SET_PREFIX}${id}`]);
+    const data = await redisService.request(['GET', `${KEYS.TEST_SET_PREFIX}${id}`]);
     return data ? JSON.parse(data) : null;
   },
 
@@ -83,22 +60,22 @@ export const testService = {
     if (!set.id) set.id = `TS-${Date.now()}`;
     set.updatedAt = new Date().toISOString();
     
-    await redisRequest(['SADD', KEYS.TEST_SETS, set.id]);
-    await redisRequest(['SET', `${KEYS.TEST_SET_PREFIX}${set.id}`, JSON.stringify(set)]);
+    await redisService.request(['SADD', KEYS.TEST_SETS, set.id]);
+    await redisService.request(['SET', `${KEYS.TEST_SET_PREFIX}${set.id}`, JSON.stringify(set)]);
   },
 
   deleteTestSet: async (id: string): Promise<void> => {
-    await redisRequest(['SREM', KEYS.TEST_SETS, id]);
-    await redisRequest(['DEL', `${KEYS.TEST_SET_PREFIX}${id}`]);
+    await redisService.request(['SREM', KEYS.TEST_SETS, id]);
+    await redisService.request(['DEL', `${KEYS.TEST_SET_PREFIX}${id}`]);
   },
 
   // --- Test Run Management ---
 
   listTestRuns: async (): Promise<TestRun[]> => {
-    const ids = await redisRequest(['SMEMBERS', KEYS.TEST_RUNS]);
+    const ids = await redisService.request(['SMEMBERS', KEYS.TEST_RUNS]);
     if (!ids || !Array.isArray(ids)) return [];
 
-    const promises = ids.map((id: string) => redisRequest(['GET', `${KEYS.TEST_RUN_PREFIX}${id}`]));
+    const promises = ids.map((id: string) => redisService.request(['GET', `${KEYS.TEST_RUN_PREFIX}${id}`]));
     const results = await Promise.all(promises);
 
     return results
@@ -108,7 +85,7 @@ export const testService = {
   },
 
   getTestRun: async (id: string): Promise<TestRun | null> => {
-      const data = await redisRequest(['GET', `${KEYS.TEST_RUN_PREFIX}${id}`]);
+      const data = await redisService.request(['GET', `${KEYS.TEST_RUN_PREFIX}${id}`]);
       return data ? JSON.parse(data) : null;
   },
 
@@ -147,8 +124,8 @@ export const testService = {
       };
 
       // Save Initial State
-      await redisRequest(['SADD', KEYS.TEST_RUNS, runId]);
-      await redisRequest(['SET', `${KEYS.TEST_RUN_PREFIX}${runId}`, JSON.stringify(newRun)]);
+      await redisService.request(['SADD', KEYS.TEST_RUNS, runId]);
+      await redisService.request(['SET', `${KEYS.TEST_RUN_PREFIX}${runId}`, JSON.stringify(newRun)]);
 
       // Start Async Execution (Fire and forget from API perspective)
       // We process serially to avoid rate limits
@@ -201,7 +178,7 @@ export const testService = {
   },
 
   updateRunState: async (run: TestRun) => {
-      await redisRequest(['SET', `${KEYS.TEST_RUN_PREFIX}${run.id}`, JSON.stringify(run)]);
+      await redisService.request(['SET', `${KEYS.TEST_RUN_PREFIX}${run.id}`, JSON.stringify(run)]);
   },
 
   // --- Legacy Support (Backwards Compatibility) ---

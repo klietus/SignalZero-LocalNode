@@ -1,13 +1,17 @@
 
 import { GoogleGenAI, Chat, GenerateContentResponse, FunctionCallingConfigMode } from "@google/genai";
-import { toolDeclarations } from "./toolsService";
-import { ACTIVATION_PROMPT } from '../symbolic_system/activation_prompt';
-import { EvaluationMetrics, TraceData, TestMeta, SymbolDef } from '../types';
-import { domainService } from './domainService';
+import { toolDeclarations } from "./toolsService.ts";
+import { ACTIVATION_PROMPT } from '../symbolic_system/activation_prompt.ts';
+import { EvaluationMetrics, TraceData, TestMeta, SymbolDef } from '../types.ts';
+import { domainService } from './domainService.ts';
 
 // Initialize the client strictly with process.env.API_KEY
 // Export for use in vectorService
-export const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const apiKey = process.env.API_KEY || "missing-api-key";
+if (!process.env.API_KEY) {
+    console.warn("WARNING: API_KEY not found in environment. AI features will fail until configured.");
+}
+export const ai = new GoogleGenAI({ apiKey });
 
 // Create a persistent chat session
 let chatSession: Chat | null = null;
@@ -70,6 +74,8 @@ export const generateSymbolSynthesis = async (
     CRITICAL OUTPUT RULE:
     You must output a single valid JSON object representing a SignalZero Symbol, wrapped strictly in <sz_symbol></sz_symbol> tags.
     Determine the most appropriate 'kind' (pattern, lattice, or persona) based on the description.
+    ENSURE ALL FIELDS ARE PRESENT: id, kind, name, role, triad, macro, symbol_domain, symbol_tag, failure_mode, linked_patterns, and facets (including function, topology, commit, gate, substrate, temporal, invariants).
+    INFER MISSING FIELDS: If any required fields (e.g., specific facets, failure_mode, linked_patterns) are missing from the input or context, you must INFER them based on the symbol's 'symbolic signature' (its triad, macro, and role). Do not leave fields empty or null.
     
     SCHEMAS:
 
@@ -213,8 +219,8 @@ export const generatePersonaConversion = async (currentSymbol: SymbolDef): Promi
         3. Map 'macro' logic to 'persona.function' and 'persona.activation_conditions'.
         4. Infer 'persona.recursion_level' (root/recursive/fractal) based on the role.
         5. Infer 'persona.fallback_behavior' based on 'failure_mode'.
-        6. INFER MISSING FIELDS: You must infer any missing fields required for a valid Persona definition (like 'activation_conditions', 'fallback_behavior', 'linked_personas') based on the input symbol's logic, role, and context.
-        7. Retain 'facets', 'symbol_domain', 'triad' (unless a persona triad is more appropriate).
+        6. INFER MISSING FIELDS: You must infer any missing fields required for a valid Persona definition (like 'activation_conditions', 'fallback_behavior', 'linked_personas') based on the input symbol's logic, role, and context. If general fields are missing (failure_mode, facets components), infer them from the symbol's signature (triad/macro/role).
+        7. RETAIN ALL REQUIRED FIELDS: Ensure the output JSON includes 'id', 'kind', 'name', 'role', 'triad', 'macro', 'symbol_domain', 'symbol_tag', 'failure_mode', 'linked_patterns', and 'facets' (with function, topology, commit, gate, substrate, temporal, invariants).
         
         OUTPUT:
         Return a SINGLE valid JSON object wrapped in <sz_symbol></sz_symbol> tags.
@@ -249,8 +255,8 @@ export const generateLatticeConversion = async (currentSymbol: SymbolDef): Promi
            - closure: loop, branch, collapse, constellation, or synthesis.
            - members: Suggest a list of member IDs (can include the original ID or placeholders).
         4. Infer 'lattice.topology' and 'lattice.closure' based on the 'macro' or 'role' of the input symbol.
-        5. INFER MISSING FIELDS: You must infer any missing fields required for a valid Lattice definition (especially 'members') based on the input symbol's context and macro. If members are not explicit, suggest logical placeholders.
-        6. Retain 'facets' but ensure 'facets.topology' is updated to 'lattice'.
+        5. INFER MISSING FIELDS: You must infer any missing fields required for a valid Lattice definition (especially 'members') based on the input symbol's context and macro. If members are not explicit, suggest logical placeholders. If general fields are missing, infer them from the symbol's signature (triad/macro/role).
+        6. RETAIN ALL REQUIRED FIELDS: Ensure the output JSON includes 'id', 'kind', 'name', 'role', 'triad', 'macro', 'symbol_domain', 'symbol_tag', 'failure_mode', 'linked_patterns', and 'facets' (with function, topology, commit, gate, substrate, temporal, invariants). Update 'facets.topology' to 'lattice'.
         
         OUTPUT:
         Return a SINGLE valid JSON object wrapped in <sz_symbol></sz_symbol> tags.
@@ -304,6 +310,11 @@ export const generateGapSynthesis = async (
         3. Synthesize NEW symbols (Patterns, Lattices, or Personas) that encapsulate these specific gaps or missing cognitive structures.
         4. The symbols MUST belong to one of the ACTIVE DOMAINS provided above if relevant. If not, use 'gap-analysis'.
         5. Use existing symbols in 'linked_patterns' if applicable.
+        6. CRITICAL SCHEMA: The output symbols MUST have all these fields:
+           - id, kind, name, role, triad, macro
+           - symbol_domain, symbol_tag, failure_mode, linked_patterns
+           - facets: { function, topology, commit, gate, substrate, temporal, invariants }
+        7. INFER MISSING FIELDS: If any required fields are not explicit in the gap analysis, INFER them based on the symbol's inferred 'symbolic signature' (triad/macro/role).
         
         OUTPUT:
         Return valid JSON object(s) wrapped in <sz_symbol></sz_symbol> tags. You may return multiple symbols if the gap requires a structure.
@@ -372,6 +383,7 @@ export const runSignalZeroTest = async (
 
             const functionResponses = [];
             for (const call of calls) {
+                if (!call) continue;
                 try {
                     if (call.name) {
                         const result = await toolExecutor(call.name, call.args);

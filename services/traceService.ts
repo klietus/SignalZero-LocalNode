@@ -1,5 +1,5 @@
 
-import { TraceData } from '../types';
+import { TraceData } from '../types.ts';
 
 type TraceListener = (traces: TraceData[]) => void;
 
@@ -7,11 +7,11 @@ class TraceService {
   private traces: TraceData[] = [];
   private listeners: TraceListener[] = [];
 
-  addTrace(trace: TraceData) {
+  addTrace(trace: Partial<TraceData>) {
     if (!trace.id) {
         trace.id = `TR-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     }
-    this.traces.push(trace);
+    this.traces.push(trace as TraceData);
     this.notifyListeners();
   }
 

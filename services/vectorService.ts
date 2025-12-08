@@ -1,66 +1,25 @@
-import { SymbolDef, VectorSearchResult } from '../types';
-// @ts-ignore
-import { pipeline } from '@xenova/transformers';
-import { settingsService } from './settingsService';
-
-// In-memory store for "Local" mode in Node.js
-// In production, this should be Redis/File/DB
-interface LocalVectorDoc {
-    id: string;
-    embedding: number[];
-    metadata: any;
-    document: string;
-}
-
-const memoryStore: Record<string, LocalVectorDoc> = {};
-
-// Helper: Cosine Similarity
-const cosineSimilarity = (vecA: number[], vecB: number[]): number => {
-    let dotProduct = 0;
-    let magnitudeA = 0;
-    let magnitudeB = 0;
-    if (vecA.length !== vecB.length) return 0;
-    for (let i = 0; i < vecA.length; i++) {
-        dotProduct += vecA[i] * vecB[i];
-        magnitudeA += vecA[i] * vecA[i];
-        magnitudeB += vecB[i] * vecB[i];
-    }
-    magnitudeA = Math.sqrt(magnitudeA);
-    magnitudeB = Math.sqrt(magnitudeB);
-    if (magnitudeA === 0 || magnitudeB === 0) return 0;
-    return dotProduct / (magnitudeA * magnitudeB);
-};
-
-// --- Local Embedding Pipeline ---
-let embeddingPipeline: any = null;
-
-const generateLocalEmbedding = async (text: string): Promise<number[]> => {
-    try {
-        if (!embeddingPipeline) {
-            console.log("[VectorService] Initializing local embedding model (Xenova/all-MiniLM-L6-v2)...");
-            // Use quantized version by default
-            embeddingPipeline = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
-        }
-        
-        // Run inference
-        const output = await embeddingPipeline(text, { pooling: 'mean', normalize: true });
-        
-        // Convert Tensor to Array
-        return Array.from(output.data);
-    } catch (e) {
-        console.error("[VectorService] Local embedding generation failed", e);
-        return [];
-    }
-};
+import { SymbolDef, VectorSearchResult } from '../types.ts';
+import { settingsService } from './settingsService.ts';
 
 export const vectorService = {
     
+    async healthCheck(): Promise<boolean> {
+        const config = settingsService.getVectorSettings();
+        const baseUrl = config.chromaUrl;
+        try {
+            const res = await fetch(`${baseUrl}/api/v2/heartbeat`);
+            return res.ok;
+        } catch (e) {
+            return false;
+        }
+    },
+
     // --- Core Operations ---
 
     async getOrCreateCollection(): Promise<string | null> {
         const config = settingsService.getVectorSettings();
-        if (!config.useExternal) return "local";
-
+        
+        // Always enforce external URL usage now
         const baseUrl = config.chromaUrl;
         const collectionName = config.collectionName;
         
@@ -78,7 +37,7 @@ export const vectorService = {
                 console.warn(`[VectorService] Target URL: ${baseUrl}/api/v2/collections`);
                 return null;
             }
-            const data = await res.json();
+            const data = await res.json() as any;
             console.log(`[VectorService] Connected to collection '${collectionName}' (${data.id})`);
             return data.id; // Returns collection UUID
         } catch (e) {
@@ -102,45 +61,16 @@ export const vectorService = {
             Persona: ${symbol.kind === 'persona' ? JSON.stringify(symbol.persona) : 'N/A'}
         `.trim().replace(/\s+/g, ' ');
 
-        // Generate Embedding LOCALLY
-        const embedding = await generateLocalEmbedding(content);
-        if (embedding.length === 0) return false;
-
         const config = settingsService.getVectorSettings();
-
-        // --- STRATEGY: LOCAL ---
-        if (!config.useExternal) {
-            try {
-                memoryStore[symbol.id] = {
-                    id: symbol.id,
-                    embedding: embedding,
-                    metadata: {
-                        id: symbol.id,
-                        name: symbol.name,
-                        triad: symbol.triad,
-                        domain: symbol.symbol_domain,
-                        kind: symbol.kind || 'pattern'
-                    },
-                    document: content
-                };
-                console.log(`[VectorService:Local] Indexed ${symbol.id}`);
-                return true;
-            } catch (e) {
-                console.error("[VectorService:Local] Index error", e);
-                return false;
-            }
-        }
-
-        // --- STRATEGY: EXTERNAL (ChromaDB) ---
         const baseUrl = config.chromaUrl;
         const collectionId = await this.getOrCreateCollection();
         if (!collectionId) return false;
 
         try {
             // UPDATED: API v2
+            // We do NOT send embeddings; ChromaDB (server) will generate them via its default EF
             const payload = {
                 ids: [symbol.id],
-                embeddings: [embedding],
                 metadatas: [{
                     id: symbol.id,
                     name: symbol.name,
@@ -192,17 +122,6 @@ export const vectorService = {
 
     async deleteSymbol(symbolId: string): Promise<boolean> {
         const config = settingsService.getVectorSettings();
-
-        // --- STRATEGY: LOCAL ---
-        if (!config.useExternal) {
-            if (memoryStore[symbolId]) {
-                delete memoryStore[symbolId];
-                return true;
-            }
-            return false;
-        }
-
-        // --- STRATEGY: EXTERNAL ---
         const baseUrl = config.chromaUrl;
         const collectionId = await this.getOrCreateCollection();
         if (!collectionId) return false;
@@ -222,31 +141,7 @@ export const vectorService = {
     },
 
     async search(query: string, nResults: number = 5): Promise<VectorSearchResult[]> {
-        const queryEmbedding = await generateLocalEmbedding(query);
-        if (queryEmbedding.length === 0) return [];
-
         const config = settingsService.getVectorSettings();
-
-        // --- STRATEGY: LOCAL ---
-        if (!config.useExternal) {
-            const docs = Object.values(memoryStore);
-            if (docs.length === 0) return [];
-
-            // Brute force cosine similarity
-            const scored = docs.map(doc => ({
-                id: doc.id,
-                score: cosineSimilarity(queryEmbedding, doc.embedding),
-                metadata: doc.metadata,
-                document: doc.document
-            }));
-
-            // Sort descending by score
-            scored.sort((a, b) => b.score - a.score);
-
-            return scored.slice(0, nResults);
-        }
-
-        // --- STRATEGY: EXTERNAL ---
         const baseUrl = config.chromaUrl;
         const collectionId = await this.getOrCreateCollection();
         if (!collectionId) return [];
@@ -254,11 +149,12 @@ export const vectorService = {
         try {
             console.log(`[VectorService] Querying Chroma: ${baseUrl} (Collection: ${collectionId})`);
             // UPDATED: API v2
+            // Send query_texts (let ChromaDB generate embedding)
             const res = await fetch(`${baseUrl}/api/v2/collections/${collectionId}/query`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    query_embeddings: [queryEmbedding],
+                    query_texts: [query],
                     n_results: nResults,
                     include: ["metadatas", "documents", "distances"]
                 })
@@ -270,7 +166,7 @@ export const vectorService = {
                 return [];
             }
 
-            const data = await res.json();
+            const data = await res.json() as any;
             
             const ids = data.ids[0] || [];
             const metadatas = data.metadatas[0] || [];
@@ -294,14 +190,6 @@ export const vectorService = {
 
     async resetCollection(): Promise<boolean> {
         const config = settingsService.getVectorSettings();
-
-        // --- STRATEGY: LOCAL ---
-        if (!config.useExternal) {
-            for (const key in memoryStore) delete memoryStore[key];
-            return true;
-        }
-
-        // --- STRATEGY: EXTERNAL ---
         const baseUrl = config.chromaUrl;
         const collectionName = config.collectionName;
         try {
