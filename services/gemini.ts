@@ -328,7 +328,7 @@ export const runSignalZeroTest = async (
     prompt: string, 
     toolExecutor: (name: string, args: any) => Promise<any>,
     primingPrompts: string[] = []
-): Promise<{ text: string, traces: TraceData[], meta: TestMeta }> => {
+): Promise<{ text: string, meta: TestMeta }> => {
   const startTime = Date.now();
   
   // Snapshot context - Async fetch
@@ -410,24 +410,10 @@ export const runSignalZeroTest = async (
 
     const endTime = Date.now();
 
-    // 3. Extract Traces
-    const traces: TraceData[] = [];
-    const regex = /<sz_trace>([\s\S]*?)<\/sz_trace>/g;
-    let match;
-    while ((match = regex.exec(finalResponse)) !== null) {
-        try {
-             const inner = match[1].replace(/```json\n?|```/g, '').trim();
-             const data = JSON.parse(inner);
-             // Ensure it has an ID to be valid
-             if (data.id) traces.push(data);
-        } catch(e) {
-            console.warn("Failed to parse trace in test run", e);
-        }
-    }
+    // Note: Traces are now captured via tool executor side-effects in traceService, handled by caller.
 
     return {
         text: finalResponse,
-        traces: traces,
         meta: {
             startTime: new Date(startTime).toISOString(),
             endTime: new Date(endTime).toISOString(),
@@ -442,7 +428,6 @@ export const runSignalZeroTest = async (
     const endTime = Date.now();
     return {
         text: `ERROR: ${String(error)}`,
-        traces: [],
         meta: {
             startTime: new Date(startTime).toISOString(),
             endTime: new Date(endTime).toISOString(),

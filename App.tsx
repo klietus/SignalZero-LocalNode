@@ -24,6 +24,7 @@ import { domainService } from './services/domainService';
 import { projectService } from './services/projectService';
 import { testService } from './services/testService';
 import { settingsService } from './services/settingsService';
+import { traceService } from './services/traceService';
 
 // Import Symbolic System Files
 import { ACTIVATION_PROMPT } from './symbolic_system/activation_prompt';
@@ -248,31 +249,12 @@ function App() {
     }
   }, [theme]);
 
-  // Monitor messages to extract traces
+  // Subscribe to Trace Service updates
   useEffect(() => {
-    const lastMsg = messages[messages.length - 1];
-    if (lastMsg && lastMsg.role === Sender.MODEL) {
-        // Simple regex to find all traces in content
-        const regex = /<sz_trace>([\s\S]*?)<\/sz_trace>/g;
-        let match;
-        
-        while ((match = regex.exec(lastMsg.content)) !== null) {
-            try {
-                const inner = match[1].replace(/```json\n?|```/g, '').trim();
-                const data: TraceData = JSON.parse(inner);
-                
-                // Add to log if not exists
-                setTraceLog(prev => {
-                    const exists = prev.find(t => t.id === data.id);
-                    if (exists) return prev;
-                    return [...prev, data];
-                });
-            } catch (e) {
-                console.warn("[TraceLog] Failed to parse trace JSON:", e);
-            }
-        }
-    }
-  }, [messages]);
+    return traceService.subscribe((traces) => {
+        setTraceLog(traces);
+    });
+  }, []);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -286,7 +268,7 @@ function App() {
 
   const handleClearChat = () => {
     setMessages([]);
-    setTraceLog([]);
+    traceService.clear();
     resetChatSession();
   };
 
@@ -461,12 +443,19 @@ function App() {
                   return copy;
               });
 
+              // Snapshot traces count before run
+              const traceSnapshotIndex = traceService.getTraces().length;
+
               // 1. Run SignalZero (Symbolic)
               const szResult = await runSignalZeroTest(
                   prompt, 
                   toolExecutor,
                   ["Load domains", "Load symbols for domains"] // Priming
               );
+
+              // Capture new traces generated during test execution
+              const allTraces = traceService.getTraces();
+              const newTraces = allTraces.slice(traceSnapshotIndex);
 
               // 2. Run Baseline (Standard)
               const baseResult = await runBaselineTest(prompt);
@@ -483,7 +472,7 @@ function App() {
                       signalZeroResponse: szResult.text,
                       baselineResponse: baseResult,
                       evaluation: evalMetrics,
-                      traces: szResult.traces,
+                      traces: newTraces, // Use captured traces from service
                       meta: szResult.meta
                   };
                   return copy;

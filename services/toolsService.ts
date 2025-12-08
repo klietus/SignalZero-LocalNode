@@ -2,6 +2,8 @@
 import { FunctionDeclaration, Type } from "@google/genai";
 import { domainService } from "./domainService";
 import { testService } from "./testService";
+import { traceService } from "./traceService";
+import { TraceData } from "../types";
 
 // Shared Symbol Data Schema Properties for reuse in tools
 const SYMBOL_DATA_SCHEMA = {
@@ -53,6 +55,39 @@ const SYMBOL_DATA_SCHEMA = {
         linked_patterns: { type: Type.ARRAY, items: { type: Type.STRING } }
     },
     required: ['id', 'triad']
+};
+
+const TRACE_DATA_SCHEMA = {
+    type: Type.OBJECT,
+    description: 'The full JSON object representing a symbolic reasoning trace.',
+    properties: {
+        id: { type: Type.STRING },
+        entry_node: { type: Type.STRING },
+        activated_by: { type: Type.STRING },
+        activation_path: {
+            type: Type.ARRAY,
+            items: {
+                type: Type.OBJECT,
+                properties: {
+                    symbol_id: { type: Type.STRING },
+                    reason: { type: Type.STRING },
+                    link_type: { type: Type.STRING }
+                },
+                required: ['symbol_id', 'reason', 'link_type']
+            }
+        },
+        source_context: {
+            type: Type.OBJECT,
+            properties: {
+                symbol_domain: { type: Type.STRING },
+                trigger_vector: { type: Type.STRING }
+            },
+            required: ['symbol_domain', 'trigger_vector']
+        },
+        output_node: { type: Type.STRING },
+        status: { type: Type.STRING }
+    },
+    required: ['entry_node', 'activated_by', 'activation_path', 'source_context', 'output_node', 'status']
 };
 
 // 1. Define the Schema for the tools
@@ -223,6 +258,17 @@ export const toolDeclarations: FunctionDeclaration[] = [
       },
       required: ['query'],
     },
+  },
+  {
+    name: 'log_trace',
+    description: 'Log a symbolic reasoning trace. This must be called for every symbolic operation or deduction chain to maintain the recursive log.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        trace: TRACE_DATA_SCHEMA
+      },
+      required: ['trace']
+    }
   }
 ];
 
@@ -461,6 +507,14 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
               results: results,
               query: query
           };
+      }
+
+      case 'log_trace': {
+          const { trace } = args;
+          if (!trace) return { error: "Missing trace argument" };
+          
+          traceService.addTrace(trace as TraceData);
+          return { status: "Trace logged successfully." };
       }
 
       default:

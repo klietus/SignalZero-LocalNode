@@ -1,11 +1,11 @@
 
-import React, { useState, useMemo } from 'react';
-import { User, Terminal, Network, ChevronDown, ChevronRight, Activity, Globe } from 'lucide-react';
+import React from 'react';
+import { User, Terminal, Globe } from 'lucide-react';
 // @ts-ignore
 import ReactMarkdown from 'react-markdown';
 // @ts-ignore
 import remarkGfm from 'remark-gfm';
-import { Message, Sender, TraceData } from '../types';
+import { Message, Sender } from '../types';
 import { ToolIndicator } from './ToolIndicator';
 
 interface ChatMessageProps {
@@ -76,75 +76,8 @@ const DomainTag: React.FC<DomainTagProps> = ({ id, name, onClick }) => {
   );
 };
 
-const TraceAggregator: React.FC<{ traces: TraceData[], onTraceClick?: (id: string) => void }> = ({ traces, onTraceClick }) => {
-  const [isExpanded, setIsExpanded] = useState(false);
-
-  if (traces.length === 0) return null;
-
-  return (
-    <div className="mb-4 rounded-lg border border-amber-200 dark:border-amber-900/50 bg-amber-50 dark:bg-amber-900/10 overflow-hidden">
-      <button 
-        onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center justify-between px-4 py-2 text-xs font-mono font-bold text-amber-700 dark:text-amber-500 hover:bg-amber-100 dark:hover:bg-amber-900/20 transition-colors"
-      >
-        <div className="flex items-center gap-2">
-          <Network size={14} />
-          <span>{traces.length} Reasoning Trace{traces.length !== 1 ? 's' : ''} Captured</span>
-        </div>
-        {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-      </button>
-
-      {isExpanded && (
-        <div className="border-t border-amber-200 dark:border-amber-900/50 divide-y divide-amber-200/50 dark:divide-amber-900/30">
-          {traces.map((trace, idx) => (
-            <button
-              key={idx}
-              onClick={() => onTraceClick && onTraceClick(trace.id)}
-              className="w-full text-left px-4 py-3 hover:bg-amber-100/50 dark:hover:bg-amber-900/30 transition-colors group"
-            >
-              <div className="flex items-center justify-between mb-1">
-                <span className="font-mono text-[10px] text-amber-600/70 dark:text-amber-500/70">{trace.id}</span>
-                <span className="flex items-center gap-1 text-[10px] uppercase text-amber-600 dark:text-amber-400 font-bold bg-amber-100 dark:bg-amber-900/40 px-1.5 py-0.5 rounded">
-                  <Activity size={10} /> {trace.status}
-                </span>
-              </div>
-              <div className="text-xs text-gray-700 dark:text-gray-300 font-mono line-clamp-1">
-                <span className="text-gray-400">Entry:</span> {trace.entry_node}
-              </div>
-              <div className="text-[10px] text-gray-500 dark:text-gray-400 mt-1 truncate">
-                 via {trace.activated_by}
-              </div>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-};
-
-export const ChatMessage: React.FC<ChatMessageProps> = ({ message, onSymbolClick, onDomainClick, onTraceClick }) => {
+export const ChatMessage: React.FC<ChatMessageProps> = ({ message, onSymbolClick, onDomainClick }) => {
   const isUser = message.role === Sender.USER;
-
-  // Extract traces and clean content
-  const { traces, contentWithoutTraces } = useMemo(() => {
-    const extractedTraces: TraceData[] = [];
-    const cleanContent = message.content.replace(/<sz_trace>([\s\S]*?)<\/sz_trace>/g, (match, inner) => {
-      try {
-        const cleanJson = inner.replace(/```json\n?|```/g, '').trim();
-        const data: TraceData = JSON.parse(cleanJson);
-        extractedTraces.push(data);
-      } catch (e) {
-        console.warn("[ChatMessage] Partial or invalid trace detected during render parsing:", e);
-      }
-      return ''; // Remove trace block from text
-    }).trim();
-
-    if (extractedTraces.length > 0) {
-        console.log(`[ChatMessage] Extracted ${extractedTraces.length} traces from message ${message.id}`);
-    }
-
-    return { traces: extractedTraces, contentWithoutTraces: cleanContent };
-  }, [message.content, message.id]);
 
   // Formatter to handle code blocks, <sz_symbol> blocks, <sz_domain> blocks, and Markdown text
   const formatText = (text: string) => {
@@ -293,12 +226,9 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, onSymbolClick
                </div>
             )}
 
-            {/* Aggregated Traces Header */}
-            <TraceAggregator traces={traces} onTraceClick={onTraceClick} />
-
             {/* Message Content */}
             <div className={`w-full break-words`}>
-              {formatText(contentWithoutTraces)}
+              {formatText(message.content)}
             </div>
 
             {/* Streaming Cursor */}
