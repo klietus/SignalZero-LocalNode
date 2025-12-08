@@ -1,0 +1,181 @@
+import { UserProfile } from '../types.ts';
+import dotenv from 'dotenv';
+dotenv.config();
+
+export interface VectorSettings {
+  useExternal: boolean;
+  chromaUrl: string;
+  collectionName: string;
+}
+
+export interface RedisSettings {
+  redisUrl: string;
+  redisToken: string;
+  redisServer: string;
+  redisPort: number;
+  redisPassword: string;
+}
+
+export interface SystemSettings {
+  redis?: Partial<RedisSettings>;
+  chroma?: Partial<VectorSettings>;
+  geminiKey?: string;
+}
+
+export const settingsService = {
+  // --- Core Identity ---
+  getApiKey: (): string => {
+    return process.env.API_KEY || '';
+  },
+
+  getGeminiKey: (): string => {
+    return process.env.GEMINI_API_KEY || '';
+  },
+  
+  // No-op for server-side setters usually, or implement FS write if needed.
+  // For this implementation, we rely on env vars.
+  setApiKey: (key: string) => {
+    process.env.API_KEY = key;
+  },
+
+  setGeminiKey: (key: string) => {
+    process.env.GEMINI_API_KEY = key;
+  },
+
+  getUser: (): UserProfile | null => {
+    return {
+        name: process.env.USER_NAME || "Kernel Admin",
+        email: process.env.USER_EMAIL || "admin@signalzero.local",
+        picture: ""
+    };
+  },
+
+  setUser: (user: UserProfile | null) => {
+    // No-op in backend env
+  },
+
+  // --- UI/System ---
+  getTheme: (): 'light' | 'dark' => 'dark',
+
+  setTheme: (theme: 'light' | 'dark') => {},
+
+  getSystemPrompt: (defaultPrompt: string): string => {
+    // Could load from file, but default is fine for now
+    return defaultPrompt;
+  },
+
+  setSystemPrompt: (prompt: string) => {
+    // In a real backend, save to DB/File
+  },
+
+  clearSystemPrompt: () => {},
+
+  // --- Redis Settings ---
+  getRedisSettings: (): RedisSettings => {
+    const parseRedisUrl = (url: string) => {
+      if (!url) {
+        return { host: '', port: 0, password: '' };
+      }
+
+      try {
+        const normalizedUrl = url.includes('://') ? url : `redis://${url}`;
+        const parsed = new URL(normalizedUrl);
+
+        return {
+          host: parsed.hostname,
+          port: parsed.port ? Number(parsed.port) : 6379,
+          password: parsed.password
+        };
+      } catch (e) {
+        return { host: '', port: 0, password: '' };
+      }
+    };
+
+    const redisUrl = process.env.REDIS_URL || '';
+    const derived = parseRedisUrl(redisUrl);
+
+    return {
+      redisUrl,
+      redisToken: process.env.REDIS_TOKEN || '',
+      redisServer: process.env.REDIS_SERVER || derived.host,
+      redisPort: process.env.REDIS_PORT ? Number(process.env.REDIS_PORT) : (derived.port || 6379),
+      redisPassword: process.env.REDIS_PASSWORD || process.env.REDIS_TOKEN || derived.password || '',
+    };
+  },
+
+  setRedisSettings: (settings: RedisSettings) => {
+    process.env.REDIS_URL = settings.redisUrl;
+    process.env.REDIS_TOKEN = settings.redisToken;
+    process.env.REDIS_SERVER = settings.redisServer;
+    process.env.REDIS_PORT = String(settings.redisPort);
+    process.env.REDIS_PASSWORD = settings.redisPassword;
+  },
+
+  // --- Vector Database ---
+  getVectorSettings: (): VectorSettings => {
+    return {
+      useExternal: process.env.USE_EXTERNAL_VECTOR_DB === 'true',
+      chromaUrl: process.env.CHROMA_URL || 'http://localhost:8000',
+      collectionName: process.env.CHROMA_COLLECTION || 'signalzero',
+    };
+  },
+
+  setVectorSettings: (settings: VectorSettings) => {
+    process.env.USE_EXTERNAL_VECTOR_DB = String(settings.useExternal);
+    process.env.CHROMA_URL = settings.chromaUrl;
+    process.env.CHROMA_COLLECTION = settings.collectionName;
+  },
+
+  // --- Aggregated Settings ---
+  getSystemSettings: () => {
+    const redisSettings = settingsService.getRedisSettings();
+    const vectorSettings = settingsService.getVectorSettings();
+
+    return {
+      redis: {
+        server: redisSettings.redisServer,
+        port: redisSettings.redisPort,
+        password: redisSettings.redisPassword,
+      },
+      chroma: {
+        url: vectorSettings.chromaUrl,
+        collection: vectorSettings.collectionName,
+        useExternal: vectorSettings.useExternal,
+      },
+      geminiKey: settingsService.getGeminiKey(),
+    };
+  },
+
+  setSystemSettings: (settings: SystemSettings) => {
+    if (settings.redis) {
+      const currentRedis = settingsService.getRedisSettings();
+      const redisInput = settings.redis as Record<string, unknown>;
+      settingsService.setRedisSettings({
+        redisUrl: (redisInput.redisUrl as string | undefined) ?? currentRedis.redisUrl,
+        redisToken: (redisInput.redisToken as string | undefined) ?? currentRedis.redisToken,
+        redisServer: (redisInput.redisServer as string | undefined) ?? (redisInput.server as string | undefined) ?? currentRedis.redisServer,
+        redisPort: (redisInput.redisPort as number | undefined) ?? (redisInput.port as number | undefined) ?? currentRedis.redisPort,
+        redisPassword: (redisInput.redisPassword as string | undefined) ?? (redisInput.password as string | undefined) ?? currentRedis.redisPassword,
+      });
+    }
+
+    if (settings.chroma) {
+      const currentVector = settingsService.getVectorSettings();
+      const chromaInput = settings.chroma as Record<string, unknown>;
+      settingsService.setVectorSettings({
+        useExternal: (chromaInput.useExternal as boolean | undefined) ?? currentVector.useExternal,
+        chromaUrl: (chromaInput.chromaUrl as string | undefined) ?? (chromaInput.url as string | undefined) ?? currentVector.chromaUrl,
+        collectionName: (chromaInput.collectionName as string | undefined) ?? (chromaInput.collection as string | undefined) ?? currentVector.collectionName,
+      });
+    }
+
+    if (typeof settings.geminiKey === 'string') {
+      settingsService.setGeminiKey(settings.geminiKey);
+    }
+  },
+
+  // --- Utilities ---
+  clearAll: () => {
+    // No-op
+  }
+};

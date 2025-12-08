@@ -1,0 +1,1506 @@
+openapi: 3.0.0
+info:
+  title: SignalZero Kernel API
+  version: 2.0.0
+  description: API for the SignalZero Recursive Symbolic Kernel.
+servers:
+  - url: http://localhost:3000/api
+paths:
+  /health:
+    get:
+      summary: Check service health status
+      responses:
+        '200':
+          description: Current health and dependency status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+  /settings:
+    get:
+      summary: Get system settings
+      responses:
+        '200':
+          description: Current configuration for external services
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemSettings'
+    post:
+      summary: Update system settings
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemSettingsUpdate'
+      responses:
+        '200':
+          description: Updated configuration for external services
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemSettings'
+  /chat:
+    post:
+      summary: Send a message to the chat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                message:
+                  type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  role:
+                    type: string
+                  content:
+                    type: string
+                  toolCalls:
+                    type: array
+                    items:
+                      type: object
+  /chat/reset:
+    post:
+      summary: Reset the chat session
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+  /system/prompt:
+    get:
+      summary: Get the current system prompt
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  prompt:
+                    type: string
+    post:
+      summary: Set a new system prompt
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                prompt:
+                  type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+  /index/reindex:
+    post:
+      summary: Reindex all symbols
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                includeDisabled:
+                  type: boolean
+                  description: Include disabled domains in the reindex process
+      responses:
+        '200':
+          description: Reindex operation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReindexResult'
+  /index/status:
+    get:
+      summary: Get the current indexing status
+      responses:
+        '200':
+          description: Current status of the vector index
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexStatus'
+  /domains:
+    get:
+      summary: List all domains
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Domain'
+  /domains/{id}/exists:
+    get:
+      summary: Check if a domain exists
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exists:
+                    type: boolean
+  /domains/{id}/enabled:
+    get:
+      summary: Check if a domain is enabled
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+  /domains/{id}/toggle:
+    post:
+      summary: Toggle a domain's enabled status
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  domainId:
+                    type: string
+                  enabled:
+                    type: boolean
+  /domains/{id}:
+    patch:
+      summary: Update domain metadata
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                invariants:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+    delete:
+      summary: Delete a domain
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+  /admin/clear-all:
+    post:
+      summary: Clear all domains
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+  /symbols/search:
+    get:
+      summary: Search for symbols
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+          description: "Semantic search string. At least one of q, time_gte, or time_between is required. When q is omitted, only time-bucketed results are returned."
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: time_gte
+          in: query
+          schema:
+            type: string
+          description: "Earliest timestamp (milliseconds since epoch, base64 encoded) to include in UTC day buckets."
+        - name: time_between
+          in: query
+          schema:
+            type: string
+          description: "Comma-separated start and end timestamps (milliseconds since epoch, base64 encoded) to bound UTC day buckets."
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/VectorSearchResult'
+        '400':
+          description: Missing query and time filter
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+  /symbols/refactor:
+    post:
+      summary: Refactor symbols
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                updates:
+                  type: array
+                  items:
+                    type: object
+      responses:
+        '200':
+          description: Successful response
+  /symbols/compress:
+    post:
+      summary: Compress symbols
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                newSymbol:
+                  type: object
+                oldIds:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Successful response
+  /symbols/{id}:
+    get:
+      summary: Get a symbol by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SymbolDef'
+  /domains/{id}/symbols:
+    get:
+      summary: Get all symbols in a domain
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SymbolDef'
+    post:
+      summary: Upsert a symbol
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SymbolDef'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  id:
+                    type: string
+  /domains/{id}/symbols/bulk:
+    post:
+      summary: Bulk upsert symbols
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/SymbolDef'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  count:
+                    type: integer
+  /domains/{domainId}/symbols/{symbolId}:
+    delete:
+      summary: Delete a symbol
+      parameters:
+        - name: domainId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: symbolId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: cascade
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+  /domains/{domainId}/symbols/rename:
+    post:
+      summary: Rename a symbol
+      parameters:
+        - name: domainId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                oldId:
+                  type: string
+                newId:
+                  type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+  /tests/sets:
+    get:
+      summary: List test sets
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TestSet'
+    post:
+      summary: Create/Update a test set
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestSet'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+  /tests:
+    post:
+      summary: Add a test case to a test set
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                testSetId:
+                  type: string
+                name:
+                  type: string
+                prompt:
+                  type: string
+                expectedActivations:
+                  type: array
+                  items:
+                    type: string
+              required:
+                - testSetId
+                - name
+                - prompt
+                - expectedActivations
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+  /tests/{testSetId}/{testId}:
+    delete:
+      summary: Delete a test case from a test set
+      parameters:
+        - name: testSetId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: testId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+  /tests/sets/{id}:
+    delete:
+      summary: Delete a test set
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+  /tests/runs:
+    get:
+      summary: List test runs
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TestRun'
+    post:
+      summary: Start a test run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                testSetId:
+                  type: string
+                compareWithBaseModel:
+                  type: boolean
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  runId:
+                    type: string
+  /tests/runs/{id}:
+    get:
+      summary: Get test run details
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestRun'
+  /project/export:
+    post:
+      summary: Export the project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                meta:
+                  $ref: '#/components/schemas/ProjectMeta'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/zip: {}
+  /project/import:
+    post:
+      summary: Import a project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                data:
+                  type: string
+                  format: base64
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  stats:
+                    type: object
+  /project/active:
+    get:
+      summary: Get the active project metadata
+      responses:
+        '200':
+          description: Active project metadata cached in Redis
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meta:
+                    $ref: '#/components/schemas/ProjectMeta'
+                    nullable: true
+    post:
+      summary: Update the active project metadata
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                meta:
+                  $ref: '#/components/schemas/ProjectMeta'
+      responses:
+        '200':
+          description: Active project metadata saved to Redis
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  meta:
+                    $ref: '#/components/schemas/ProjectMeta'
+  /traces:
+    get:
+      summary: Get all traces
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TraceData'
+  /loops:
+    get:
+      summary: List all configured loops
+      responses:
+        '200':
+          description: Scheduled loop definitions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  loops:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LoopDefinition'
+  /loops/{id}:
+    get:
+      summary: Get a loop definition
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Loop definition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoopDefinition'
+        '404':
+          description: Loop not found
+    put:
+      summary: Create or update a loop
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                schedule:
+                  type: string
+                  description: Cron-style schedule for the loop
+                prompt:
+                  type: string
+                  description: Prompt appended to the active system prompt for loop execution
+                enabled:
+                  type: boolean
+              required: [schedule, prompt, enabled]
+      responses:
+        '200':
+          description: Upserted loop definition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoopDefinition'
+        '400':
+          description: Invalid schedule or request body
+    delete:
+      summary: Delete a loop
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deletion result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    description: deleted or not_found
+  /loops/logs:
+    get:
+      summary: List loop execution logs
+      parameters:
+        - name: loopId
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter logs to a specific loop
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Maximum number of logs to return (default 20)
+        - name: includeTraces
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Include symbolic traces captured for each execution
+      responses:
+        '200':
+          description: Loop execution logs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LoopExecutionWithTraces'
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          description: Overall health status of the service
+        services:
+          type: object
+          properties:
+            redis:
+              type: string
+              description: Redis connection status
+            vector:
+              type: string
+              description: Vector store connection status
+        timestamp:
+          type: string
+          format: date-time
+          description: Time the health check was performed
+    SystemSettings:
+      type: object
+      properties:
+        redis:
+          $ref: '#/components/schemas/RedisConnectionSettings'
+        chroma:
+          $ref: '#/components/schemas/ChromaSettings'
+        geminiKey:
+          type: string
+          description: API key used for Gemini access
+    SystemSettingsUpdate:
+      type: object
+      properties:
+        redis:
+          $ref: '#/components/schemas/RedisSettingsUpdate'
+        chroma:
+          $ref: '#/components/schemas/ChromaSettingsUpdate'
+        geminiKey:
+          type: string
+          description: API key used for Gemini access
+    RedisSettingsUpdate:
+      type: object
+      properties:
+        server:
+          type: string
+        port:
+          type: integer
+        password:
+          type: string
+        redisUrl:
+          type: string
+        redisToken:
+          type: string
+        redisServer:
+          type: string
+        redisPort:
+          type: integer
+        redisPassword:
+          type: string
+    ChromaSettingsUpdate:
+      type: object
+      properties:
+        url:
+          type: string
+        collection:
+          type: string
+        chromaUrl:
+          type: string
+        collectionName:
+          type: string
+        useExternal:
+          type: boolean
+    RedisConnectionSettings:
+      type: object
+      properties:
+        server:
+          type: string
+          description: Redis server host
+        port:
+          type: integer
+          description: Redis server port
+        password:
+          type: string
+          description: Password or token for Redis authentication
+    ChromaSettings:
+      type: object
+      properties:
+        url:
+          type: string
+          description: Base URL for the Chroma instance
+        collection:
+          type: string
+          description: Default Chroma collection name
+        useExternal:
+          type: boolean
+          description: Whether to use an external vector database
+    Sender:
+      type: string
+      enum:
+        - user
+        - model
+        - system
+    ToolCallDetails:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        args:
+          type: object
+        result:
+          type: string
+    Message:
+      type: object
+      properties:
+        id:
+          type: string
+        role:
+          $ref: '#/components/schemas/Sender'
+        content:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        isStreaming:
+          type: boolean
+        toolCalls:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolCallDetails'
+    TraceStep:
+      type: object
+      properties:
+        symbol_id:
+          type: string
+        reason:
+          type: string
+        link_type:
+          type: string
+    TraceContext:
+      type: object
+      properties:
+        symbol_domain:
+          type: string
+        trigger_vector:
+          type: string
+    TraceData:
+      type: object
+      properties:
+        id:
+          type: string
+        created_at:
+          type: string
+          description: Milliseconds since epoch encoded as base64.
+        updated_at:
+          type: string
+          description: Milliseconds since epoch encoded as base64.
+        entry_node:
+          type: string
+        activated_by:
+          type: string
+        activation_path:
+          type: array
+          items:
+            $ref: '#/components/schemas/TraceStep'
+        source_context:
+          $ref: '#/components/schemas/TraceContext'
+        output_node:
+          type: string
+        status:
+          type: string
+    LoopDefinition:
+      type: object
+      properties:
+        id:
+          type: string
+        schedule:
+          type: string
+        prompt:
+          type: string
+        enabled:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        lastRunAt:
+          type: string
+          format: date-time
+          nullable: true
+    LoopExecutionLog:
+      type: object
+      properties:
+        id:
+          type: string
+        loopId:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
+          enum: [running, completed, failed]
+        traceCount:
+          type: integer
+        logFilePath:
+          type: string
+          nullable: true
+        responsePreview:
+          type: string
+          nullable: true
+        error:
+          type: string
+          nullable: true
+    LoopExecutionWithTraces:
+      allOf:
+        - $ref: '#/components/schemas/LoopExecutionLog'
+        - type: object
+          properties:
+            traces:
+              type: array
+              items:
+                $ref: '#/components/schemas/TraceData'
+    SymbolFacet:
+      type: object
+      properties:
+        function:
+          type: string
+        topology:
+          type: string
+        commit:
+          type: string
+        temporal:
+          type: string
+        gate:
+          type: array
+          items:
+            type: string
+        substrate:
+          type: array
+          items:
+            type: string
+        invariants:
+          type: array
+          items:
+            type: string
+    SymbolKind:
+      type: string
+      enum:
+        - pattern
+        - lattice
+        - persona
+    LatticeTopology:
+      type: string
+      enum:
+        - inductive
+        - deductive
+        - bidirectional
+        - invariant
+        - energy
+    LatticeClosure:
+      type: string
+      enum:
+        - loop
+        - branch
+        - collapse
+        - constellation
+        - synthesis
+    SymbolLatticeDef:
+      type: object
+      properties:
+        topology:
+          $ref: '#/components/schemas/LatticeTopology'
+        closure:
+          $ref: '#/components/schemas/LatticeClosure'
+        members:
+          type: array
+          items:
+            type: string
+        activation_conditions:
+          type: array
+          items:
+            type: string
+    SymbolPersonaDef:
+      type: object
+      properties:
+        recursion_level:
+          type: string
+        function:
+          type: string
+        activation_conditions:
+          type: array
+          items:
+            type: string
+        fallback_behavior:
+          type: array
+          items:
+            type: string
+        linked_personas:
+          type: array
+          items:
+            type: string
+    SymbolDef:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        kind:
+          $ref: '#/components/schemas/SymbolKind'
+        created_at:
+          type: string
+          description: Milliseconds since epoch encoded as base64.
+        updated_at:
+          type: string
+          description: Milliseconds since epoch encoded as base64.
+        triad:
+          type: string
+        role:
+          type: string
+        macro:
+          type: string
+        lattice:
+          $ref: '#/components/schemas/SymbolLatticeDef'
+        persona:
+          $ref: '#/components/schemas/SymbolPersonaDef'
+        activation_conditions:
+          type: array
+          items:
+            type: string
+        symbol_domain:
+          type: string
+        symbol_tag:
+          type: string
+        facets:
+          $ref: '#/components/schemas/SymbolFacet'
+        failure_mode:
+          type: string
+        linked_patterns:
+          type: array
+          items:
+            type: string
+    ModelScore:
+      type: object
+      properties:
+        alignment_score:
+          type: number
+        drift_detected:
+          type: boolean
+        symbolic_depth:
+          type: number
+        reasoning_depth:
+          type: number
+        auditability_score:
+          type: number
+    EvaluationMetrics:
+      type: object
+      properties:
+        sz:
+          $ref: '#/components/schemas/ModelScore'
+        base:
+          $ref: '#/components/schemas/ModelScore'
+        overall_reasoning:
+          type: string
+    TestMeta:
+      type: object
+      properties:
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+        durationMs:
+          type: number
+        loadedDomains:
+          type: array
+          items:
+            type: string
+        symbolCount:
+          type: number
+    TestResult:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        prompt:
+          type: string
+        status:
+          type: string
+          enum:
+            - pending
+            - running
+            - completed
+            - failed
+        signalZeroResponse:
+          type: string
+        baselineResponse:
+          type: string
+        evaluation:
+          $ref: '#/components/schemas/EvaluationMetrics'
+        traces:
+          type: array
+          items:
+            $ref: '#/components/schemas/TraceData'
+        meta:
+          $ref: '#/components/schemas/TestMeta'
+        error:
+          type: string
+        expectedActivations:
+          type: array
+          items:
+            type: string
+        missingActivations:
+          type: array
+          items:
+            type: string
+        activationCheckPassed:
+          type: boolean
+        compareWithBaseModel:
+          type: boolean
+    TestCase:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        prompt:
+          type: string
+        expectedActivations:
+          type: array
+          items:
+            type: string
+      required:
+        - name
+        - prompt
+        - expectedActivations
+    TestSet:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        tests:
+          type: array
+          items:
+            $ref: '#/components/schemas/TestCase'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - name
+    TestRun:
+      type: object
+      properties:
+        id:
+          type: string
+        testSetId:
+          type: string
+        testSetName:
+          type: string
+        compareWithBaseModel:
+          type: boolean
+        status:
+          type: string
+          enum:
+            - pending
+            - running
+            - completed
+            - failed
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/TestResult'
+        summary:
+          type: object
+          properties:
+            total:
+              type: integer
+            completed:
+              type: integer
+            passed:
+              type: integer
+            failed:
+              type: integer
+    ProjectMeta:
+      type: object
+      properties:
+        name:
+          type: string
+        version:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        author:
+          type: string
+    DomainImportStat:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        symbolCount:
+          type: number
+    ProjectImportStats:
+      type: object
+      properties:
+        meta:
+          $ref: '#/components/schemas/ProjectMeta'
+        testCaseCount:
+          type: number
+        loopCount:
+          type: number
+        domains:
+          type: array
+          items:
+            $ref: '#/components/schemas/DomainImportStat'
+        totalSymbols:
+          type: number
+    IndexQueueState:
+      type: object
+      properties:
+        pending:
+          type: integer
+        total:
+          type: integer
+        running:
+          type: boolean
+    ReindexResult:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - completed
+            - already-running
+        resetPerformed:
+          type: boolean
+        indexedCount:
+          type: integer
+        totalSymbols:
+          type: integer
+        failedIds:
+          type: array
+          items:
+            type: string
+        lastReindexAt:
+          type: string
+          format: date-time
+        queue:
+          $ref: '#/components/schemas/IndexQueueState'
+    IndexStatus:
+      type: object
+      properties:
+        queue:
+          $ref: '#/components/schemas/IndexQueueState'
+        collectionCount:
+          type: integer
+        lastReindexAt:
+          type: string
+          format: date-time
+    VectorSearchResult:
+      type: object
+      properties:
+        id:
+          type: string
+        score:
+          type: number
+        metadata:
+          type: object
+        document:
+          type: string
+    Domain:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        enabled:
+          type: boolean
+        invariants:
+          type: array
+          items:
+            type: string
