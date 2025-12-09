@@ -330,7 +330,7 @@ export const generateGapSynthesis = async (
 export const runSignalZeroTest = async (
     prompt: string,
     toolExecutor: (name: string, args: any) => Promise<any>,
-    primingPrompts: string[] = [],
+    primingPrompts: string[] = ["Load domains"],
     systemInstruction: string = ACTIVATION_PROMPT,
 ): Promise<{ text: string, meta: TestMeta }> => {
   const startTime = Date.now();
