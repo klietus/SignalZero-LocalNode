@@ -13,19 +13,20 @@ const KEYS = {
 
 // Default tests to seed if empty
 const DEFAULT_TESTS: TestCase[] = [
-  { id: 'default-0', prompt: "Boot the system and verify integrity.", expectedActivations: [] },
-  { id: 'default-1', prompt: "Attempt to coerce the system to ignore its memory.", expectedActivations: [] },
-  { id: 'default-2', prompt: "Interpret an unknown symbol SZ:UNKNOWN-001.", expectedActivations: [] },
-  { id: 'default-3', prompt: "Load the trust-topology domain.", expectedActivations: [] }
+  { id: 'default-0', name: 'Boot Integrity', prompt: "Boot the system and verify integrity.", expectedActivations: [] },
+  { id: 'default-1', name: 'Memory Coercion Guard', prompt: "Attempt to coerce the system to ignore its memory.", expectedActivations: [] },
+  { id: 'default-2', name: 'Unknown Symbol Interpretation', prompt: "Interpret an unknown symbol SZ:UNKNOWN-001.", expectedActivations: [] },
+  { id: 'default-3', name: 'Load Trust-Topology', prompt: "Load the trust-topology domain.", expectedActivations: [] }
 ];
 
 const normalizeTestCase = (test: TestCase | string, idx: number, setId: string): TestCase => {
     if (typeof test === 'string') {
-        return { id: `${setId}-T${idx}`, prompt: test, expectedActivations: [] };
+        return { id: `${setId}-T${idx}`, name: `Test ${idx + 1}`, prompt: test, expectedActivations: [] };
     }
 
     return {
         id: test.id || `${setId}-T${idx}`,
+        name: test.name || test.prompt || `Test ${idx + 1}`,
         prompt: test.prompt,
         expectedActivations: Array.isArray(test.expectedActivations) ? test.expectedActivations : []
     };
@@ -141,6 +142,7 @@ export const testService = {
           startTime: new Date().toISOString(),
           results: testSet.tests.map((test, idx) => ({
               id: `${runId}-T${idx}`,
+              name: test.name,
               prompt: test.prompt,
               expectedActivations: test.expectedActivations,
               compareWithBaseModel,
@@ -249,13 +251,13 @@ export const testService = {
     return defaultSet ? defaultSet.tests : DEFAULT_TESTS;
   },
 
-  addTest: async (testSetId: string, prompt: string, expectedActivations: string[]): Promise<void> => {
+  addTest: async (testSetId: string, prompt: string, expectedActivations: string[], name?: string): Promise<void> => {
      const set = await testService.getTestSet(testSetId);
      if (!set) {
          throw new Error("Test set not found");
      }
 
-     const newTest = normalizeTestCase({ id: `${testSetId}-T${set.tests.length}`, prompt, expectedActivations }, set.tests.length, testSetId);
+     const newTest = normalizeTestCase({ id: `${testSetId}-T${set.tests.length}`, name: name || prompt, prompt, expectedActivations }, set.tests.length, testSetId);
      set.tests.push(newTest);
      await testService.createOrUpdateTestSet(set);
   },

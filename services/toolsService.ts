@@ -248,7 +248,15 @@ export const toolDeclarations: FunctionDeclaration[] = [
           items: { type: Type.STRING }
         }
       },
-      required: ['prompt', 'testSetId', 'expectedActivations'],
+      required: ['name', 'prompt', 'testSetId', 'expectedActivations'],
+    },
+  },
+  {
+    name: 'list_test_sets',
+    description: 'List all configured test sets with their metadata and test case names.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
     },
   },
   {
@@ -523,15 +531,29 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
       }
 
       case 'add_test_case': {
-          const { prompt, testSetId, expectedActivations } = args;
-          if (!prompt || !testSetId || !Array.isArray(expectedActivations)) return { error: "Missing prompt, testSetId, or expectedActivations argument" };
+          const { name, prompt, testSetId, expectedActivations } = args;
+          if (!name || !prompt || !testSetId || !Array.isArray(expectedActivations)) return { error: "Missing name, prompt, testSetId, or expectedActivations argument" };
 
-          await testService.addTest(testSetId, prompt, expectedActivations);
+          await testService.addTest(testSetId, prompt, expectedActivations, name);
           return {
               status: "Test case added successfully to persistent suite.",
+              name,
               prompt: prompt,
               testSetId,
               expectedActivations
+          };
+      }
+
+      case 'list_test_sets': {
+          const sets = await testService.listTestSets();
+          return {
+              count: sets.length,
+              testSets: sets.map(set => ({
+                  id: set.id,
+                  name: set.name,
+                  description: set.description,
+                  tests: set.tests.map(test => ({ id: test.id, name: test.name, prompt: test.prompt, expectedActivations: test.expectedActivations }))
+              }))
           };
       }
 

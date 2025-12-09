@@ -30,7 +30,7 @@ describe('TestService', () => {
         const mockSet = {
             id: 'ts1',
             name: 'Test Set 1',
-            tests: [{ prompt: 'Prompt 1', expectedActivations: [], id: 'ts1-0' }]
+            tests: [{ name: 'Case 1', prompt: 'Prompt 1', expectedActivations: [], id: 'ts1-0' }]
         };
 
         await testService.createOrUpdateTestSet({ ...mockSet, createdAt: '', updatedAt: '' });
@@ -52,7 +52,7 @@ describe('TestService', () => {
         const mockSet = {
             id: 'ts2',
             name: 'Test Set 2',
-            tests: [{ prompt: 'Prompt 2', expectedActivations: ['SYM-1'], id: 'ts2-0' }]
+            tests: [{ name: 'Case 2', prompt: 'Prompt 2', expectedActivations: ['SYM-1'], id: 'ts2-0' }]
         };
 
         await testService.createOrUpdateTestSet({ ...mockSet, createdAt: '', updatedAt: '' });
@@ -75,7 +75,7 @@ describe('TestService', () => {
         const mockSet = {
             id: 'ts3',
             name: 'Test Set 3',
-            tests: [{ prompt: 'Prompt 3', expectedActivations: [], id: 'ts3-0' }]
+            tests: [{ name: 'Case 3', prompt: 'Prompt 3', expectedActivations: [], id: 'ts3-0' }]
         };
 
         await testService.createOrUpdateTestSet({ ...mockSet, createdAt: '', updatedAt: '' });
