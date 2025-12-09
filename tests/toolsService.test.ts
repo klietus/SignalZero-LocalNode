@@ -21,6 +21,7 @@ describe('ToolsService', () => {
         vi.spyOn(domainService, 'compressSymbols').mockResolvedValue({ newId: 'new', removedIds: ['old'] });
 
         vi.spyOn(testService, 'addTest').mockResolvedValue(undefined);
+        vi.spyOn(testService, 'listTestSets').mockResolvedValue([] as any);
         vi.spyOn(traceService, 'addTrace').mockReturnValue(undefined);
 
         toolExecutor = createToolExecutor(() => 'mock-api-key');
@@ -62,8 +63,13 @@ describe('ToolsService', () => {
     });
 
     it('add_test_case calls testService.addTest', async () => {
-        await toolExecutor('add_test_case', { prompt: 'Do something', testSetId: 'ts1', expectedActivations: [] });
-        expect(testService.addTest).toHaveBeenCalledWith('ts1', 'Do something', []);
+        await toolExecutor('add_test_case', { name: 'Case', prompt: 'Do something', testSetId: 'ts1', expectedActivations: [] });
+        expect(testService.addTest).toHaveBeenCalledWith('ts1', 'Do something', [], 'Case');
+    });
+
+    it('list_test_sets calls testService.listTestSets', async () => {
+        await toolExecutor('list_test_sets', {});
+        expect(testService.listTestSets).toHaveBeenCalled();
     });
 
     it('log_trace calls traceService.addTrace', async () => {

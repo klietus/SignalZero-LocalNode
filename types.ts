@@ -133,6 +133,7 @@ export interface TestMeta {
 
 export interface TestResult {
   id: string;
+  name?: string;
   prompt: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   signalZeroResponse?: string;
@@ -149,6 +150,7 @@ export interface TestResult {
 
 export interface TestCase {
   id: string;
+  name: string;
   prompt: string;
   expectedActivations: string[];
 }

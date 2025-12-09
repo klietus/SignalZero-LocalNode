@@ -388,7 +388,7 @@ app.get('/api/tests/sets', async (req, res) => {
 // Create/Update Test Set
 app.post('/api/tests/sets', async (req, res) => {
     const testSet = req.body;
-    const hasValidTests = Array.isArray(testSet.tests) && testSet.tests.every((t: any) => typeof t.prompt === 'string' && Array.isArray(t.expectedActivations));
+    const hasValidTests = Array.isArray(testSet.tests) && testSet.tests.every((t: any) => typeof t.prompt === 'string' && typeof t.name === 'string' && Array.isArray(t.expectedActivations));
     if (!testSet.name || !hasValidTests) {
         res.status(400).json({ error: 'Invalid test set format' });
         return;
@@ -438,14 +438,14 @@ app.post('/api/tests/runs', async (req, res) => {
 
 // Add Test to Set
 app.post('/api/tests', async (req, res) => {
-    const { testSetId, prompt, expectedActivations } = req.body;
-    if (!testSetId || !prompt || !Array.isArray(expectedActivations)) {
-        res.status(400).json({ error: 'testSetId, prompt, and expectedActivations are required' });
+    const { testSetId, name, prompt, expectedActivations } = req.body;
+    if (!testSetId || !name || !prompt || !Array.isArray(expectedActivations)) {
+        res.status(400).json({ error: 'testSetId, name, prompt, and expectedActivations are required' });
         return;
     }
 
     try {
-        await testService.addTest(testSetId, prompt, expectedActivations);
+        await testService.addTest(testSetId, prompt, expectedActivations, name);
         res.json({ status: 'success' });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });

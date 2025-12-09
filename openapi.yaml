@@ -515,6 +515,8 @@ paths:
               properties:
                 testSetId:
                   type: string
+                name:
+                  type: string
                 prompt:
                   type: string
                 expectedActivations:
@@ -523,6 +525,7 @@ paths:
                     type: string
               required:
                 - testSetId
+                - name
                 - prompt
                 - expectedActivations
       responses:
@@ -963,6 +966,8 @@ components:
       properties:
         id:
           type: string
+        name:
+          type: string
         prompt:
           type: string
         status:
@@ -1003,6 +1008,8 @@ components:
       properties:
         id:
           type: string
+        name:
+          type: string
         prompt:
           type: string
         expectedActivations:
@@ -1010,6 +1017,7 @@ components:
           items:
             type: string
       required:
+        - name
         - prompt
         - expectedActivations
     TestSet:
@@ -1031,6 +1039,8 @@ components:
         updatedAt:
           type: string
           format: date-time
+      required:
+        - name
     TestRun:
       type: object
       properties:
