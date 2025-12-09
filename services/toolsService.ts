@@ -234,6 +234,10 @@ export const toolDeclarations: FunctionDeclaration[] = [
     parameters: {
       type: Type.OBJECT,
       properties: {
+        name: {
+          type: Type.STRING,
+          description: 'A human-friendly name for the test case.',
+        },
         prompt: {
           type: Type.STRING,
           description: 'The prompt string to verify or test the system with.',
