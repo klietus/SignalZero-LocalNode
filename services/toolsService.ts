@@ -237,9 +237,18 @@ export const toolDeclarations: FunctionDeclaration[] = [
         prompt: {
           type: Type.STRING,
           description: 'The prompt string to verify or test the system with.',
+        },
+        testSetId: {
+          type: Type.STRING,
+          description: 'Identifier of the test set to append the case to.'
+        },
+        expectedActivations: {
+          type: Type.ARRAY,
+          description: 'List of symbol IDs that must appear in the resulting trace for the test to pass.',
+          items: { type: Type.STRING }
         }
       },
-      required: ['prompt'],
+      required: ['prompt', 'testSetId', 'expectedActivations'],
     },
   },
   {
@@ -496,13 +505,15 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
       }
 
       case 'add_test_case': {
-          const { prompt } = args;
-          if (!prompt) return { error: "Missing prompt argument" };
-          
-          testService.addTest(prompt);
-          return { 
+          const { prompt, testSetId, expectedActivations } = args;
+          if (!prompt || !testSetId || !Array.isArray(expectedActivations)) return { error: "Missing prompt, testSetId, or expectedActivations argument" };
+
+          await testService.addTest(testSetId, prompt, expectedActivations);
+          return {
               status: "Test case added successfully to persistent suite.",
-              prompt: prompt 
+              prompt: prompt,
+              testSetId,
+              expectedActivations
           };
       }
 

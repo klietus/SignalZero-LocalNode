@@ -39,7 +39,7 @@ export const projectService = {
             zip.file("system_prompt.txt", systemPrompt);
 
             // 3. Tests
-            const tests = testService.getTests();
+            const tests = await testService.getTests();
             zip.file("tests.json", JSON.stringify(tests, null, 2));
 
             // 4. Domains

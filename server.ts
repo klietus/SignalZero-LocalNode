@@ -388,7 +388,8 @@ app.get('/api/tests/sets', async (req, res) => {
 // Create/Update Test Set
 app.post('/api/tests/sets', async (req, res) => {
     const testSet = req.body;
-    if (!testSet.name || !Array.isArray(testSet.tests)) {
+    const hasValidTests = Array.isArray(testSet.tests) && testSet.tests.every((t: any) => typeof t.prompt === 'string' && Array.isArray(t.expectedActivations));
+    if (!testSet.name || !hasValidTests) {
         res.status(400).json({ error: 'Invalid test set format' });
         return;
     }
@@ -414,7 +415,7 @@ app.delete('/api/tests/sets/:id', async (req, res) => {
 
 // Start Test Run
 app.post('/api/tests/runs', async (req, res) => {
-    const { testSetId } = req.body;
+    const { testSetId, compareWithBaseModel } = req.body;
     if (!testSetId) {
         res.status(400).json({ error: 'testSetId is required' });
         return;
@@ -427,8 +428,25 @@ app.post('/api/tests/runs', async (req, res) => {
             return await runSignalZeroTest(prompt, toolExecutor);
         };
 
-        const run = await testService.startTestRun(testSetId, runnerFn);
+        const run = await testService.startTestRun(testSetId, runnerFn, compareWithBaseModel === true);
         res.json({ status: 'started', runId: run.id });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+// Add Test to Set
+app.post('/api/tests', async (req, res) => {
+    const { testSetId, prompt, expectedActivations } = req.body;
+    if (!testSetId || !prompt || !Array.isArray(expectedActivations)) {
+        res.status(400).json({ error: 'testSetId, prompt, and expectedActivations are required' });
+        return;
+    }
+
+    try {
+        await testService.addTest(testSetId, prompt, expectedActivations);
+        res.json({ status: 'success' });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });

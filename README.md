@@ -77,9 +77,12 @@ The server exposes a comprehensive RESTful API for interacting with the kernel.
 *   `GET /api/tests/sets`: List all test sets.
 *   `POST /api/tests/sets`: Create or update a test set.
 *   `DELETE /api/tests/sets/:id`: Delete a test set.
-*   `POST /api/tests/runs`: Start a new test run for a given test set.
+*   `POST /api/tests`: Add a prompt and expected activations to a specific test set.
+*   `POST /api/tests/runs`: Start a new test run for a given test set (optionally include `compareWithBaseModel: true`).
 *   `GET /api/tests/runs`: List past test runs.
 *   `GET /api/tests/runs/:id`: Get details of a specific test run.
+
+Each test case records `expectedActivations` (symbol IDs that must appear in the trace). Missing activations mark the test as failed.
 
 ### Project & State
 *   `POST /api/project/export`: Export the entire system state (domains, symbols, prompt) as a `.szproject` file.

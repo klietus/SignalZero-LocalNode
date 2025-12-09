@@ -62,8 +62,8 @@ describe('ToolsService', () => {
     });
 
     it('add_test_case calls testService.addTest', async () => {
-        await toolExecutor('add_test_case', { prompt: 'Do something' });
-        expect(testService.addTest).toHaveBeenCalledWith('Do something');
+        await toolExecutor('add_test_case', { prompt: 'Do something', testSetId: 'ts1', expectedActivations: [] });
+        expect(testService.addTest).toHaveBeenCalledWith('ts1', 'Do something', []);
     });
 
     it('log_trace calls traceService.addTrace', async () => {
