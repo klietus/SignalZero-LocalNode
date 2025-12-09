@@ -503,6 +503,38 @@ paths:
                 properties:
                   status:
                     type: string
+  /tests:
+    post:
+      summary: Add a test case to a test set
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                testSetId:
+                  type: string
+                prompt:
+                  type: string
+                expectedActivations:
+                  type: array
+                  items:
+                    type: string
+              required:
+                - testSetId
+                - prompt
+                - expectedActivations
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
   /tests/sets/{id}:
     delete:
       summary: Delete a test set
@@ -545,6 +577,8 @@ paths:
               properties:
                 testSetId:
                   type: string
+                compareWithBaseModel:
+                  type: boolean
       responses:
         '200':
           description: Successful response
@@ -928,6 +962,32 @@ components:
           $ref: '#/components/schemas/TestMeta'
         error:
           type: string
+        expectedActivations:
+          type: array
+          items:
+            type: string
+        missingActivations:
+          type: array
+          items:
+            type: string
+        activationCheckPassed:
+          type: boolean
+        compareWithBaseModel:
+          type: boolean
+    TestCase:
+      type: object
+      properties:
+        id:
+          type: string
+        prompt:
+          type: string
+        expectedActivations:
+          type: array
+          items:
+            type: string
+      required:
+        - prompt
+        - expectedActivations
     TestSet:
       type: object
       properties:
@@ -940,7 +1000,7 @@ components:
         tests:
           type: array
           items:
-            type: string
+            $ref: '#/components/schemas/TestCase'
         createdAt:
           type: string
           format: date-time
@@ -956,6 +1016,8 @@ components:
           type: string
         testSetName:
           type: string
+        compareWithBaseModel:
+          type: boolean
         status:
           type: string
           enum:

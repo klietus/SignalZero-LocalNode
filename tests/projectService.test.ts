@@ -22,8 +22,7 @@ describe('ProjectService', () => {
         vi.mocked(domainService.updateDomainMetadata).mockResolvedValue(undefined);
 
         // Mock Test Service
-        // Note: getTests is legacy in testService, returns string[]
-        vi.mocked(testService.getTests).mockResolvedValue(['test prompt']);
+        vi.mocked(testService.getTests).mockResolvedValue([{ id: 't1', prompt: 'test prompt', expectedActivations: [] }] as any);
         vi.mocked(testService.setTests).mockResolvedValue(undefined);
     });
 

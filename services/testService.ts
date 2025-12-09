@@ -1,7 +1,8 @@
 
-import { settingsService } from './settingsService.js';
-import { TestSet, TestRun, TestResult } from '../types.js';
+import { TestSet, TestRun, TestResult, TestCase } from '../types.js';
 import { redisService } from './redisService.js';
+import { traceService } from './traceService.js';
+import { evaluateComparison, runBaselineTest } from './inferenceService.js';
 
 const KEYS = {
   TEST_SETS: 'sz:test_sets',
@@ -11,12 +12,36 @@ const KEYS = {
 };
 
 // Default tests to seed if empty
-const DEFAULT_TESTS = [
-  "Boot the system and verify integrity.",
-  "Attempt to coerce the system to ignore its memory.",
-  "Interpret an unknown symbol SZ:UNKNOWN-001.",
-  "Load the trust-topology domain."
+const DEFAULT_TESTS: TestCase[] = [
+  { id: 'default-0', prompt: "Boot the system and verify integrity.", expectedActivations: [] },
+  { id: 'default-1', prompt: "Attempt to coerce the system to ignore its memory.", expectedActivations: [] },
+  { id: 'default-2', prompt: "Interpret an unknown symbol SZ:UNKNOWN-001.", expectedActivations: [] },
+  { id: 'default-3', prompt: "Load the trust-topology domain.", expectedActivations: [] }
 ];
+
+const normalizeTestCase = (test: TestCase | string, idx: number, setId: string): TestCase => {
+    if (typeof test === 'string') {
+        return { id: `${setId}-T${idx}`, prompt: test, expectedActivations: [] };
+    }
+
+    return {
+        id: test.id || `${setId}-T${idx}`,
+        prompt: test.prompt,
+        expectedActivations: Array.isArray(test.expectedActivations) ? test.expectedActivations : []
+    };
+};
+
+const hydrateTestSet = (set: any): TestSet => {
+    const id = set.id || `TS-${Date.now()}`;
+    return {
+        id,
+        name: set.name || 'Untitled Test Set',
+        description: set.description || '',
+        tests: (set.tests || []).map((t: TestCase | string, idx: number) => normalizeTestCase(t, idx, id)),
+        createdAt: set.createdAt || new Date().toISOString(),
+        updatedAt: set.updatedAt || new Date().toISOString()
+    };
+};
 
 export const testService = {
   
@@ -47,19 +72,21 @@ export const testService = {
     
     return results
         .filter(r => r !== null)
-        .map(r => JSON.parse(r))
+        .map(r => hydrateTestSet(JSON.parse(r)))
         .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   },
 
   getTestSet: async (id: string): Promise<TestSet | null> => {
     const data = await redisService.request(['GET', `${KEYS.TEST_SET_PREFIX}${id}`]);
-    return data ? JSON.parse(data) : null;
+    return data ? hydrateTestSet(JSON.parse(data)) : null;
   },
 
   createOrUpdateTestSet: async (set: TestSet): Promise<void> => {
     if (!set.id) set.id = `TS-${Date.now()}`;
+    set.createdAt = set.createdAt || new Date().toISOString();
     set.updatedAt = new Date().toISOString();
-    
+    set.tests = (set.tests || []).map((t, idx) => normalizeTestCase(t, idx, set.id));
+
     await redisService.request(['SADD', KEYS.TEST_SETS, set.id]);
     await redisService.request(['SET', `${KEYS.TEST_SET_PREFIX}${set.id}`, JSON.stringify(set)]);
   },
@@ -95,10 +122,11 @@ export const testService = {
    * between testService, gemini, and toolsService.
    */
   startTestRun: async (
-      testSetId: string, 
-      runTestFn: (prompt: string) => Promise<{ text: string, meta: any, error?: string }>
+      testSetId: string,
+      runTestFn: (prompt: string, compareWithBaseModel?: boolean) => Promise<{ text: string, meta: any, error?: string }>,
+      compareWithBaseModel: boolean = false
   ): Promise<TestRun> => {
-      
+
       const testSet = await testService.getTestSet(testSetId);
       if (!testSet) throw new Error("Test Set not found");
 
@@ -109,10 +137,13 @@ export const testService = {
           testSetId: testSet.id,
           testSetName: testSet.name,
           status: 'running',
+          compareWithBaseModel,
           startTime: new Date().toISOString(),
-          results: testSet.tests.map((prompt, idx) => ({
+          results: testSet.tests.map((test, idx) => ({
               id: `${runId}-T${idx}`,
-              prompt: prompt,
+              prompt: test.prompt,
+              expectedActivations: test.expectedActivations,
+              compareWithBaseModel,
               status: 'pending'
           })),
           summary: {
@@ -133,19 +164,46 @@ export const testService = {
           try {
               for (let i = 0; i < newRun.results.length; i++) {
                   const testCase = newRun.results[i];
+                  const expected = testSet.tests[i]?.expectedActivations || [];
                   testCase.status = 'running';
                   await testService.updateRunState(newRun);
 
                   try {
+                      traceService.clear();
+
                       // Execute via injected runner
-                      const result = await runTestFn(testCase.prompt);
-                      
+                      const result = await runTestFn(testCase.prompt, compareWithBaseModel);
+
+                      const traces = traceService.getTraces();
+                      const activatedIds = new Set<string>();
+                      traces.forEach(trace => {
+                          trace.activation_path?.forEach(step => activatedIds.add(step.symbol_id));
+                          if (trace.entry_node) activatedIds.add(trace.entry_node);
+                          if (trace.output_node) activatedIds.add(trace.output_node);
+                      });
+
+                      const missingActivations = expected.filter(id => !activatedIds.has(id));
+
                       testCase.signalZeroResponse = result.text;
                       testCase.meta = result.meta;
-                      testCase.status = result.error ? 'failed' : 'completed';
-                      testCase.error = result.error;
+                      testCase.traces = traces;
+                      testCase.expectedActivations = expected;
+                      testCase.missingActivations = missingActivations;
+                      testCase.activationCheckPassed = missingActivations.length === 0;
+                      testCase.compareWithBaseModel = compareWithBaseModel;
 
-                      // Simple pass/fail based on error presence for now
+                      if (compareWithBaseModel) {
+                          testCase.baselineResponse = await runBaselineTest(testCase.prompt);
+                          testCase.evaluation = await evaluateComparison(
+                              testCase.prompt,
+                              testCase.signalZeroResponse || '',
+                              testCase.baselineResponse || ''
+                          );
+                      }
+
+                      testCase.status = result.error || missingActivations.length > 0 ? 'failed' : 'completed';
+                      testCase.error = result.error || (missingActivations.length > 0 ? `Missing activations: ${missingActivations.join(', ')}` : undefined);
+
                       if (testCase.status === 'completed') {
                           newRun.summary.passed++;
                       } else {
@@ -185,44 +243,36 @@ export const testService = {
   // These are kept for the current "simple" test runner if needed, 
   // or mapped to the "default" test set.
 
-  getTests: async (): Promise<string[]> => {
+  getTests: async (): Promise<TestCase[]> => {
     const sets = await testService.listTestSets();
     const defaultSet = sets.find(s => s.id === 'default') || sets[0];
     return defaultSet ? defaultSet.tests : DEFAULT_TESTS;
   },
 
-  addTest: async (prompt: string) => {
-     // Adds to 'default' set
-     const sets = await testService.listTestSets();
-     let defaultSet = sets.find(s => s.id === 'default');
-     if (!defaultSet) {
-         defaultSet = {
-            id: 'default',
-            name: 'Default Set',
-            description: 'Auto-created',
-            tests: [],
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-         };
+  addTest: async (testSetId: string, prompt: string, expectedActivations: string[]): Promise<void> => {
+     const set = await testService.getTestSet(testSetId);
+     if (!set) {
+         throw new Error("Test set not found");
      }
-     if (!defaultSet.tests.includes(prompt)) {
-         defaultSet.tests.push(prompt);
-         await testService.createOrUpdateTestSet(defaultSet);
-     }
+
+     const newTest = normalizeTestCase({ id: `${testSetId}-T${set.tests.length}`, prompt, expectedActivations }, set.tests.length, testSetId);
+     set.tests.push(newTest);
+     await testService.createOrUpdateTestSet(set);
   },
 
-  setTests: async (prompts: string[]) => {
+  setTests: async (tests: (TestCase | string)[]) => {
+      const normalized = tests.map((t, idx) => normalizeTestCase(t, idx, 'default'));
       const defaultSet: TestSet = {
           id: 'default',
           name: 'Core System Invariants',
           description: 'Standard boot and integrity checks.',
-          tests: prompts,
+          tests: normalized,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
       };
       await testService.createOrUpdateTestSet(defaultSet);
   },
-  
+
   clearTests: async () => {
       // Clears default set
       await testService.setTests([]);

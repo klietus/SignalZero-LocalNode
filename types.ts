@@ -141,13 +141,23 @@ export interface TestResult {
   traces?: TraceData[];
   meta?: TestMeta;
   error?: string;
+  expectedActivations?: string[];
+  missingActivations?: string[];
+  activationCheckPassed?: boolean;
+  compareWithBaseModel?: boolean;
+}
+
+export interface TestCase {
+  id: string;
+  prompt: string;
+  expectedActivations: string[];
 }
 
 export interface TestSet {
   id: string;
   name: string;
   description: string;
-  tests: string[]; // Array of prompts
+  tests: TestCase[]; // Array of prompts with expected activations
   createdAt: string;
   updatedAt: string;
 }
@@ -156,6 +166,7 @@ export interface TestRun {
   id: string;
   testSetId: string;
   testSetName: string;
+  compareWithBaseModel?: boolean;
   status: 'pending' | 'running' | 'completed' | 'failed';
   startTime: string;
   endTime?: string;
