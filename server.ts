@@ -12,6 +12,7 @@ import { projectService } from './services/projectService.js';
 import { testService } from './services/testService.js';
 import { ProjectMeta } from './types.js';
 import { loggerService } from './services/loggerService.js';
+import { systemPromptService } from './services/systemPromptService.js';
 import { fileURLToPath } from 'url';
 
 import { vectorService } from './services/vectorService.js';
@@ -78,6 +79,11 @@ app.get('/api/index/status', async (req, res) => {
 // Initialize Chat
 let activeSystemPrompt = ACTIVATION_PROMPT;
 
+// Load persisted system prompt if available
+systemPromptService.loadPrompt(ACTIVATION_PROMPT)
+    .then((prompt) => { activeSystemPrompt = prompt; })
+    .catch((error) => loggerService.error('Failed to load system prompt', { error }));
+
 // Chat Endpoint
 app.post('/api/chat', async (req, res) => {
   const { message } = req.body;
@@ -126,12 +132,18 @@ app.get('/api/system/prompt', (req, res) => {
     res.json({ prompt: activeSystemPrompt });
 });
 
-app.post('/api/system/prompt', (req, res) => {
+app.post('/api/system/prompt', async (req, res) => {
     const { prompt } = req.body;
     if (prompt) {
-        activeSystemPrompt = prompt;
-        resetChatSession();
-        res.json({ status: 'System prompt updated' });
+        try {
+            await systemPromptService.setPrompt(prompt);
+            activeSystemPrompt = prompt;
+            resetChatSession();
+            res.json({ status: 'System prompt updated' });
+        } catch (e) {
+            loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+            res.status(500).json({ error: 'Failed to persist system prompt' });
+        }
     } else {
         res.status(400).json({ error: 'Prompt is required' });
     }
@@ -425,7 +437,7 @@ app.post('/api/tests/runs', async (req, res) => {
         // We inject the runner logic here to resolve circular dependencies
         const runnerFn = async (prompt: string) => {
             const toolExecutor = createToolExecutor(() => settingsService.getApiKey());
-            return await runSignalZeroTest(prompt, toolExecutor);
+            return await runSignalZeroTest(prompt, toolExecutor, [], activeSystemPrompt);
         };
 
         const run = await testService.startTestRun(testSetId, runnerFn, compareWithBaseModel === true);
@@ -531,6 +543,7 @@ app.post('/api/project/import', async (req, res) => {
         // Update active system prompt
         if (result.systemPrompt) {
             activeSystemPrompt = result.systemPrompt;
+            await systemPromptService.setPrompt(result.systemPrompt);
             resetChatSession();
         }
 
