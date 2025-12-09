@@ -328,9 +328,10 @@ export const generateGapSynthesis = async (
 // --- Test Runner Functions ---
 
 export const runSignalZeroTest = async (
-    prompt: string, 
+    prompt: string,
     toolExecutor: (name: string, args: any) => Promise<any>,
-    primingPrompts: string[] = []
+    primingPrompts: string[] = [],
+    systemInstruction: string = ACTIVATION_PROMPT,
 ): Promise<{ text: string, meta: TestMeta }> => {
   const startTime = Date.now();
   
@@ -353,7 +354,7 @@ export const runSignalZeroTest = async (
     const chat = ai.chats.create({
       model: 'gemini-2.5-flash',
       config: {
-        systemInstruction: ACTIVATION_PROMPT,
+        systemInstruction,
         thinkingConfig: { thinkingBudget: 16000 },
         tools: [{ functionDeclarations: toolDeclarations }],
       },
