@@ -453,6 +453,18 @@ app.post('/api/tests', async (req, res) => {
     }
 });
 
+// Delete Test from Set
+app.delete('/api/tests/:testSetId/:testId', async (req, res) => {
+    const { testSetId, testId } = req.params;
+    try {
+        await testService.deleteTest(testSetId, testId);
+        res.json({ status: 'success' });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
 // List Test Runs
 app.get('/api/tests/runs', async (req, res) => {
     try {
