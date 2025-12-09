@@ -3,6 +3,7 @@ import { TestSet, TestRun, TestResult, TestCase } from '../types.js';
 import { redisService } from './redisService.js';
 import { traceService } from './traceService.js';
 import { evaluateComparison, runBaselineTest } from './inferenceService.js';
+import { loggerService } from './loggerService.js';
 
 const KEYS = {
   TEST_SETS: 'sz:test_sets',
@@ -132,7 +133,7 @@ export const testService = {
       if (!testSet) throw new Error("Test Set not found");
 
       const runId = `RUN-${Date.now()}`;
-      
+
       const newRun: TestRun = {
           id: runId,
           testSetId: testSet.id,
@@ -160,6 +161,12 @@ export const testService = {
       await redisService.request(['SADD', KEYS.TEST_RUNS, runId]);
       await redisService.request(['SET', `${KEYS.TEST_RUN_PREFIX}${runId}`, JSON.stringify(newRun)]);
 
+      loggerService.info(`Test Run Started: ${runId}`, {
+          testSetId: testSet.id,
+          testSetName: testSet.name,
+          compareWithBaseModel
+      });
+
       // Start Async Execution (Fire and forget from API perspective)
       // We process serially to avoid rate limits
       (async () => {
@@ -169,6 +176,13 @@ export const testService = {
                   const expected = testSet.tests[i]?.expectedActivations || [];
                   testCase.status = 'running';
                   await testService.updateRunState(newRun);
+
+                  loggerService.info(`Test Case Started: ${testCase.id}`, {
+                      runId,
+                      name: testCase.name,
+                      prompt: testCase.prompt,
+                      expectedActivations: expected
+                  });
 
                   try {
                       traceService.clear();
@@ -208,14 +222,30 @@ export const testService = {
 
                       if (testCase.status === 'completed') {
                           newRun.summary.passed++;
+                          loggerService.info(`Test Case Passed: ${testCase.id}`, {
+                              runId,
+                              name: testCase.name,
+                              missingActivations
+                          });
                       } else {
                           newRun.summary.failed++;
+                          loggerService.warn(`Test Case Failed: ${testCase.id}`, {
+                              runId,
+                              name: testCase.name,
+                              error: testCase.error,
+                              missingActivations
+                          });
                       }
 
                   } catch (err) {
                       testCase.status = 'failed';
                       testCase.error = String(err);
                       newRun.summary.failed++;
+                      loggerService.error(`Test Case Error: ${testCase.id}`, {
+                          runId,
+                          name: testCase.name,
+                          error: err
+                      });
                   }
 
                   newRun.summary.completed++;
@@ -226,11 +256,26 @@ export const testService = {
               newRun.endTime = new Date().toISOString();
               await testService.updateRunState(newRun);
 
+              loggerService.info(`Test Run Completed: ${runId}`, {
+                  testSetId: testSet.id,
+                  testSetName: testSet.name,
+                  summary: newRun.summary,
+                  compareWithBaseModel
+              });
+
           } catch (fatalErr) {
               console.error("Fatal Test Run Error", fatalErr);
               newRun.status = 'failed';
               newRun.endTime = new Date().toISOString();
               await testService.updateRunState(newRun);
+
+              loggerService.error(`Test Run Failed: ${runId}`, {
+                  testSetId: testSet.id,
+                  testSetName: testSet.name,
+                  error: fatalErr,
+                  summary: newRun.summary,
+                  compareWithBaseModel
+              });
           }
       })();
 
