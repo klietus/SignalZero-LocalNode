@@ -252,6 +252,24 @@ export const toolDeclarations: FunctionDeclaration[] = [
     },
   },
   {
+    name: 'delete_test_case',
+    description: 'Delete an existing test case from a specific test set.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        testSetId: {
+          type: Type.STRING,
+          description: 'Identifier of the test set that contains the test case.'
+        },
+        testId: {
+          type: Type.STRING,
+          description: 'Identifier of the test case to remove.'
+        }
+      },
+      required: ['testSetId', 'testId'],
+    },
+  },
+  {
     name: 'search_symbols_vector',
     description: 'Search for symbols using semantic vector similarity. Useful for finding symbols by narrative description, concept, or structural triad similarity.',
     parameters: {
@@ -514,6 +532,18 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
               prompt: prompt,
               testSetId,
               expectedActivations
+          };
+      }
+
+      case 'delete_test_case': {
+          const { testSetId, testId } = args;
+          if (!testSetId || !testId) return { error: "Missing testSetId or testId argument" };
+
+          await testService.deleteTest(testSetId, testId);
+          return {
+              status: "Test case deleted successfully from persistent suite.",
+              testSetId,
+              testId
           };
       }
 

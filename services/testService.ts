@@ -260,6 +260,22 @@ export const testService = {
      await testService.createOrUpdateTestSet(set);
   },
 
+  deleteTest: async (testSetId: string, testId: string): Promise<void> => {
+      const set = await testService.getTestSet(testSetId);
+      if (!set) {
+          throw new Error("Test set not found");
+      }
+
+      const initialLength = set.tests.length;
+      set.tests = set.tests.filter(test => test.id !== testId);
+
+      if (set.tests.length === initialLength) {
+          throw new Error("Test case not found");
+      }
+
+      await testService.createOrUpdateTestSet(set);
+  },
+
   setTests: async (tests: (TestCase | string)[]) => {
       const normalized = tests.map((t, idx) => normalizeTestCase(t, idx, 'default'));
       const defaultSet: TestSet = {

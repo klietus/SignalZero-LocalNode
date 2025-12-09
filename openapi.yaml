@@ -535,6 +535,30 @@ paths:
                 properties:
                   status:
                     type: string
+  /tests/{testSetId}/{testId}:
+    delete:
+      summary: Delete a test case from a test set
+      parameters:
+        - name: testSetId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: testId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
   /tests/sets/{id}:
     delete:
       summary: Delete a test set
