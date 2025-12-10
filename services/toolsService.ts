@@ -677,17 +677,20 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
                   return { error: `DuckDuckGo search failed: HTTP ${response.status}` };
               }
 
-              const contentType = response.headers.get('content-type');
+              const contentType = response.headers.get('content-type') || '';
               const bodyText = await response.text();
-              if (!contentType || !contentType.toLowerCase().includes('application/json')) {
-                  return { error: 'DuckDuckGo search failed: Unexpected content type', response_preview: bodyText.slice(0, 200) };
-              }
 
               let json;
               try {
                   json = JSON.parse(bodyText);
               } catch (parseError) {
-                  return { error: `DuckDuckGo search failed: Invalid JSON (${String(parseError)})`, response_preview: bodyText.slice(0, 200) };
+                  const preview = bodyText.slice(0, 200);
+                  const contentTypeLabel = contentType || 'unknown';
+                  if (!contentType.toLowerCase().includes('json')) {
+                      return { error: `DuckDuckGo search failed: Unexpected content type (${contentTypeLabel})`, response_preview: preview };
+                  }
+
+                  return { error: `DuckDuckGo search failed: Invalid JSON (${String(parseError)})`, response_preview: preview };
               }
               const results: Array<{ text: string; url?: string; source?: string }> = [];
 
