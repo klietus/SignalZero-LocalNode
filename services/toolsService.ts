@@ -5,6 +5,7 @@ import { testService } from "./testService.ts";
 import { traceService } from "./traceService.ts";
 import { TraceData } from "../types.ts";
 import { indexingService } from "./indexingService.ts";
+import { loggerService } from "./loggerService.ts";
 
 // Shared Symbol Data Schema Properties for reuse in tools
 const SYMBOL_DATA_SCHEMA = {
@@ -679,6 +680,14 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
 
               const contentType = response.headers.get('content-type') || '';
               const bodyText = await response.text();
+
+              loggerService.info('Web Search Response', {
+                  query,
+                  status: response.status,
+                  content_type: contentType || 'unknown',
+                  content_length: bodyText.length,
+                  body_preview: bodyText.slice(0, 500)
+              });
 
               let json;
               try {
