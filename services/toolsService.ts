@@ -313,6 +313,34 @@ export const toolDeclarations: FunctionDeclaration[] = [
     }
   },
   {
+    name: 'web_fetch',
+    description: 'Fetch a URL over HTTP(S) and return the response body for downstream analysis.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        url: {
+          type: Type.STRING,
+          description: 'The absolute URL to fetch (http or https).'
+        }
+      },
+      required: ['url']
+    }
+  },
+  {
+    name: 'web_search',
+    description: 'Perform a Google search for a query and return the first 3 pages of HTML results (10 results per page).',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        query: {
+          type: Type.STRING,
+          description: 'The search query to look up on Google.'
+        }
+      },
+      required: ['query']
+    }
+  },
+  {
     name: 'log_trace',
     description: 'Log a symbolic reasoning trace. This must be called for every symbolic operation or deduction chain to maintain the recursive log.',
     parameters: {
@@ -602,6 +630,70 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
               last_reindex_at: result.lastReindexAt,
               queue: result.queue
           };
+      }
+
+      case 'web_fetch': {
+          const { url } = args;
+          if (!url || typeof url !== 'string') {
+              return { error: "Missing or invalid 'url' argument." };
+          }
+
+          try {
+              const response = await fetch(url, {
+                  headers: {
+                      'User-Agent': 'Mozilla/5.0 (compatible; SignalZeroBot/1.0; +https://signalzero.ai)',
+                  }
+              });
+
+              const text = await response.text();
+              return {
+                  url,
+                  status: response.status,
+                  content_type: response.headers.get('content-type'),
+                  content: text,
+                  content_length: text.length
+              };
+          } catch (error) {
+              return { error: `Failed to fetch URL: ${String(error)}` };
+          }
+      }
+
+      case 'web_search': {
+          const { query } = args;
+          if (!query || typeof query !== 'string') {
+              return { error: "Missing or invalid 'query' argument." };
+          }
+
+          try {
+              const pages = [] as Array<{ page: number; start_index: number; status: number; content: string; content_length: number }>;
+
+              for (let page = 0; page < 3; page++) {
+                  const start = page * 10;
+                  const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&start=${start}&num=10`;
+                  const response = await fetch(searchUrl, {
+                      headers: {
+                          'User-Agent': 'Mozilla/5.0 (compatible; SignalZeroBot/1.0; +https://signalzero.ai)',
+                          'Accept-Language': 'en-US,en;q=0.9'
+                      }
+                  });
+
+                  const html = await response.text();
+                  pages.push({
+                      page: page + 1,
+                      start_index: start,
+                      status: response.status,
+                      content: html,
+                      content_length: html.length
+                  });
+              }
+
+              return {
+                  query,
+                  pages
+              };
+          } catch (error) {
+              return { error: `Google search failed: ${String(error)}` };
+          }
       }
 
       case 'log_trace': {
