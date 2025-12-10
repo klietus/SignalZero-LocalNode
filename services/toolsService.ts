@@ -665,7 +665,7 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
           }
 
           try {
-              const searchUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1&no_html=1`; 
+              const searchUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1&no_html=1`;
               const response = await fetch(searchUrl, {
                   headers: {
                       'User-Agent': 'Mozilla/5.0 (compatible; SignalZeroBot/1.0; +https://signalzero.ai)',
@@ -673,7 +673,22 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
                   }
               });
 
-              const json = await response.json();
+              if (!response.ok) {
+                  return { error: `DuckDuckGo search failed: HTTP ${response.status}` };
+              }
+
+              const contentType = response.headers.get('content-type');
+              const bodyText = await response.text();
+              if (!contentType || !contentType.toLowerCase().includes('application/json')) {
+                  return { error: 'DuckDuckGo search failed: Unexpected content type', response_preview: bodyText.slice(0, 200) };
+              }
+
+              let json;
+              try {
+                  json = JSON.parse(bodyText);
+              } catch (parseError) {
+                  return { error: `DuckDuckGo search failed: Invalid JSON (${String(parseError)})`, response_preview: bodyText.slice(0, 200) };
+              }
               const results: Array<{ text: string; url?: string; source?: string }> = [];
 
               const collectTopics = (topics: any[]) => {
