@@ -329,13 +329,13 @@ export const toolDeclarations: FunctionDeclaration[] = [
   },
   {
     name: 'web_search',
-    description: 'Perform a DuckDuckGo Instant Answer search for a query and return structured JSON results.',
+    description: 'Perform a Google Custom Search for a query and return structured JSON results.',
     parameters: {
       type: Type.OBJECT,
       properties: {
         query: {
           type: Type.STRING,
-          description: 'The search query to look up on DuckDuckGo.'
+          description: 'The search query to look up on Google Custom Search.'
         }
       },
       required: ['query']
@@ -666,85 +666,68 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
           }
 
           try {
-              const searchUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1&no_html=1`;
-              const response = await fetch(searchUrl, {
+              const apiKey = process.env.GOOGLE_API_KEY || process.env.GOOGLE_CUSTOM_SEARCH_KEY || process.env.GOOGLE_SEARCH_KEY;
+              const searchEngineId = process.env.GOOGLE_CSE_ID || process.env.GOOGLE_SEARCH_ENGINE_ID || process.env.GOOGLE_CUSTOM_SEARCH_CX;
+
+              if (!apiKey) {
+                  return { error: 'Google Custom Search failed: Missing GOOGLE_API_KEY environment variable.' };
+              }
+
+              if (!searchEngineId) {
+                  return { error: 'Google Custom Search failed: Missing search engine ID (set GOOGLE_CSE_ID or GOOGLE_SEARCH_ENGINE_ID).' };
+              }
+
+              const searchUrl = new URL('https://customsearch.googleapis.com/customsearch/v1');
+              searchUrl.searchParams.set('key', apiKey);
+              searchUrl.searchParams.set('cx', searchEngineId);
+              searchUrl.searchParams.set('q', query);
+              searchUrl.searchParams.set('num', '5');
+
+              const response = await fetch(searchUrl.toString(), {
                   headers: {
                       'User-Agent': 'Mozilla/5.0 (compatible; SignalZeroBot/1.0; +https://signalzero.ai)',
-                      'Accept-Language': 'en-US,en;q=0.9'
+                      'Accept': 'application/json'
                   }
               });
 
               if (!response.ok) {
-                  return { error: `DuckDuckGo search failed: HTTP ${response.status}` };
+                  return { error: `Google Custom Search failed: HTTP ${response.status}` };
               }
 
-              const contentType = response.headers.get('content-type') || '';
               const bodyText = await response.text();
-
-              loggerService.info('Web Search Response', {
-                  query,
-                  status: response.status,
-                  content_type: contentType || 'unknown',
-                  content_length: bodyText.length,
-                  body_preview: bodyText.slice(0, 500)
-              });
 
               let json;
               try {
                   json = JSON.parse(bodyText);
               } catch (parseError) {
-                  const preview = bodyText.slice(0, 200);
-                  const contentTypeLabel = contentType || 'unknown';
-                  if (!contentType.toLowerCase().includes('json')) {
-                      return { error: `DuckDuckGo search failed: Unexpected content type (${contentTypeLabel})`, response_preview: preview };
-                  }
-
-                  return { error: `DuckDuckGo search failed: Invalid JSON (${String(parseError)})`, response_preview: preview };
-              }
-              const results: Array<{ text: string; url?: string; source?: string }> = [];
-
-              const collectTopics = (topics: any[]) => {
-                  for (const topic of topics) {
-                      if (topic.Topics && Array.isArray(topic.Topics)) {
-                          collectTopics(topic.Topics);
-                          continue;
-                      }
-
-                      if (topic.Text) {
-                          results.push({
-                              text: topic.Text,
-                              url: topic.FirstURL,
-                              source: topic.Result ? 'instant' : undefined
-                          });
-                      }
-                  }
-              };
-
-              if (Array.isArray(json.RelatedTopics)) {
-                  collectTopics(json.RelatedTopics);
+                  return { error: `Google Custom Search failed: Invalid JSON (${String(parseError)})`, response_preview: bodyText.slice(0, 200) };
               }
 
-              if (Array.isArray(json.Results)) {
-                  for (const result of json.Results) {
-                      if (result.Text) {
-                          results.push({
-                              text: result.Text,
-                              url: result.FirstURL,
-                              source: 'results'
-                          });
-                      }
-                  }
-              }
+              const items = Array.isArray(json.items) ? json.items : [];
+              const results = items.map((item: any) => ({
+                  title: item.title,
+                  snippet: item.snippet || item.htmlSnippet,
+                  url: item.link,
+                  display_link: item.displayLink,
+                  mime: item.mime
+              }));
+
+              loggerService.info('Web Search Response', {
+                  query,
+                  status: response.status,
+                  content_type: response.headers.get('content-type') || 'unknown',
+                  content_length: bodyText.length,
+                  result_count: results.length
+              });
 
               return {
                   query,
-                  heading: json.Heading,
-                  abstract: json.Abstract,
-                  abstract_source: json.AbstractSource,
+                  search_engine: 'google_custom_search',
+                  total_results: json.searchInformation?.totalResults,
                   results
               };
           } catch (error) {
-              return { error: `DuckDuckGo search failed: ${String(error)}` };
+              return { error: `Google Custom Search failed: ${String(error)}` };
           }
       }
 
