@@ -328,13 +328,13 @@ export const toolDeclarations: FunctionDeclaration[] = [
   },
   {
     name: 'web_search',
-    description: 'Perform a Google search for a query and return the first 3 pages of HTML results (10 results per page).',
+    description: 'Perform a DuckDuckGo Instant Answer search for a query and return structured JSON results.',
     parameters: {
       type: Type.OBJECT,
       properties: {
         query: {
           type: Type.STRING,
-          description: 'The search query to look up on Google.'
+          description: 'The search query to look up on DuckDuckGo.'
         }
       },
       required: ['query']
@@ -665,34 +665,59 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
           }
 
           try {
-              const pages = [] as Array<{ page: number; start_index: number; status: number; content: string; content_length: number }>;
+              const searchUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1&no_html=1`; 
+              const response = await fetch(searchUrl, {
+                  headers: {
+                      'User-Agent': 'Mozilla/5.0 (compatible; SignalZeroBot/1.0; +https://signalzero.ai)',
+                      'Accept-Language': 'en-US,en;q=0.9'
+                  }
+              });
 
-              for (let page = 0; page < 3; page++) {
-                  const start = page * 10;
-                  const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&start=${start}&num=10`;
-                  const response = await fetch(searchUrl, {
-                      headers: {
-                          'User-Agent': 'Mozilla/5.0 (compatible; SignalZeroBot/1.0; +https://signalzero.ai)',
-                          'Accept-Language': 'en-US,en;q=0.9'
+              const json = await response.json();
+              const results: Array<{ text: string; url?: string; source?: string }> = [];
+
+              const collectTopics = (topics: any[]) => {
+                  for (const topic of topics) {
+                      if (topic.Topics && Array.isArray(topic.Topics)) {
+                          collectTopics(topic.Topics);
+                          continue;
                       }
-                  });
 
-                  const html = await response.text();
-                  pages.push({
-                      page: page + 1,
-                      start_index: start,
-                      status: response.status,
-                      content: html,
-                      content_length: html.length
-                  });
+                      if (topic.Text) {
+                          results.push({
+                              text: topic.Text,
+                              url: topic.FirstURL,
+                              source: topic.Result ? 'instant' : undefined
+                          });
+                      }
+                  }
+              };
+
+              if (Array.isArray(json.RelatedTopics)) {
+                  collectTopics(json.RelatedTopics);
+              }
+
+              if (Array.isArray(json.Results)) {
+                  for (const result of json.Results) {
+                      if (result.Text) {
+                          results.push({
+                              text: result.Text,
+                              url: result.FirstURL,
+                              source: 'results'
+                          });
+                      }
+                  }
               }
 
               return {
                   query,
-                  pages
+                  heading: json.Heading,
+                  abstract: json.Abstract,
+                  abstract_source: json.AbstractSource,
+                  results
               };
           } catch (error) {
-              return { error: `Google search failed: ${String(error)}` };
+              return { error: `DuckDuckGo search failed: ${String(error)}` };
           }
       }
 
