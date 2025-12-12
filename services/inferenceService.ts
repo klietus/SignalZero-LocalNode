@@ -381,8 +381,8 @@ export const runSignalZeroTest = async (
         let turnText = currentResponse.text || "";
         
         let loops = 0;
-        // Allow up to 10 turns of tool use for deep symbolic chains
-        while (loops < 10) { 
+        // Allow up to 20 turns of tool use for deep symbolic chains
+        while (loops < 20) {
             const calls = currentResponse.candidates?.[0]?.content?.parts
                 ?.filter((p) => p.functionCall)
                 .map((p) => p.functionCall);
@@ -547,7 +547,7 @@ export async function* sendMessageAndHandleTools(
 > {
   let currentInput: any = message;
   let loops = 0;
-  const MAX_LOOPS = 10;
+  const MAX_LOOPS = 20;
 
   while (loops < MAX_LOOPS) {
     let responseStream;
