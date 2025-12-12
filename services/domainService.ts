@@ -84,6 +84,20 @@ export const domainService = {
   },
 
   /**
+   * Retrieves the full cached domain record, including symbols.
+   */
+  getDomain: async (domainId: string): Promise<CachedDomain | null> => {
+    const data = await redisService.request(['GET', `${KEYS.DOMAIN_PREFIX}${domainId}`]);
+    if (!data) return null;
+    try {
+      return JSON.parse(data);
+    } catch (e) {
+      console.error(`[DomainService] Failed to parse domain ${domainId}`, e);
+      return null;
+    }
+  },
+
+  /**
    * Checks if a domain is enabled.
    */
   isEnabled: async (domainId: string): Promise<boolean> => {

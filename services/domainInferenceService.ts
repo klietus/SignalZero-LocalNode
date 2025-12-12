@@ -140,5 +140,26 @@ Return JSON with the field "invariants" as a non-empty array of concise invarian
             inferred_from: inference.context.map((c) => ({ id: c.id, similarity: c.similarity, invariants: c.invariants })),
             reasoning: inference.reasoning,
         };
+    },
+
+    async populateDomainInvariants(domainId: string) {
+        const domain = await domainService.getDomain(domainId);
+        if (!domain) {
+            throw new Error(`Domain '${domainId}' not found.`);
+        }
+
+        const existingInvariants = domain.invariants || [];
+        if (existingInvariants.length > 0) {
+            throw new Error(`Domain '${domainId}' already has invariants defined.`);
+        }
+
+        const inference = await this.inferInvariants(domainId, domain.description || "", domain.name);
+        await domainService.updateDomainMetadata(domainId, { invariants: inference.invariants });
+
+        return {
+            invariants: inference.invariants,
+            inferred_from: inference.context.map((c) => ({ id: c.id, similarity: c.similarity, invariants: c.invariants })),
+            reasoning: inference.reasoning,
+        };
     }
 };
