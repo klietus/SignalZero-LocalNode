@@ -242,6 +242,17 @@ export const toolDeclarations: FunctionDeclaration[] = [
     }
   },
   {
+    name: 'populate_invariants',
+    description: 'Infer and populate invariant constraints for an existing domain that currently has none.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        domain_id: { type: Type.STRING, description: 'The id/slug of the existing domain missing invariants.' }
+      },
+      required: ['domain_id']
+    }
+  },
+  {
     name: 'list_domains',
     description: 'List all available symbol domains in the local registry. Returns name, id, description, invariant constraints, list of symbol_ids, and full definitions for persona symbols.',
     parameters: {
@@ -612,6 +623,35 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
               };
           } catch (e) {
               return { error: `Failed to create domain: ${String(e)}` };
+          }
+      }
+
+      case 'populate_invariants': {
+          const { domain_id } = args;
+          if (!domain_id) {
+              return { error: "Missing domain_id." };
+          }
+
+          const domain = await domainService.getDomain(domain_id);
+          if (!domain) {
+              return { error: `Domain '${domain_id}' not found.` };
+          }
+
+          const hasInvariants = (domain.invariants || []).length > 0;
+          if (hasInvariants) {
+              return { error: `Domain '${domain_id}' already has invariants defined.` };
+          }
+
+          try {
+              const result = await domainInferenceService.populateDomainInvariants(domain_id);
+              return {
+                  status: "Domain invariants inferred and stored.",
+                  invariants: result.invariants,
+                  inferred_from: result.inferred_from,
+                  reasoning: result.reasoning,
+              };
+          } catch (e) {
+              return { error: `Failed to populate invariants: ${String(e)}` };
           }
       }
 
