@@ -1,5 +1,7 @@
 
 import { TraceData } from '../types.ts';
+import { currentTimestampBase64, decodeTimestamp, getDayBucketKey } from './timeService.ts';
+import { redisService } from './redisService.ts';
 
 type TraceListener = (traces: TraceData[]) => void;
 
@@ -8,10 +10,28 @@ class TraceService {
   private listeners: TraceListener[] = [];
 
   addTrace(trace: Partial<TraceData>) {
-    if (!trace.id) {
-        trace.id = `TR-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const nowB64 = currentTimestampBase64();
+    const existingIndex = trace.id ? this.traces.findIndex(t => t.id === trace.id) : -1;
+
+    const normalizedId = trace.id || `TR-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const normalizedTrace: TraceData = {
+        ...trace,
+        id: normalizedId,
+        created_at: existingIndex >= 0 ? this.traces[existingIndex].created_at : nowB64,
+        updated_at: nowB64,
+    } as TraceData;
+
+    if (existingIndex >= 0) {
+        this.traces[existingIndex] = normalizedTrace;
+    } else {
+        this.traces.push(normalizedTrace);
     }
-    this.traces.push(trace as TraceData);
+
+    const createdMs = decodeTimestamp(normalizedTrace.created_at);
+    if (createdMs !== null) {
+        redisService.request(['SADD', getDayBucketKey('traces', createdMs), normalizedTrace.id]);
+    }
+
     this.notifyListeners();
   }
 

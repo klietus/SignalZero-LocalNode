@@ -284,20 +284,29 @@ export const toolDeclarations: FunctionDeclaration[] = [
   },
   {
     name: 'search_symbols_vector',
-    description: 'Search for symbols using semantic vector similarity. Useful for finding symbols by narrative description, concept, or structural triad similarity.',
+    description: 'Search for symbols using semantic vector similarity. Useful for finding symbols by narrative description, concept, or structural triad similarity. Time filters are day-long buckets keyed by milliseconds since epoch encoded as base64.',
     parameters: {
       type: Type.OBJECT,
       properties: {
         query: {
           type: Type.STRING,
-          description: 'The search query (narrative text, concept, or triad characters).',
+          description: 'The search query (narrative text, concept, or triad characters). Leave empty to return only time-bucketed results.',
         },
         limit: {
           type: Type.INTEGER,
           description: 'Number of results to return (default 5).',
-        }
+        },
+        time_gte: {
+          type: Type.STRING,
+          description: 'Earliest timestamp to include (milliseconds since epoch, base64 encoded). Buckets are UTC day-wide.',
+        },
+        time_between: {
+          type: Type.ARRAY,
+          description: 'Exact start and end timestamps (milliseconds since epoch, base64 encoded) to bound the UTC day buckets.',
+          items: { type: Type.STRING },
+        },
       },
-      required: ['query'],
+      required: [],
     },
   },
   {
@@ -603,19 +612,23 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
       }
 
       case 'search_symbols_vector': {
-          const { query, limit } = args;
-          if (!query) return { error: "Missing query argument" };
+          const { query, limit, time_gte, time_between } = args || {};
+          if (!query && !time_gte && !time_between) return { error: "Provide a query or time filter (time_gte/time_between)." };
 
-          const results = await domainService.search(query, limit || 5);
-          
-          if (results.length === 0) {
+          const results = await domainService.search(query, limit || 5, { time_gte, time_between });
+
+          if ((query && query.trim().length > 0) && results.length === 0) {
               return { count: 0, results: [], message: "No relevant symbols found via vector search. Check connection to ChromaDB." };
           }
 
           return {
               count: results.length,
               results: results,
-                query: query
+              query: query,
+              time_gte,
+              time_between,
+              bucket_scope: 'utc_day',
+              timestamp_format: 'milliseconds_since_epoch_base64'
             };
         }
 

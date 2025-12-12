@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { traceService } from '../services/traceService.ts';
 import { TraceData } from '../types.ts';
+import { decodeTimestamp } from '../services/timeService.ts';
 
 describe('TraceService', () => {
     beforeEach(() => {
@@ -21,7 +22,9 @@ describe('TraceService', () => {
         const traces = traceService.getTraces();
         
         expect(traces).toHaveLength(1);
-        expect(traces[0]).toEqual(trace);
+        expect(traces[0].id).toEqual(trace.id);
+        expect(decodeTimestamp(traces[0].created_at)).not.toBeNull();
+        expect(decodeTimestamp(traces[0].updated_at)).not.toBeNull();
     });
 
     it('should auto-generate ID if missing', () => {

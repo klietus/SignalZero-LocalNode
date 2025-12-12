@@ -238,17 +238,22 @@ app.post('/api/admin/clear-all', async (req, res) => {
 
 // Search symbols (Vector) - Must be before /:id route
 app.get('/api/symbols/search', async (req, res) => {
-    const { q, limit } = req.query;
-    if (!q) {
-        res.status(400).json({ error: 'Query parameter q is required' });
+    const { q, limit, time_gte, time_between } = req.query;
+    if (!q && !time_gte && !time_between) {
+        res.status(400).json({ error: 'Provide a query or time filter (time_gte or time_between) to search symbols.' });
         return;
     }
     try {
-        const results = await domainService.search(q as string, limit ? Number(limit) : 5);
+        const results = await domainService.search(q as string | null, limit ? Number(limit) : 5, {
+            time_gte: time_gte as string | undefined,
+            time_between: typeof time_between === 'string' ? (time_between as string).split(',') : (time_between as string[] | undefined),
+        });
         res.json(results);
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
-        res.status(500).json({ error: String(e) });
+        const message = e instanceof Error ? e.message : String(e);
+        const status = message.includes('Provide a query or time filter') ? 400 : 500;
+        res.status(status).json({ error: message });
     }
 });
 

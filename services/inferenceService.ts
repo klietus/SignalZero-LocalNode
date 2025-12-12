@@ -5,6 +5,7 @@ import { ACTIVATION_PROMPT } from '../symbolic_system/activation_prompt.ts';
 import { EvaluationMetrics, TraceData, TestMeta, SymbolDef } from '../types.ts';
 import { domainService } from './domainService.ts';
 import { embedText } from './embeddingService.ts';
+import { buildSystemMetadataBlock } from './timeService.ts';
 
 // Initialize the client strictly with process.env.API_KEY
 // Export for use in vectorService
@@ -34,6 +35,20 @@ export const getChatSession = (systemInstruction: string) => {
 
 export const resetChatSession = () => {
   chatSession = null;
+};
+
+const wrapMessageWithMetadata = (message: any) => {
+  const metadataText = { text: `[SYSTEM_METADATA] ${JSON.stringify(buildSystemMetadataBlock())}` };
+
+  if (Array.isArray(message)) {
+      return [...message, metadataText];
+  }
+
+  if (typeof message === 'string') {
+      return [ { text: message }, metadataText ];
+  }
+
+  return [message, metadataText];
 };
 
 // --- Embedding Helper ---
@@ -362,7 +377,7 @@ export const runSignalZeroTest = async (
 
     // Helper to execute a turn with tool handling
     const executeTurn = async (msg: string): Promise<string> => {
-        let currentResponse = await chat.sendMessage({ message: msg });
+        let currentResponse = await chat.sendMessage({ message: wrapMessageWithMetadata(msg) });
         let turnText = currentResponse.text || "";
         
         let loops = 0;
@@ -396,7 +411,7 @@ export const runSignalZeroTest = async (
                 }
             }
 
-            currentResponse = await chat.sendMessage({ message: functionResponses.map(fr => ({ functionResponse: fr })) });
+            currentResponse = await chat.sendMessage({ message: wrapMessageWithMetadata(functionResponses.map(fr => ({ functionResponse: fr }))) });
             if (currentResponse.text) {
                 turnText += currentResponse.text;
             }
@@ -537,7 +552,7 @@ export async function* sendMessageAndHandleTools(
   while (loops < MAX_LOOPS) {
     let responseStream;
     try {
-      responseStream = await chat.sendMessageStream({ message: currentInput });
+      responseStream = await chat.sendMessageStream({ message: wrapMessageWithMetadata(currentInput) });
     } catch (error) {
       console.error("Error sending message:", error);
       yield { text: "Error: Could not connect to Gemini API. Check your API Key." };
