@@ -38,6 +38,36 @@ export const domainService = {
   },
 
   /**
+   * Create a brand-new domain with optional metadata.
+   */
+  createDomain: async (
+    domainId: string,
+    metadata: { name?: string; description?: string; invariants?: string[] } = {}
+  ): Promise<CachedDomain> => {
+    const exists = await domainService.hasDomain(domainId);
+    if (exists) {
+        throw new Error(`Domain '${domainId}' already exists.`);
+    }
+
+    const now = Date.now();
+    const newDomain: CachedDomain = {
+        id: domainId,
+        name: metadata.name || domainId,
+        description: metadata.description || "",
+        invariants: metadata.invariants || [],
+        enabled: true,
+        lastUpdated: now,
+        symbols: []
+    };
+
+    const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
+    await redisService.request(['SET', key, JSON.stringify(newDomain)]);
+    await redisService.request(['SADD', KEYS.DOMAINS_SET, domainId]);
+
+    return newDomain;
+  },
+
+  /**
    * Returns a list of all domain IDs currently in Redis.
    */
   listDomains: async (): Promise<string[]> => {

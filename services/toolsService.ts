@@ -1,6 +1,7 @@
 
 import { FunctionDeclaration, Type } from "@google/genai";
 import { domainService } from "./domainService.ts";
+import { domainInferenceService } from "./domainInferenceService.ts";
 import { testService } from "./testService.ts";
 import { traceService } from "./traceService.ts";
 import { TraceData } from "../types.ts";
@@ -224,6 +225,20 @@ export const toolDeclarations: FunctionDeclaration[] = [
         }
       },
       required: ['new_symbol', 'old_ids']
+    }
+  },
+  {
+    name: 'create_domain',
+    description: 'Create a new SignalZero domain. When only a domain id and description are provided, the tool infers invariants using semantic similarity to the root domain and the two closest domains before saving.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        domain_id: { type: Type.STRING, description: 'The unique id/slug for the domain.' },
+        name: { type: Type.STRING, description: 'Optional display name for the domain.' },
+        description: { type: Type.STRING, description: 'Human-readable description of the new domain.' },
+        invariants: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Optional explicit invariants. If omitted, the tool will infer them.' }
+      },
+      required: ['domain_id', 'description']
     }
   },
   {
@@ -469,15 +484,19 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
         console.groupCollapsed(`[ToolExecutor] save_symbol: ${symbol_id}`);
         console.log("Payload:", symbol_data);
         console.groupEnd();
-        
+
         try {
             const domain = symbol_data.symbol_domain || 'root';
             // Determine if we need to enable the domain if it's new
             const hasDomain = await domainService.hasDomain(domain);
-            
+
+            if (!hasDomain) {
+                return { error: `Domain '${domain}' does not exist. Create the domain before saving symbols.`, code: 404 };
+            }
+
             await domainService.upsertSymbol(domain, symbol_data);
             console.log(`[ToolExecutor] Saved symbol ${symbol_id} to registry (Domain: ${domain})`);
-            
+
             return {
                 status: "Symbol stored successfully.",
                 id: symbol_id,
@@ -556,6 +575,43 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
               };
           } catch (e) {
               return { error: `Compression failed: ${String(e)}` };
+          }
+      }
+
+      case 'create_domain': {
+          const { domain_id, description, name, invariants } = args;
+          if (!domain_id || !description) {
+              return { error: "Missing domain_id or description." };
+          }
+
+          const exists = await domainService.hasDomain(domain_id);
+          if (exists) {
+              return { error: `Domain '${domain_id}' already exists.`, code: 409 };
+          }
+
+          try {
+              if (Array.isArray(invariants) && invariants.length > 0) {
+                  const created = await domainService.createDomain(domain_id, {
+                      name: name || domain_id,
+                      description,
+                      invariants,
+                  });
+
+                  return {
+                      status: "Domain created with provided invariants.",
+                      domain: created,
+                  };
+              }
+
+              const result = await domainInferenceService.createDomainWithInference(domain_id, description, name);
+              return {
+                  status: "Domain created with inferred invariants.",
+                  domain: result.domain,
+                  inferred_from: result.inferred_from,
+                  reasoning: result.reasoning,
+              };
+          } catch (e) {
+              return { error: `Failed to create domain: ${String(e)}` };
           }
       }
 
