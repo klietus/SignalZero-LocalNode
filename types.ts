@@ -52,6 +52,8 @@ export interface TraceContext {
 
 export interface TraceData {
   id: string;
+  created_at: string;
+  updated_at: string;
   entry_node?: string;
   activated_by?: string;
   activation_path?: TraceStep[];
@@ -95,6 +97,8 @@ export interface SymbolDef {
   id: string;
   name: string;
   kind?: SymbolKind; // defaults to 'pattern' if undefined
+  created_at: string;
+  updated_at: string;
   triad: string;
   role: string;
   macro: string; // Used for patterns

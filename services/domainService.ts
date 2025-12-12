@@ -2,6 +2,7 @@
 import { SymbolDef, VectorSearchResult } from '../types.ts';
 import { vectorService } from './vectorService.ts';
 import { redisService } from './redisService.ts';
+import { currentTimestampBase64, decodeTimestamp, getBucketKeysFromTimestamps, getDayBucketKey } from './timeService.ts';
 
 // Redis Keys Configuration
 const KEYS = {
@@ -18,6 +19,12 @@ interface CachedDomain {
   description?: string;
   invariants?: string[];
 }
+
+const indexSymbolBucket = async (symbol: SymbolDef) => {
+  const createdMs = decodeTimestamp(symbol.created_at);
+  if (createdMs === null) return;
+  await redisService.request(['SADD', getDayBucketKey('symbols', createdMs), symbol.id]);
+};
 
 // --- Public API ---
 
@@ -124,8 +131,31 @@ export const domainService = {
   /**
    * Search for symbols using the vector index and hydrate them with Redis definitions.
    */
-  search: async (query: string, limit: number = 5): Promise<(VectorSearchResult & { symbol: SymbolDef | null })[]> => {
-      const results = await vectorService.search(query, limit);
+  search: async (
+      query: string | null,
+      limit: number = 5,
+      filters?: { time_gte?: string; time_between?: string[] }
+  ): Promise<(VectorSearchResult & { symbol: SymbolDef | null })[]> => {
+      const hasQuery = !!(query && query.trim().length > 0);
+      const hasTimeFilter = !!(filters?.time_gte || (filters?.time_between && filters.time_between.length > 0));
+      if (!hasQuery && !hasTimeFilter) {
+          throw new Error('Provide a query or time filter (time_gte or time_between) to search symbols.');
+      }
+
+      const { keys: bucketKeys, rangeApplied } = getBucketKeysFromTimestamps('symbols', filters?.time_gte, filters?.time_between);
+      const bucketIds = new Set<string>();
+
+      if (bucketKeys.length > 0) {
+          const bucketResults = await Promise.all(bucketKeys.map((key) => redisService.request(['SMEMBERS', key])));
+          bucketResults.forEach((ids) => {
+              if (Array.isArray(ids)) {
+                  ids.forEach((id) => bucketIds.add(String(id)));
+              }
+          });
+      }
+
+      const shouldSkipSemantic = !query || query.trim().length === 0;
+      const results = shouldSkipSemantic ? [] : await vectorService.search(query, limit);
       const domains = await domainService.listDomains();
       
       // Load all domains to hydrate (inefficient but safe for "local node")
@@ -142,7 +172,9 @@ export const domainService = {
           }
       });
 
-      return results.map(r => {
+      const hydratedResults = results
+        .filter(r => bucketIds.size === 0 || bucketIds.has(r.id))
+        .map(r => {
           let symbol: SymbolDef | null = null;
           for (const domainId of Object.keys(store)) {
             if (store[domainId].enabled) {
@@ -153,8 +185,29 @@ export const domainService = {
                 }
             }
           }
-          return { ...r, symbol };
+          return {
+              ...r,
+              metadata: { ...(r.metadata || {}), bucket_keys: bucketKeys },
+              symbol
+          };
       });
+
+      if (hydratedResults.length === 0 && rangeApplied && bucketIds.size > 0) {
+          const bucketSymbols = Object.values(store)
+              .filter((d) => d.enabled)
+              .flatMap((d) => d.symbols)
+              .filter((s) => bucketIds.has(s.id));
+
+          return bucketSymbols.map((symbol) => ({
+              id: symbol.id,
+              score: 1,
+              metadata: { source: 'time_bucket', bucket_keys: bucketKeys },
+              document: '',
+              symbol
+          }));
+      }
+
+      return hydratedResults;
   },
 
   /**
@@ -267,17 +320,27 @@ export const domainService = {
         if (!domain.id) domain.id = domainId; // migration safety
     }
 
+    const nowB64 = currentTimestampBase64();
     const existingIndex = domain.symbols.findIndex(s => s.id === symbol.id);
+    const normalizedSymbol: SymbolDef = {
+        ...symbol,
+        created_at: existingIndex >= 0 ? domain.symbols[existingIndex].created_at : nowB64,
+        updated_at: nowB64,
+    };
+
     if (existingIndex >= 0) {
-        domain.symbols[existingIndex] = symbol;
+        domain.symbols[existingIndex] = normalizedSymbol;
     } else {
-        domain.symbols.push(symbol);
+        domain.symbols.push(normalizedSymbol);
     }
 
     domain.lastUpdated = Date.now();
     
     // Save Domain
     await redisService.request(['SET', key, JSON.stringify(domain)]);
+
+    // Time bucket index (based on creation time)
+    await indexSymbolBucket(normalizedSymbol);
     
     // Index Vector
     await vectorService.indexSymbol(symbol);
@@ -307,8 +370,16 @@ export const domainService = {
       }
 
       const symbolMap = new Map(domain.symbols.map(s => [s.id, s]));
+      const nowB64 = currentTimestampBase64();
       for (const sym of symbols) {
-          symbolMap.set(sym.id, sym);
+          const existing = symbolMap.get(sym.id);
+          const normalized: SymbolDef = {
+              ...sym,
+              created_at: existing?.created_at || nowB64,
+              updated_at: nowB64,
+          };
+          symbolMap.set(sym.id, normalized);
+          await indexSymbolBucket(normalized);
       }
       domain.symbols = Array.from(symbolMap.values());
       domain.lastUpdated = Date.now();
@@ -343,6 +414,11 @@ export const domainService = {
              domain = JSON.parse(data);
           }
 
+          const existingCreatedAt = new Map<string, string>();
+          domain.symbols.forEach((s) => {
+              if (s.created_at) existingCreatedAt.set(s.id, s.created_at);
+          });
+
           // 1. Renames
           domainUpdates.forEach(update => {
               if (update.old_id !== update.symbol_data.id) {
@@ -369,9 +445,16 @@ export const domainService = {
 
           // 3. Add New
           domainUpdates.forEach(update => {
-              domain.symbols.push(update.symbol_data);
+              const nowB64 = currentTimestampBase64();
+              const normalized: SymbolDef = {
+                  ...update.symbol_data,
+                  created_at: existingCreatedAt.get(update.old_id) || nowB64,
+                  updated_at: nowB64,
+              };
+              domain.symbols.push(normalized);
               updateCount++;
-              vectorService.indexSymbol(update.symbol_data);
+              vectorService.indexSymbol(normalized);
+              indexSymbolBucket(normalized);
           });
 
           domain.lastUpdated = Date.now();

@@ -274,13 +274,23 @@ paths:
       parameters:
         - name: q
           in: query
-          required: true
           schema:
             type: string
+          description: "Semantic search string. At least one of q, time_gte, or time_between is required. When q is omitted, only time-bucketed results are returned."
         - name: limit
           in: query
           schema:
             type: integer
+        - name: time_gte
+          in: query
+          schema:
+            type: string
+          description: "Earliest timestamp (milliseconds since epoch, base64 encoded) to include in UTC day buckets."
+        - name: time_between
+          in: query
+          schema:
+            type: string
+          description: "Comma-separated start and end timestamps (milliseconds since epoch, base64 encoded) to bound UTC day buckets."
       responses:
         '200':
           description: Successful response
@@ -290,6 +300,15 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/VectorSearchResult'
+        '400':
+          description: Missing query and time filter
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
   /symbols/refactor:
     post:
       summary: Refactor symbols
@@ -802,6 +821,12 @@ components:
       properties:
         id:
           type: string
+        created_at:
+          type: string
+          description: Milliseconds since epoch encoded as base64.
+        updated_at:
+          type: string
+          description: Milliseconds since epoch encoded as base64.
         entry_node:
           type: string
         activated_by:
@@ -900,6 +925,12 @@ components:
           type: string
         kind:
           $ref: '#/components/schemas/SymbolKind'
+        created_at:
+          type: string
+          description: Milliseconds since epoch encoded as base64.
+        updated_at:
+          type: string
+          description: Milliseconds since epoch encoded as base64.
         triad:
           type: string
         role:

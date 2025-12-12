@@ -59,7 +59,13 @@ describe('ToolsService', () => {
 
     it('search_symbols_vector calls domainService.search', async () => {
         await toolExecutor('search_symbols_vector', { query: 'test' });
-        expect(domainService.search).toHaveBeenCalledWith('test', 5);
+        expect(domainService.search).toHaveBeenCalledWith('test', 5, { time_gte: undefined, time_between: undefined });
+    });
+
+    it('search_symbols_vector requires query or time filter', async () => {
+        const res = await toolExecutor('search_symbols_vector', {});
+        expect(res).toEqual({ error: 'Provide a query or time filter (time_gte/time_between).' });
+        expect(domainService.search).not.toHaveBeenCalled();
     });
 
     it('add_test_case calls testService.addTest', async () => {

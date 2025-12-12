@@ -69,11 +69,18 @@ describe('Server API Endpoints', () => {
     // --- Symbols ---
     it('GET /api/symbols/search should search symbols', async () => {
         vi.mocked(domainService.search).mockResolvedValue([{ id: 's1', score: 1 }] as any);
-        
+
         const res = await request(app).get('/api/symbols/search?q=test');
         expect(res.status).toBe(200);
         expect(res.body).toHaveLength(1);
-        expect(domainService.search).toHaveBeenCalledWith('test', 5);
+        expect(domainService.search).toHaveBeenCalledWith('test', 5, { time_gte: undefined, time_between: undefined });
+    });
+
+    it('GET /api/symbols/search should require query or time filter', async () => {
+        const res = await request(app).get('/api/symbols/search');
+        expect(res.status).toBe(400);
+        expect(res.body.error).toContain('Provide a query or time filter');
+        expect(domainService.search).not.toHaveBeenCalled();
     });
 
     it('GET /api/symbols/:id should return symbol', async () => {
