@@ -103,7 +103,12 @@ export const toolDeclarations: FunctionDeclaration[] = [
       properties: {
         symbol_domain: {
           type: Type.STRING,
-          description: 'Filter symbols by domain (e.g., root, diagnostics). Defaults to "root".',
+          description: 'Filter symbols by domain (e.g., root, diagnostics). Defaults to "root". Can be a single domain or list.',
+        },
+        symbol_domains: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          description: 'Provide multiple domains to search across in a single query.',
         },
         symbol_tag: {
           type: Type.STRING,
@@ -122,7 +127,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
           description: 'If true, iteratively fetches ALL pages for the specified domain until complete.',
         }
       },
-      required: ['symbol_domain'],
+      required: [],
     },
   },
   {
@@ -371,41 +376,58 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
     switch (name) {
       
       case 'query_symbols': {
-        const { symbol_domain = 'root', symbol_tag, limit, last_symbol_id, fetch_all } = args;
+        const { symbol_domain, symbol_domains, symbol_tag, limit, last_symbol_id, fetch_all } = args;
 
-        // Ensure domain exists
-        const hasDomain = await domainService.hasDomain(symbol_domain);
-        if (!hasDomain) {
-             return { count: 0, symbols: [], status: `Domain '${symbol_domain}' not found in registry.` };
+        const domainsInput = symbol_domains ?? symbol_domain ?? 'root';
+        const domains = Array.isArray(domainsInput)
+          ? domainsInput.filter(Boolean)
+          : [domainsInput];
+        const uniqueDomains = Array.from(new Set(domains.length > 0 ? domains : ['root']));
+
+        const availability = await Promise.all(uniqueDomains.map((d) => domainService.hasDomain(d)));
+        const availableDomains = uniqueDomains.filter((_, i) => availability[i]);
+        const missingDomains = uniqueDomains.filter((_, i) => !availability[i]);
+
+        if (availableDomains.length === 0) {
+             return { count: 0, symbols: [], status: `Domains not found in registry: ${uniqueDomains.join(', ')}` };
         }
 
         if (fetch_all) {
-             const allSymbols = await domainService.getSymbols(symbol_domain);
-             let filtered = allSymbols;
-             if (symbol_tag) {
-                 filtered = allSymbols.filter(s => s.symbol_tag?.includes(symbol_tag));
-             }
+             const allSymbolsByDomain = await Promise.all(availableDomains.map((d) => domainService.getSymbols(d)));
+             const filtered = allSymbolsByDomain.flatMap((symbols) => {
+                 if (!symbol_tag) return symbols;
+                 return symbols.filter((s) => s.symbol_tag?.includes(symbol_tag));
+             });
+
              return {
                  count: filtered.length,
                  symbols: filtered,
-                 status: "Full domain load complete"
+                 status: "Full domain load complete",
+                 missing_domains: missingDomains.length > 0 ? missingDomains : undefined,
              };
         }
 
-        const cachedResult = await domainService.query(symbol_domain, symbol_tag, limit || 20, last_symbol_id);
-        
-        if (!cachedResult) {
-             return { count: 0, symbols: [] };
-        }
+        const cachedResults = await Promise.all(
+            availableDomains.map((d) => domainService.query(d, symbol_tag, limit || 20, last_symbol_id))
+        );
+
+        const hydratedResults = cachedResults
+            .map((res, i) => ({ domain: availableDomains[i], data: res }))
+            .filter((entry) => entry.data);
+
+        const symbols = hydratedResults.flatMap((entry) => entry.data!.items);
+        const pageInfoEntries = hydratedResults.map((entry) => ({
+            domain: entry.domain,
+            limit: limit || 20,
+            last_id: entry.data!.items.length > 0 ? entry.data!.items[entry.data!.items.length - 1].id : null
+        }));
 
         return {
-            count: cachedResult.items.length,
-            symbols: cachedResult.items,
-            page_info: {
-                limit: limit || 20,
-                last_id: cachedResult.items.length > 0 ? cachedResult.items[cachedResult.items.length - 1].id : null
-            },
-            source: "redis_cache"
+            count: symbols.length,
+            symbols,
+            page_info: pageInfoEntries.length === 1 ? pageInfoEntries[0] : pageInfoEntries,
+            source: "redis_cache",
+            missing_domains: missingDomains.length > 0 ? missingDomains : undefined,
         };
       }
 

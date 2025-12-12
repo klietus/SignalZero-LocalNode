@@ -36,6 +36,22 @@ describe('ToolsService', () => {
         expect(domainService.query).toHaveBeenCalledWith('root', undefined, 10, undefined);
     });
 
+    it('query_symbols supports multiple domains', async () => {
+        vi.mocked(domainService.hasDomain).mockImplementation(async () => true);
+        vi.mocked(domainService.query).mockImplementation(async (domain) => ({
+            items: [{ id: `${domain}-symbol` } as any],
+            total: 1,
+            source: 'redis_cache'
+        }));
+
+        const res = await toolExecutor('query_symbols', { symbol_domains: ['root', 'diagnostics'], limit: 5 });
+
+        expect(domainService.query).toHaveBeenCalledWith('root', undefined, 5, undefined);
+        expect(domainService.query).toHaveBeenCalledWith('diagnostics', undefined, 5, undefined);
+        expect(res.symbols.map((s: any) => s.id)).toEqual(['root-symbol', 'diagnostics-symbol']);
+        expect(Array.isArray(res.page_info)).toBe(true);
+    });
+
     it('get_symbol_by_id calls domainService.findById', async () => {
         vi.mocked(domainService.findById).mockResolvedValue({ id: 's1' } as any);
         const res = await toolExecutor('get_symbol_by_id', { id: 's1' });
