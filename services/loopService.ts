@@ -88,7 +88,11 @@ class LoopService {
 
     private getNextRun(loop: LoopDefinition, reference: Date): Date | null {
         try {
-            const baseDate = loop.lastRunAt ? new Date(loop.lastRunAt) : reference;
+            const baseDate = loop.lastRunAt
+                ? new Date(loop.lastRunAt)
+                : loop.createdAt
+                    ? new Date(loop.createdAt)
+                    : reference;
             const interval = CronExpressionParser.parse(loop.schedule, { currentDate: baseDate });
             return interval.next().toDate();
         } catch (error) {
