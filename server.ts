@@ -498,8 +498,13 @@ app.get('/api/tests/runs', async (req, res) => {
 app.get('/api/tests/runs/:id', async (req, res) => {
     try {
         const run = await testService.getTestRun(req.params.id);
-        if (run) res.json(run);
-        else res.status(404).json({ error: 'Run not found' });
+        if (run) {
+            res.json(run);
+            return;
+        }
+
+        // Return an empty result set instead of a 404 to keep the response shape predictable
+        res.json({ results: [] });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
