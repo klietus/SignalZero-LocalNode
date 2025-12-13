@@ -13,6 +13,8 @@ describe('TraceService', () => {
         const trace: TraceData = {
             id: 'test-1',
             timestamp: Date.now(),
+            created_at: '',
+            updated_at: '',
             source: 'test',
             content: { step: 'init' },
             type: 'reasoning'

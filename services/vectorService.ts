@@ -21,7 +21,7 @@ function resetCache() {
 function getClient(): ChromaClient {
     const { chromaUrl } = settingsService.getVectorSettings();
     if (!chromaClient || cachedClientPath !== chromaUrl) {
-        chromaClient = new ChromaClient({ path: chromaUrl, version: 'v2' });
+        chromaClient = new ChromaClient({ path: chromaUrl });
         cachedClientPath = chromaUrl;
         cachedCollection = null;
         cachedCollectionName = null;
@@ -173,7 +173,7 @@ export const vectorService = {
             const results: VectorSearchResult[] = ids.map((id: string, idx: number) => ({
                 id,
                 metadata: metadatas[idx],
-                document: documents[idx],
+                document: documents[idx] || "",
                 score: 1 - (distances[idx] || 0)
             }));
 

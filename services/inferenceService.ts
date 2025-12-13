@@ -15,7 +15,7 @@ if (!process.env.API_KEY) {
 }
 export const ai = new GoogleGenAI({ apiKey });
 
-type ModelName = 'gemini-3' | 'gemini-2.5-pro' | 'gemini-2.5-flash';
+type ModelName = 'gemini-3' | 'gemini-3-pro' | 'gemini-2.5-pro' | 'gemini-2.5-flash';
 
 const MODEL_FALLBACK_ORDER: ModelName[] = ['gemini-3', 'gemini-2.5-pro', 'gemini-2.5-flash'];
 

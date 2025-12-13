@@ -10,7 +10,7 @@ const KEYS = {
   DOMAIN_PREFIX: 'sz:domain:', // e.g., sz:domain:root
 };
 
-interface CachedDomain {
+export interface CachedDomain {
   id: string;   // Immutable Key
   name: string; // Display Name
   enabled: boolean;
