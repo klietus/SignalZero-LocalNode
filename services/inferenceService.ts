@@ -24,6 +24,7 @@ export const getChatSession = (systemInstruction: string) => {
       model: 'gemini-2.5-pro',
       config: {
         systemInstruction,
+        thinkingConfig: { thinkingBudget: 16000 },
         tools: [{ functionDeclarations: toolDeclarations }],
       },
     });
@@ -368,6 +369,7 @@ export const runSignalZeroTest = async (
       model: 'gemini-2.5-pro',
       config: {
         systemInstruction,
+        thinkingConfig: { thinkingBudget: 16000 },
         tools: [{ functionDeclarations: toolDeclarations }],
       },
     });
