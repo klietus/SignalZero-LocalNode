@@ -99,7 +99,7 @@ Return JSON with the field "invariants" as a non-empty array of concise invarian
 `;
 
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-2.0-flash-lite',
             contents: [{ parts: [{ text: prompt }] }],
             config: { responseMimeType: "application/json" }
         });
