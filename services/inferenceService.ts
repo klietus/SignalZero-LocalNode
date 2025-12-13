@@ -24,8 +24,6 @@ export const getChatSession = (systemInstruction: string) => {
       model: 'gemini-2.0-flash-lite',
       config: {
         systemInstruction,
-        // Enable thinking with a generous budget for reasoning tasks (Flash limit is ~24k)
-        thinkingConfig: { thinkingBudget: 16000 },
         tools: [{ functionDeclarations: toolDeclarations }],
       },
     });
@@ -370,7 +368,6 @@ export const runSignalZeroTest = async (
       model: 'gemini-2.0-flash-lite',
       config: {
         systemInstruction,
-        thinkingConfig: { thinkingBudget: 16000 },
         tools: [{ functionDeclarations: toolDeclarations }],
       },
     });
