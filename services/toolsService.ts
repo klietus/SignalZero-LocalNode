@@ -737,15 +737,14 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
         try {
           // Pure local list with metadata
           const metaList = await domainService.getMetadata();
-          
+
           // Map to simpler format for the model, sorting alphabetically
-          // ENRICHMENT: Include symbol_ids and full persona objects per domain
+          // ENRICHMENT: Include full persona objects per domain
           // Since getMetadata is async, metaList is the array result
           const domainResponsePromises = metaList
             .sort((a, b) => a.name.localeCompare(b.name))
             .map(async d => {
               const allSymbols = await domainService.getSymbols(d.id);
-              const symbolIds = allSymbols.map(s => s.id);
               // Filter for full symbol definitions where kind is 'persona'
               const personas = allSymbols.filter(s => s.kind === 'persona');
 
@@ -754,7 +753,6 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
                 name: d.name,
                 description: d.description || "No description provided.",
                 invariants: d.invariants || [],
-                symbol_ids: symbolIds,
                 personas: personas
               };
             });
