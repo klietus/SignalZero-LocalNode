@@ -744,6 +744,125 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/TraceData'
+  /loops:
+    get:
+      summary: List all configured loops
+      responses:
+        '200':
+          description: Scheduled loop definitions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  loops:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LoopDefinition'
+  /loops/{id}:
+    get:
+      summary: Get a loop definition
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Loop definition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoopDefinition'
+        '404':
+          description: Loop not found
+    put:
+      summary: Create or update a loop
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                schedule:
+                  type: string
+                  description: Cron-style schedule for the loop
+                prompt:
+                  type: string
+                  description: Prompt appended to the active system prompt for loop execution
+                enabled:
+                  type: boolean
+              required: [schedule, prompt, enabled]
+      responses:
+        '200':
+          description: Upserted loop definition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoopDefinition'
+        '400':
+          description: Invalid schedule or request body
+    delete:
+      summary: Delete a loop
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deletion result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    description: deleted or not_found
+  /loops/logs:
+    get:
+      summary: List loop execution logs
+      parameters:
+        - name: loopId
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter logs to a specific loop
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Maximum number of logs to return (default 20)
+        - name: includeTraces
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Include symbolic traces captured for each execution
+      responses:
+        '200':
+          description: Loop execution logs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LoopExecutionWithTraces'
 components:
   schemas:
     HealthStatus:
@@ -841,6 +960,64 @@ components:
           type: string
         status:
           type: string
+    LoopDefinition:
+      type: object
+      properties:
+        id:
+          type: string
+        schedule:
+          type: string
+        prompt:
+          type: string
+        enabled:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        lastRunAt:
+          type: string
+          format: date-time
+          nullable: true
+    LoopExecutionLog:
+      type: object
+      properties:
+        id:
+          type: string
+        loopId:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
+          enum: [running, completed, failed]
+        traceCount:
+          type: integer
+        logFilePath:
+          type: string
+          nullable: true
+        responsePreview:
+          type: string
+          nullable: true
+        error:
+          type: string
+          nullable: true
+    LoopExecutionWithTraces:
+      allOf:
+        - $ref: '#/components/schemas/LoopExecutionLog'
+        - type: object
+          properties:
+            traces:
+              type: array
+              items:
+                $ref: '#/components/schemas/TraceData'
     SymbolFacet:
       type: object
       properties:

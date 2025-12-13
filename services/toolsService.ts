@@ -4,9 +4,11 @@ import { domainService } from "./domainService.ts";
 import { domainInferenceService } from "./domainInferenceService.ts";
 import { testService } from "./testService.ts";
 import { traceService } from "./traceService.ts";
-import { TraceData } from "../types.ts";
+import { LoopDefinition, LoopExecutionLog, TraceData } from "../types.ts";
 import { indexingService } from "./indexingService.ts";
 import { loggerService } from "./loggerService.ts";
+import { EXECUTION_ZSET_KEY, LOOP_INDEX_KEY, getExecutionKey, getLoopKey, getTraceKey } from "./loopStorage.js";
+import { redisService } from "./redisService.js";
 
 // Shared Symbol Data Schema Properties for reuse in tools
 const SYMBOL_DATA_SCHEMA = {
@@ -91,6 +93,62 @@ const TRACE_DATA_SCHEMA = {
         status: { type: Type.STRING }
     },
     required: ['entry_node', 'activated_by', 'activation_path', 'source_context', 'output_node', 'status']
+};
+
+type LoopExecutionLogWithTraces = LoopExecutionLog & { traces?: TraceData[] };
+
+const fetchLoopDefinitions = async (): Promise<LoopDefinition[]> => {
+    const ids = await redisService.request(['SMEMBERS', LOOP_INDEX_KEY]);
+    if (!Array.isArray(ids) || ids.length === 0) return [];
+
+    const loops: LoopDefinition[] = [];
+    for (const id of ids) {
+        const payload = await redisService.request(['GET', getLoopKey(id)]);
+        if (!payload) continue;
+        try {
+            loops.push(JSON.parse(payload));
+        } catch (error) {
+            loggerService.error('ToolsService: Failed to parse loop payload', { id, error });
+        }
+    }
+    return loops;
+};
+
+const fetchLoopExecutions = async (
+    loopId?: string,
+    limit: number = 20,
+    includeTraces: boolean = false
+): Promise<LoopExecutionLogWithTraces[]> => {
+    const ids: string[] = await redisService.request(['ZRANGEBYSCORE', EXECUTION_ZSET_KEY, '-inf', '+inf']);
+    const ordered = Array.isArray(ids) ? ids.slice().reverse() : [];
+    const results: LoopExecutionLogWithTraces[] = [];
+
+    for (const id of ordered) {
+        if (results.length >= limit) break;
+        const payload = await redisService.request(['GET', getExecutionKey(id)]);
+        if (!payload) continue;
+
+        try {
+            const parsed: LoopExecutionLogWithTraces = JSON.parse(payload);
+            if (!loopId || parsed.loopId === loopId) {
+                if (includeTraces) {
+                    const tracePayload = await redisService.request(['GET', getTraceKey(id)]);
+                    if (tracePayload) {
+                        try {
+                            parsed.traces = JSON.parse(tracePayload) as TraceData[];
+                        } catch (error) {
+                            loggerService.error('ToolsService: Failed to parse execution traces', { id, error });
+                        }
+                    }
+                }
+                results.push(parsed);
+            }
+        } catch (error) {
+            loggerService.error('ToolsService: Failed to parse loop execution', { id, error });
+        }
+    }
+
+    return results;
 };
 
 // 1. Define the Schema for the tools
@@ -258,6 +316,26 @@ export const toolDeclarations: FunctionDeclaration[] = [
     parameters: {
       type: Type.OBJECT,
       properties: {},
+    },
+  },
+  {
+    name: 'list_loops',
+    description: 'List configured background loops with their schedules, prompts, and status flags.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+  {
+    name: 'list_loop_executions',
+    description: 'List recent loop execution logs. Optionally filter by loop id and include symbolic traces.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        loop_id: { type: Type.STRING, description: 'Filter executions to a specific loop id.' },
+        limit: { type: Type.INTEGER, description: 'Maximum number of executions to return (default 20).' },
+        include_traces: { type: Type.BOOLEAN, description: 'Include symbolic traces captured during each execution.' }
+      },
     },
   },
   {
@@ -688,6 +766,22 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
           console.error("Tool execution failed:", error);
           return { error: `Failed to list domains: ${String(error)}` };
         }
+      }
+
+      case 'list_loops': {
+          const loops = await fetchLoopDefinitions();
+          return { loops };
+      }
+
+      case 'list_loop_executions': {
+          const { loop_id, limit, include_traces } = args || {};
+          const parsedLimit = Number.isFinite(limit) ? Math.min(Math.max(Number(limit), 1), 100) : 20;
+          const logs = await fetchLoopExecutions(
+              typeof loop_id === 'string' ? loop_id : undefined,
+              parsedLimit,
+              include_traces === true
+          );
+          return { logs };
       }
 
       case 'add_test_case': {
