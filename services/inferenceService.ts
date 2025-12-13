@@ -15,25 +15,108 @@ if (!process.env.API_KEY) {
 }
 export const ai = new GoogleGenAI({ apiKey });
 
+type ModelName = 'gemini-3' | 'gemini-2.5-pro' | 'gemini-2.5-flash';
+
+const MODEL_FALLBACK_ORDER: ModelName[] = ['gemini-3', 'gemini-2.5-pro', 'gemini-2.5-flash'];
+
+const chatModelMap = new WeakMap<Chat, number>();
+let chatSessionModelIndex: number | null = null;
+let chatSessionSystemInstruction: string | null = null;
+
 // Create a persistent chat session
 let chatSession: Chat | null = null;
 
+const createChatInstance = (model: ModelName, systemInstruction: string) => {
+  const chat = ai.chats.create({
+    model,
+    config: {
+      systemInstruction,
+      thinkingConfig: { thinkingBudget: 16000 },
+      tools: [{ functionDeclarations: toolDeclarations }],
+    },
+  });
+
+  chatModelMap.set(chat, MODEL_FALLBACK_ORDER.indexOf(model));
+
+  return chat;
+};
+
+const buildChatWithFallback = (systemInstruction: string, startingIndex = 0) => {
+  const errors: string[] = [];
+
+  for (let offset = 0; offset < MODEL_FALLBACK_ORDER.length; offset++) {
+    const index = (startingIndex + offset) % MODEL_FALLBACK_ORDER.length;
+    const model = MODEL_FALLBACK_ORDER[index];
+
+    try {
+      const chat = createChatInstance(model, systemInstruction);
+      return { chat, index };
+    } catch (error) {
+      errors.push(`${model}: ${String(error)}`);
+    }
+  }
+
+  throw new Error(`All models failed: ${errors.join(' | ')}`);
+};
+
+const switchChatAfterError = (systemInstruction: string, failedIndex: number, persistSession: boolean) => {
+  const errors: string[] = [];
+
+  for (let offset = 1; offset < MODEL_FALLBACK_ORDER.length; offset++) {
+    const index = (failedIndex + offset) % MODEL_FALLBACK_ORDER.length;
+    const model = MODEL_FALLBACK_ORDER[index];
+
+    try {
+      const chat = createChatInstance(model, systemInstruction);
+
+      if (persistSession) {
+        chatSession = chat;
+        chatSessionModelIndex = index;
+        chatSessionSystemInstruction = systemInstruction;
+      }
+
+      return { chat, index };
+    } catch (error) {
+      errors.push(`${model}: ${String(error)}`);
+    }
+  }
+
+  throw new Error(`All models failed: ${errors.join(' | ')}`);
+};
+
 export const getChatSession = (systemInstruction: string) => {
-  if (!chatSession) {
-    chatSession = ai.chats.create({
-      model: 'gemini-2.5-pro',
-      config: {
-        systemInstruction,
-        thinkingConfig: { thinkingBudget: 16000 },
-        tools: [{ functionDeclarations: toolDeclarations }],
-      },
-    });
+  if (!chatSession || chatSessionSystemInstruction !== systemInstruction) {
+    const { chat, index } = buildChatWithFallback(systemInstruction);
+    chatSession = chat;
+    chatSessionModelIndex = index;
+    chatSessionSystemInstruction = systemInstruction;
   }
   return chatSession;
 };
 
 export const resetChatSession = () => {
   chatSession = null;
+  chatSessionModelIndex = null;
+  chatSessionSystemInstruction = null;
+};
+
+export const createFreshChatSession = (systemInstruction: string) => {
+  const { chat } = buildChatWithFallback(systemInstruction);
+  return chat;
+};
+
+const generateWithModelFallback = async (operation: (model: ModelName) => Promise<GenerateContentResponse>) => {
+  const errors: string[] = [];
+
+  for (const model of MODEL_FALLBACK_ORDER) {
+    try {
+      return await operation(model);
+    } catch (error) {
+      errors.push(`${model}: ${String(error)}`);
+    }
+  }
+
+  throw new Error(`All models failed: ${errors.join(' | ')}`);
 };
 
 const wrapMessageWithMetadata = (message: any) => {
@@ -147,13 +230,13 @@ export const generateSymbolSynthesis = async (
     }
     `;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-pro',
+    const response = await generateWithModelFallback((model) => ai.models.generateContent({
+      model,
       contents: [{ parts: [{ text: prompt }] }],
       config: {
         temperature: 0.7, // Slightly creative for synthesis
       }
-    });
+    }));
 
     return response.text || "";
   } catch (error) {
@@ -192,15 +275,15 @@ export const generateRefactor = async (
         8. Do not output text, just call the tool.
         `;
 
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-pro',
+        const response = await generateWithModelFallback((model) => ai.models.generateContent({
+            model,
             contents: [{ parts: [{ text: prompt }] }],
             config: {
                 tools: [{ functionDeclarations: toolDeclarations }],
                 // Force usage of the update tool if applicable, or ANY to allow reasoning
                 toolConfig: { functionCallingConfig: { mode: FunctionCallingConfigMode.ANY } }
             }
-        });
+        }));
 
         return response;
 
@@ -232,11 +315,11 @@ export const generatePersonaConversion = async (currentSymbol: SymbolDef): Promi
         Return a SINGLE valid JSON object wrapped in <sz_symbol></sz_symbol> tags.
         `;
     
-        const response = await ai.models.generateContent({
-          model: 'gemini-2.5-pro',
+        const response = await generateWithModelFallback((model) => ai.models.generateContent({
+          model,
           contents: [{ parts: [{ text: prompt }] }],
           config: { temperature: 0.5 }
-        });
+        }));
     
         return response.text || "";
     } catch (error) {
@@ -268,11 +351,11 @@ export const generateLatticeConversion = async (currentSymbol: SymbolDef): Promi
         Return a SINGLE valid JSON object wrapped in <sz_symbol></sz_symbol> tags.
         `;
 
-        const response = await ai.models.generateContent({
-          model: 'gemini-2.5-pro',
+        const response = await generateWithModelFallback((model) => ai.models.generateContent({
+          model,
           contents: [{ parts: [{ text: prompt }] }],
           config: { temperature: 0.5 }
-        });
+        }));
 
         return response.text || "";
     } catch (error) {
@@ -326,11 +409,11 @@ export const generateGapSynthesis = async (
         Return valid JSON object(s) wrapped in <sz_symbol></sz_symbol> tags. You may return multiple symbols if the gap requires a structure.
         `;
 
-        const response = await ai.models.generateContent({
-          model: 'gemini-2.5-pro',
+        const response = await generateWithModelFallback((model) => ai.models.generateContent({
+          model,
           contents: [{ parts: [{ text: prompt }] }],
           config: { temperature: 0.7 }
-        });
+        }));
 
         return response.text || "";
     } catch (error) {
@@ -365,14 +448,7 @@ export const runSignalZeroTest = async (
 
   try {
     // Create ephemeral chat with full system context
-    const chat = ai.chats.create({
-      model: 'gemini-2.5-pro',
-      config: {
-        systemInstruction,
-        thinkingConfig: { thinkingBudget: 16000 },
-        tools: [{ functionDeclarations: toolDeclarations }],
-      },
-    });
+    const chat = createFreshChatSession(systemInstruction);
 
     // Helper to execute a turn with tool handling
     const executeTurn = async (msg: string): Promise<string> => {
@@ -459,16 +535,22 @@ export const runSignalZeroTest = async (
 };
 
 export const runBaselineTest = async (prompt: string): Promise<string> => {
-    try {
-        // Baseline: No system prompt, no tools
-        const chat = ai.chats.create({
-            model: 'gemini-2.5-pro',
-        });
-        const result = await chat.sendMessage({ message: prompt });
-        return result.text || "";
-    } catch (error) {
-        return `ERROR: ${String(error)}`;
+    const errors: string[] = [];
+    for (let offset = 0; offset < MODEL_FALLBACK_ORDER.length; offset++) {
+        const model = MODEL_FALLBACK_ORDER[offset];
+        try {
+            // Baseline: No system prompt, no tools
+            const chat = ai.chats.create({
+                model,
+            });
+            const result = await chat.sendMessage({ message: prompt });
+            chatModelMap.set(chat, offset);
+            return result.text || "";
+        } catch (error) {
+            errors.push(`${model}: ${String(error)}`);
+        }
     }
+    return `ERROR: All models failed (${errors.join(' | ')})`;
 };
 
 export const evaluateComparison = async (prompt: string, szResponse: string, baseResponse: string): Promise<EvaluationMetrics> => {
@@ -509,11 +591,11 @@ export const evaluateComparison = async (prompt: string, szResponse: string, bas
         }
         `;
 
-        const result = await ai.models.generateContent({
-            model: 'gemini-2.5-pro',
+        const result = await generateWithModelFallback((model) => ai.models.generateContent({
+            model,
             contents: evalPrompt,
             config: { responseMimeType: "application/json" }
-        });
+        }));
 
         const json = JSON.parse(result.text || "{}");
         
@@ -538,7 +620,8 @@ export const evaluateComparison = async (prompt: string, szResponse: string, bas
 export async function* sendMessageAndHandleTools(
   chat: Chat,
   message: string,
-  toolExecutor: (name: string, args: any) => Promise<any>
+  toolExecutor: (name: string, args: any) => Promise<any>,
+  systemInstruction?: string
 ): AsyncGenerator<
   { text?: string; toolCalls?: any[]; isComplete?: boolean },
   void,
@@ -547,15 +630,45 @@ export async function* sendMessageAndHandleTools(
   let currentInput: any = message;
   let loops = 0;
   const MAX_LOOPS = 20;
+  let activeChat: Chat = chat;
+  let activeModelIndex = chatModelMap.get(chat) ?? chatSessionModelIndex ?? 0;
+  const fallbackErrors: string[] = [];
+  const effectiveSystemInstruction = systemInstruction || chatSessionSystemInstruction;
+  let modelSwitchCount = 0;
 
   while (loops < MAX_LOOPS) {
     let responseStream;
     try {
-      responseStream = await chat.sendMessageStream({ message: wrapMessageWithMetadata(currentInput) });
+      responseStream = await activeChat.sendMessageStream({ message: wrapMessageWithMetadata(currentInput) });
     } catch (error) {
-      console.error("Error sending message:", error);
-      yield { text: "Error: Could not connect to Gemini API. Check your API Key." };
-      return;
+      const modelName = MODEL_FALLBACK_ORDER[activeModelIndex] || 'unknown-model';
+      fallbackErrors.push(`${modelName}: ${String(error)}`);
+
+      if (!effectiveSystemInstruction) {
+        yield { text: `Error: ${String(error)}` };
+        return;
+      }
+
+      if (modelSwitchCount >= MODEL_FALLBACK_ORDER.length - 1) {
+        yield { text: `Error: All models failed (${fallbackErrors.join(' | ')})` };
+        return;
+      }
+
+      try {
+        const { chat: switchedChat, index } = switchChatAfterError(
+          effectiveSystemInstruction,
+          activeModelIndex,
+          chat === chatSession
+        );
+        activeChat = switchedChat;
+        activeModelIndex = index;
+        modelSwitchCount++;
+        responseStream = await activeChat.sendMessageStream({ message: wrapMessageWithMetadata(currentInput) });
+      } catch (switchError) {
+        fallbackErrors.push(String(switchError));
+        yield { text: `Error: All models failed (${fallbackErrors.join(' | ')})` };
+        return;
+      }
     }
 
     // We use 'any' here to avoid strict type import dependencies that might fail build

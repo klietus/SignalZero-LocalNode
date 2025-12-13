@@ -99,7 +99,7 @@ app.post('/api/chat', async (req, res) => {
     const toolExecutor = createToolExecutor(() => settingsService.getApiKey());
     
     // Use the streaming helper but collect the full response for the HTTP response
-    const stream = sendMessageAndHandleTools(chat, message, toolExecutor);
+    const stream = sendMessageAndHandleTools(chat, message, toolExecutor, activeSystemPrompt);
     
     let fullResponseText = "";
     let toolCalls: any[] = [];

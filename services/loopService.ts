@@ -7,7 +7,7 @@ import { createToolExecutor, toolDeclarations } from './toolsService.js';
 import { redisService } from './redisService.js';
 import { loggerService } from './loggerService.js';
 import { systemPromptService } from './systemPromptService.js';
-import { ai, sendMessageAndHandleTools } from './inferenceService.js';
+import { createFreshChatSession, sendMessageAndHandleTools } from './inferenceService.js';
 import { settingsService } from './settingsService.js';
 import { traceService } from './traceService.js';
 import { EXECUTION_ZSET_KEY, LOOP_INDEX_KEY, getExecutionKey, getLoopKey, getTraceKey } from './loopStorage.js';
@@ -147,17 +147,10 @@ class LoopService {
 
         try {
             const systemInstruction = await this.buildSystemInstruction(loop.prompt);
-            const chat = ai.chats.create({
-                model: 'gemini-2.5-pro',
-                config: {
-                    systemInstruction,
-                    thinkingConfig: { thinkingBudget: 16000 },
-                    tools: [{ functionDeclarations: toolDeclarations }],
-                },
-            });
+            const chat = createFreshChatSession(systemInstruction);
 
             const toolExecutor = createToolExecutor(() => settingsService.getApiKey());
-            const stream = sendMessageAndHandleTools(chat, loop.prompt, toolExecutor);
+            const stream = sendMessageAndHandleTools(chat, loop.prompt, toolExecutor, systemInstruction);
             const toolCalls: any[] = [];
 
             for await (const chunk of stream) {
