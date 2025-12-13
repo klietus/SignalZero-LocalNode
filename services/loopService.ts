@@ -199,12 +199,30 @@ class LoopService {
             loggerService.info('LoopService: Scheduler tick started');
             const loops = (await this.listLoops()).filter((loop) => loop.enabled);
             const now = new Date();
+            const checkedLoops: { loopId: string; nextRun: string | null }[] = [];
+            const dueLoops: { loop: LoopDefinition; nextRun: string }[] = [];
+
             for (const loop of loops) {
                 const nextRun = this.getNextRun(loop, now);
+                checkedLoops.push({ loopId: loop.id, nextRun: nextRun ? nextRun.toISOString() : null });
+
                 if (!nextRun) continue;
                 if (nextRun.getTime() <= now.getTime()) {
-                    await this.executeLoop(loop);
+                    dueLoops.push({ loop, nextRun: nextRun.toISOString() });
                 }
+            }
+
+            loggerService.info('LoopService: Scheduler checked loops', { checkedLoops, referenceTime: now.toISOString() });
+
+            if (dueLoops.length > 0) {
+                loggerService.info('LoopService: Loops due for execution', {
+                    loopIds: dueLoops.map((entry) => entry.loop.id),
+                });
+            }
+
+            for (const { loop, nextRun } of dueLoops) {
+                loggerService.info('LoopService: Triggering loop execution', { loopId: loop.id, nextRun });
+                await this.executeLoop(loop);
             }
         } catch (error) {
             loggerService.error('LoopService: Scheduler tick failed', { error });
