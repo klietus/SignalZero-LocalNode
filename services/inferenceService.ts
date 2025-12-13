@@ -21,9 +21,10 @@ let chatSession: Chat | null = null;
 export const getChatSession = (systemInstruction: string) => {
   if (!chatSession) {
     chatSession = ai.chats.create({
-      model: 'gemini-2.0-flash-lite',
+      model: 'gemini-2.5-pro',
       config: {
         systemInstruction,
+        thinkingConfig: { thinkingBudget: 16000 },
         tools: [{ functionDeclarations: toolDeclarations }],
       },
     });
@@ -147,7 +148,7 @@ export const generateSymbolSynthesis = async (
     `;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.0-flash-lite',
+      model: 'gemini-2.5-pro',
       contents: [{ parts: [{ text: prompt }] }],
       config: {
         temperature: 0.7, // Slightly creative for synthesis
@@ -192,7 +193,7 @@ export const generateRefactor = async (
         `;
 
         const response = await ai.models.generateContent({
-            model: 'gemini-2.0-flash-lite',
+            model: 'gemini-2.5-pro',
             contents: [{ parts: [{ text: prompt }] }],
             config: {
                 tools: [{ functionDeclarations: toolDeclarations }],
@@ -232,7 +233,7 @@ export const generatePersonaConversion = async (currentSymbol: SymbolDef): Promi
         `;
     
         const response = await ai.models.generateContent({
-          model: 'gemini-2.0-flash-lite',
+          model: 'gemini-2.5-pro',
           contents: [{ parts: [{ text: prompt }] }],
           config: { temperature: 0.5 }
         });
@@ -268,7 +269,7 @@ export const generateLatticeConversion = async (currentSymbol: SymbolDef): Promi
         `;
 
         const response = await ai.models.generateContent({
-          model: 'gemini-2.0-flash-lite',
+          model: 'gemini-2.5-pro',
           contents: [{ parts: [{ text: prompt }] }],
           config: { temperature: 0.5 }
         });
@@ -326,7 +327,7 @@ export const generateGapSynthesis = async (
         `;
 
         const response = await ai.models.generateContent({
-          model: 'gemini-2.0-flash-lite',
+          model: 'gemini-2.5-pro',
           contents: [{ parts: [{ text: prompt }] }],
           config: { temperature: 0.7 }
         });
@@ -365,9 +366,10 @@ export const runSignalZeroTest = async (
   try {
     // Create ephemeral chat with full system context
     const chat = ai.chats.create({
-      model: 'gemini-2.0-flash-lite',
+      model: 'gemini-2.5-pro',
       config: {
         systemInstruction,
+        thinkingConfig: { thinkingBudget: 16000 },
         tools: [{ functionDeclarations: toolDeclarations }],
       },
     });
@@ -460,7 +462,7 @@ export const runBaselineTest = async (prompt: string): Promise<string> => {
     try {
         // Baseline: No system prompt, no tools
         const chat = ai.chats.create({
-            model: 'gemini-2.0-flash-lite',
+            model: 'gemini-2.5-pro',
         });
         const result = await chat.sendMessage({ message: prompt });
         return result.text || "";
@@ -508,7 +510,7 @@ export const evaluateComparison = async (prompt: string, szResponse: string, bas
         `;
 
         const result = await ai.models.generateContent({
-            model: 'gemini-2.0-flash-lite',
+            model: 'gemini-2.5-pro',
             contents: evalPrompt,
             config: { responseMimeType: "application/json" }
         });
