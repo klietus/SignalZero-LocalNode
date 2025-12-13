@@ -7,6 +7,7 @@ const isTestEnv = process.env.NODE_ENV === 'test';
 // Lightweight in-memory mock to avoid real Redis connections during tests
 const mockStore = new Map<string, string>();
 const mockSets = new Map<string, Set<string>>();
+const mockSortedSets = new Map<string, Map<string, number>>();
 
 const getMockSet = (key: string) => {
     if (!mockSets.has(key)) mockSets.set(key, new Set<string>());
@@ -16,6 +17,39 @@ const getMockSet = (key: string) => {
 const handleMockCommand = async (command: any[]): Promise<any> => {
     const [cmd, ...args] = command;
     switch (cmd) {
+    case 'ZADD': {
+        const key = args[0];
+        const set = mockSortedSets.get(key) || new Map<string, number>();
+        for (let i = 1; i < args.length; i += 2) {
+            const score = Number(args[i]);
+            const value = args[i + 1];
+            set.set(String(value), score);
+        }
+        mockSortedSets.set(key, set);
+        return set.size;
+    }
+    case 'ZRANGEBYSCORE': {
+        const key = args[0];
+        const min = args[1] === '-inf' ? -Infinity : Number(args[1]);
+        const max = args[2] === '+inf' ? Infinity : Number(args[2]);
+        const set = mockSortedSets.get(key) || new Map<string, number>();
+        return Array.from(set.entries())
+            .filter(([, score]) => score >= min && score <= max)
+            .sort((a, b) => a[1] - b[1])
+            .map(([value]) => value);
+    }
+    case 'ZREM': {
+        const key = args[0];
+        const set = mockSortedSets.get(key) || new Map<string, number>();
+        let removed = 0;
+        for (let i = 1; i < args.length; i++) {
+            if (set.delete(String(args[i]))) {
+                removed++;
+            }
+        }
+        mockSortedSets.set(key, set);
+        return removed;
+    }
     case 'SMEMBERS': {
         const set = getMockSet(args[0]);
         return Array.from(set);
@@ -44,6 +78,7 @@ const handleMockCommand = async (command: any[]): Promise<any> => {
         args.forEach((key) => {
             if (mockStore.delete(key)) removed++;
             if (mockSets.delete(key)) removed++;
+            if (mockSortedSets.delete(key)) removed++;
         });
         return removed;
     }
@@ -166,5 +201,6 @@ export const __redisTestUtils = {
     resetMock: () => {
         mockStore.clear();
         mockSets.clear();
+        mockSortedSets.clear();
     }
 };

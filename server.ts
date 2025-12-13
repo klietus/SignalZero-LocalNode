@@ -14,6 +14,7 @@ import { ProjectMeta } from './types.js';
 import { loggerService } from './services/loggerService.js';
 import { systemPromptService } from './services/systemPromptService.js';
 import { fileURLToPath } from 'url';
+import { loopService } from './services/loopService.js';
 
 import { vectorService } from './services/vectorService.js';
 import { indexingService } from './services/indexingService.js';
@@ -596,6 +597,75 @@ app.get('/api/traces', (req, res) => {
     res.json(traceService.getTraces());
 });
 
+// Loop Management
+app.get('/api/loops', async (req, res) => {
+    try {
+        const loops = await loopService.listLoops();
+        res.json({ loops });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+app.get('/api/loops/:id', async (req, res) => {
+    try {
+        const loop = await loopService.getLoop(req.params.id);
+        if (!loop) {
+            res.status(404).json({ error: 'Loop not found' });
+            return;
+        }
+        res.json(loop);
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+app.put('/api/loops/:id', async (req, res) => {
+    const { schedule, prompt, enabled } = req.body || {};
+
+    if (typeof schedule !== 'string' || typeof prompt !== 'string' || typeof enabled !== 'boolean') {
+        res.status(400).json({ error: 'schedule (string), prompt (string), and enabled (boolean) are required' });
+        return;
+    }
+
+    try {
+        loopService.validateSchedule(schedule);
+        const loop = await loopService.upsertLoop(req.params.id, schedule, prompt, enabled);
+        res.json(loop);
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(400).json({ error: String(e) });
+    }
+});
+
+app.delete('/api/loops/:id', async (req, res) => {
+    try {
+        const removed = await loopService.deleteLoop(req.params.id);
+        res.json({ status: removed ? 'deleted' : 'not_found' });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+app.get('/api/loops/logs', async (req, res) => {
+    try {
+        const limit = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : undefined;
+        const includeTraces = req.query.includeTraces === 'true';
+        const logs = await loopService.getExecutionLogs(
+            typeof req.query.loopId === 'string' ? req.query.loopId : undefined,
+            Number.isFinite(limit) ? limit : 20,
+            includeTraces
+        );
+        res.json({ logs });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
 export { app };
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -611,5 +681,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         const vectorHealth = await vectorService.healthCheck();
         if (vectorHealth) loggerService.info("Vector DB Connection: OK");
         else loggerService.error("Vector DB Connection: FAILED");
+
+        await loopService.startBackgroundThreads();
     });
 }

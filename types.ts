@@ -199,6 +199,28 @@ export interface DomainImportStat {
     symbolCount: number;
 }
 
+export interface LoopDefinition {
+    id: string;
+    schedule: string;
+    prompt: string;
+    enabled: boolean;
+    createdAt: string;
+    updatedAt: string;
+    lastRunAt?: string;
+}
+
+export interface LoopExecutionLog {
+    id: string;
+    loopId: string;
+    startedAt: string;
+    finishedAt?: string;
+    status: 'running' | 'completed' | 'failed';
+    traceCount: number;
+    logFilePath?: string;
+    responsePreview?: string;
+    error?: string;
+}
+
 export interface ProjectImportStats {
     meta: ProjectMeta;
     testCaseCount: number;
