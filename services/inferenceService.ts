@@ -15,9 +15,9 @@ if (!process.env.API_KEY) {
 }
 export const ai = new GoogleGenAI({ apiKey });
 
-type ModelName = 'gemini-3' | 'gemini-3-pro' | 'gemini-2.5-pro' | 'gemini-2.5-flash';
+type ModelName = 'gemini-3-pro' | 'gemini-2.5-pro' | 'gemini-2.5-flash';
 
-const MODEL_FALLBACK_ORDER: ModelName[] = ['gemini-3', 'gemini-2.5-pro', 'gemini-2.5-flash'];
+const MODEL_FALLBACK_ORDER: ModelName[] = ['gemini-3-pro', 'gemini-2.5-pro', 'gemini-2.5-flash'];
 
 const chatModelMap = new WeakMap<Chat, number>();
 let chatSessionModelIndex: number | null = null;
@@ -27,13 +27,18 @@ let chatSessionSystemInstruction: string | null = null;
 let chatSession: Chat | null = null;
 
 const createChatInstance = (model: ModelName, systemInstruction: string) => {
+  const config: Parameters<typeof ai.chats.create>[0]["config"] = {
+    systemInstruction,
+    tools: [{ functionDeclarations: toolDeclarations }],
+  };
+
+  if (model !== 'gemini-2.5-flash') {
+    config.thinkingConfig = { thinkingBudget: 16000 };
+  }
+
   const chat = ai.chats.create({
     model,
-    config: {
-      systemInstruction,
-      thinkingConfig: { thinkingBudget: 16000 },
-      tools: [{ functionDeclarations: toolDeclarations }],
-    },
+    config,
   });
 
   chatModelMap.set(chat, MODEL_FALLBACK_ORDER.indexOf(model));
