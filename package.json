@@ -19,6 +19,7 @@
     "ioredis": "^5.8.2",
     "jszip": "^3.10.1",
     "long": "^5.2.3",
+    "openai": "^4.76.1",
     "morgan": "^1.10.1",
     "winston": "^3.19.0",
     "winston-daily-rotate-file": "^5.0.0"

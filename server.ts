@@ -2,22 +2,22 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import fs from 'fs';
-import { getChatSession, resetChatSession, sendMessageAndHandleTools, runSignalZeroTest } from './services/inferenceService.js';
-import { createToolExecutor } from './services/toolsService.js';
-import { settingsService } from './services/settingsService.js';
-import { ACTIVATION_PROMPT } from './symbolic_system/activation_prompt.js';
-import { domainService } from './services/domainService.js';
-import { traceService } from './services/traceService.js';
-import { projectService } from './services/projectService.js';
-import { testService } from './services/testService.js';
-import { ProjectMeta } from './types.js';
-import { loggerService } from './services/loggerService.js';
-import { systemPromptService } from './services/systemPromptService.js';
+import { getChatSession, resetChatSession, sendMessageAndHandleTools, runSignalZeroTest } from './services/inferenceService.ts';
+import { createToolExecutor } from './services/toolsService.ts';
+import { settingsService } from './services/settingsService.ts';
+import { ACTIVATION_PROMPT } from './symbolic_system/activation_prompt.ts';
+import { domainService } from './services/domainService.ts';
+import { traceService } from './services/traceService.ts';
+import { projectService } from './services/projectService.ts';
+import { testService } from './services/testService.ts';
+import { ProjectMeta } from './types.ts';
+import { loggerService } from './services/loggerService.ts';
+import { systemPromptService } from './services/systemPromptService.ts';
 import { fileURLToPath } from 'url';
-import { loopService } from './services/loopService.js';
+import { loopService } from './services/loopService.ts';
 
-import { vectorService } from './services/vectorService.js';
-import { indexingService } from './services/indexingService.js';
+import { vectorService } from './services/vectorService.ts';
+import { indexingService } from './services/indexingService.ts';
 
 dotenv.config();
 

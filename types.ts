@@ -1,7 +1,3 @@
-
-
-import { FunctionDeclaration } from "@google/genai";
-
 export enum Sender {
   USER = 'user',
   MODEL = 'model',
@@ -28,8 +24,14 @@ export interface AppState {
   theme: 'light' | 'dark';
 }
 
+export interface ToolDeclaration {
+  name: string;
+  description?: string;
+  parameters: Record<string, any>;
+}
+
 export interface ToolConfig {
-  declarations: FunctionDeclaration[];
+  declarations: ToolDeclaration[];
   executor: (name: string, args: any) => Promise<any>;
 }
 

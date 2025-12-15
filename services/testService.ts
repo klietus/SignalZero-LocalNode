@@ -1,9 +1,9 @@
 
-import { TestSet, TestRun, TestResult, TestCase } from '../types.js';
-import { redisService } from './redisService.js';
-import { traceService } from './traceService.js';
-import { evaluateComparison, runBaselineTest } from './inferenceService.js';
-import { loggerService } from './loggerService.js';
+import { TestSet, TestRun, TestResult, TestCase } from '../types.ts';
+import { redisService } from './redisService.ts';
+import { traceService } from './traceService.ts';
+import { evaluateComparison, runBaselineTest } from './inferenceService.ts';
+import { loggerService } from './loggerService.ts';
 
 const KEYS = {
   TEST_SETS: 'sz:test_sets',
