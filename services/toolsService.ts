@@ -1,10 +1,17 @@
+const Type = {
+    OBJECT: 'object',
+    STRING: 'string',
+    ARRAY: 'array',
+    INTEGER: 'integer',
+    BOOLEAN: 'boolean',
+    NUMBER: 'number',
+} as const;
 
-import { FunctionDeclaration, Type } from "@google/genai";
 import { domainService } from "./domainService.ts";
 import { domainInferenceService } from "./domainInferenceService.ts";
 import { testService } from "./testService.ts";
 import { traceService } from "./traceService.ts";
-import { LoopDefinition, LoopExecutionLog, TraceData } from "../types.ts";
+import { LoopDefinition, LoopExecutionLog, ToolDeclaration, TraceData } from "../types.ts";
 import { indexingService } from "./indexingService.ts";
 import { loggerService } from "./loggerService.ts";
 import { EXECUTION_ZSET_KEY, LOOP_INDEX_KEY, getExecutionKey, getLoopKey, getTraceKey } from "./loopStorage.js";
@@ -152,7 +159,7 @@ const fetchLoopExecutions = async (
 };
 
 // 1. Define the Schema for the tools
-export const toolDeclarations: FunctionDeclaration[] = [
+export const toolDeclarations: ToolDeclaration[] = [
   // --- SignalZero Symbol Store Tools (Local Cache Only) ---
   {
     name: 'query_symbols',
