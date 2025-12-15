@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { testService } from '../services/testService.ts';
 import { __redisTestUtils } from '../services/redisService.ts';
 import { traceService } from '../services/traceService.ts';
-import * as inferenceService from '../services/inferenceService.js';
+import * as inferenceService from '../services/inferenceService.ts';
 
 describe('TestService', () => {
     beforeEach(() => {

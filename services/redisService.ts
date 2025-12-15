@@ -1,6 +1,6 @@
 import { Redis } from 'ioredis';
-import { settingsService } from './settingsService.js';
-import { loggerService } from './loggerService.js';
+import { settingsService } from './settingsService.ts';
+import { loggerService } from './loggerService.ts';
 
 const isTestEnv = process.env.NODE_ENV === 'test';
 
