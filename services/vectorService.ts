@@ -102,15 +102,28 @@ export const vectorService = {
         if (!collection) return false;
 
         try {
+            const metadata = {
+                id: symbol.id,
+                name: symbol.name,
+                triad: symbol.triad,
+                symbol_domain: symbol.symbol_domain,
+                domain: symbol.symbol_domain,
+                symbol_tag: symbol.symbol_tag,
+                kind: symbol.kind || 'pattern',
+                macro: symbol.macro,
+                role: symbol.role,
+                failure_mode: symbol.failure_mode,
+                linked_patterns: symbol.linked_patterns,
+                facets: symbol.facets,
+                lattice: symbol.lattice,
+                persona: symbol.persona,
+                created_at: symbol.created_at,
+                updated_at: symbol.updated_at,
+            };
+
             await collection.upsert({
                 ids: [symbol.id],
-                metadatas: [{
-                    id: symbol.id,
-                    name: symbol.name,
-                    triad: symbol.triad,
-                    domain: symbol.symbol_domain,
-                    kind: symbol.kind || 'pattern'
-                }],
+                metadatas: [metadata],
                 documents: [content]
             });
 
@@ -154,7 +167,7 @@ export const vectorService = {
         }
     },
 
-    async search(query: string, nResults: number = 5): Promise<VectorSearchResult[]> {
+    async search(query: string, nResults: number = 5, metadataFilter?: Record<string, any>): Promise<VectorSearchResult[]> {
         const collection = await getCollectionInstance();
         if (!collection) return [];
 
@@ -162,7 +175,8 @@ export const vectorService = {
             const data = await collection.query({
                 queryTexts: [query],
                 nResults: nResults,
-                include: ["metadatas", "documents", "distances"]
+                include: ["metadatas", "documents", "distances"],
+                where: metadataFilter && Object.keys(metadataFilter).length > 0 ? metadataFilter : undefined,
             });
 
             const ids = data.ids?.[0] || [];

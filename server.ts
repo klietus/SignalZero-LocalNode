@@ -239,15 +239,44 @@ app.post('/api/admin/clear-all', async (req, res) => {
 
 // Search symbols (Vector) - Must be before /:id route
 app.get('/api/symbols/search', async (req, res) => {
-    const { q, limit, time_gte, time_between } = req.query;
+    const { q, limit, time_gte, time_between, metadata_filter, symbol_domain, symbol_domains, symbol_tag } = req.query;
     if (!q && !time_gte && !time_between) {
         res.status(400).json({ error: 'Provide a query or time filter (time_gte or time_between) to search symbols.' });
         return;
     }
+
+    let parsedMetadata: Record<string, any> | undefined;
+    if (metadata_filter) {
+        try {
+            parsedMetadata = typeof metadata_filter === 'string' ? JSON.parse(metadata_filter) : (metadata_filter as any);
+        } catch (err) {
+            res.status(400).json({ error: 'Invalid metadata_filter. Provide a valid JSON object.' });
+            return;
+        }
+    }
+
+    const domains = Array.isArray(symbol_domains)
+        ? symbol_domains
+        : symbol_domains
+        ? String(symbol_domains).split(',').map((d) => d.trim()).filter(Boolean)
+        : symbol_domain
+        ? [String(symbol_domain)]
+        : undefined;
+
+    const mergedMetadata = { ...(parsedMetadata || {}) } as Record<string, any>;
+    if (symbol_tag && mergedMetadata.symbol_tag === undefined) {
+        mergedMetadata.symbol_tag = symbol_tag;
+    }
+    if (domains && mergedMetadata.symbol_domain === undefined) {
+        mergedMetadata.symbol_domain = domains;
+    }
+
     try {
         const results = await domainService.search(q as string | null, limit ? Number(limit) : 5, {
             time_gte: time_gte as string | undefined,
             time_between: typeof time_between === 'string' ? (time_between as string).split(',') : (time_between as string[] | undefined),
+            metadata_filter: mergedMetadata,
+            domains,
         });
         res.json(results);
     } catch (e) {

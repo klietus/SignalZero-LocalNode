@@ -73,7 +73,7 @@ describe('Server API Endpoints', () => {
         const res = await request(app).get('/api/symbols/search?q=test');
         expect(res.status).toBe(200);
         expect(res.body).toHaveLength(1);
-        expect(domainService.search).toHaveBeenCalledWith('test', 5, { time_gte: undefined, time_between: undefined });
+        expect(domainService.search).toHaveBeenCalledWith('test', 5, { time_gte: undefined, time_between: undefined, metadata_filter: {}, domains: undefined });
     });
 
     it('GET /api/symbols/search should require query or time filter', async () => {
