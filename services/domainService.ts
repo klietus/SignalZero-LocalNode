@@ -301,29 +301,38 @@ export const domainService = {
    * Removes a specific symbol from a domain.
    */
   deleteSymbol: async (domainId: string, symbolId: string, cascade: boolean = true) => {
+    await domainService.deleteSymbols(domainId, [symbolId], cascade);
+  },
+
+  /**
+   * Removes one or more symbols from a domain.
+   */
+  deleteSymbols: async (domainId: string, symbolIds: string[], cascade: boolean = true) => {
+    if (symbolIds.length === 0) return;
+
     const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
     const data = await redisService.request(['GET', key]);
     if (!data) return;
 
     const domain: CachedDomain = JSON.parse(data);
-    
-    // 1. Remove symbol
-    domain.symbols = domain.symbols.filter(s => s.id !== symbolId);
-    
-    // Cleanup Vector
-    await vectorService.deleteSymbol(symbolId);
+    const idsToDelete = new Set(symbolIds);
 
-    // 2. Cascade
+    domain.symbols = domain.symbols.filter(s => !idsToDelete.has(s.id));
+
+    for (const symbolId of idsToDelete) {
+        await vectorService.deleteSymbol(symbolId);
+    }
+
     if (cascade) {
         domain.symbols.forEach(s => {
-            if (s.linked_patterns?.includes(symbolId)) {
-                s.linked_patterns = s.linked_patterns.filter(id => id !== symbolId);
+            if (s.linked_patterns) {
+                s.linked_patterns = s.linked_patterns.filter(id => !idsToDelete.has(id));
             }
-            if (s.kind === 'lattice' && s.lattice?.members?.includes(symbolId)) {
-                s.lattice.members = s.lattice.members.filter(id => id !== symbolId);
+            if (s.kind === 'lattice' && s.lattice?.members) {
+                s.lattice.members = s.lattice.members.filter(id => !idsToDelete.has(id));
             }
-            if (s.kind === 'persona' && s.persona?.linked_personas?.includes(symbolId)) {
-                s.persona.linked_personas = s.persona.linked_personas.filter(id => id !== symbolId);
+            if (s.kind === 'persona' && s.persona?.linked_personas) {
+                s.persona.linked_personas = s.persona.linked_personas.filter(id => !idsToDelete.has(id));
             }
         });
     }
