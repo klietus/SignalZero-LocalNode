@@ -26,6 +26,28 @@ const indexSymbolBucket = async (symbol: SymbolDef) => {
   await redisService.request(['SADD', getDayBucketKey('symbols', createdMs), symbol.id]);
 };
 
+const matchesValue = (symbolValue: unknown, filterValue: unknown): boolean => {
+  const filterValues = Array.isArray(filterValue) ? filterValue : [filterValue];
+
+  return filterValues.some((fv) => {
+      if (Array.isArray(symbolValue)) {
+          return symbolValue.map(String).includes(String(fv));
+      }
+      return symbolValue !== undefined && symbolValue !== null && String(symbolValue) === String(fv);
+  });
+};
+
+const matchesMetadataFilter = (symbol: SymbolDef, metadataFilter?: Record<string, unknown>): boolean => {
+  if (!metadataFilter || Object.keys(metadataFilter).length === 0) return true;
+
+  return Object.entries(metadataFilter).every(([key, value]) => {
+      if (value === undefined || value === null) return true;
+      const symbolValue = (symbol as Record<string, unknown>)[key];
+      if (symbolValue === undefined || symbolValue === null) return false;
+      return matchesValue(symbolValue, value);
+  });
+};
+
 // --- Public API ---
 
 export const domainService = {
@@ -178,12 +200,13 @@ export const domainService = {
   search: async (
       query: string | null,
       limit: number = 5,
-      filters?: { time_gte?: string; time_between?: string[] }
+      filters?: { time_gte?: string; time_between?: string[]; metadata_filter?: Record<string, unknown>; domains?: string[] }
   ): Promise<(VectorSearchResult & { symbol: SymbolDef | null })[]> => {
       const hasQuery = !!(query && query.trim().length > 0);
       const hasTimeFilter = !!(filters?.time_gte || (filters?.time_between && filters.time_between.length > 0));
-      if (!hasQuery && !hasTimeFilter) {
-          throw new Error('Provide a query or time filter (time_gte or time_between) to search symbols.');
+      const hasMetadataFilter = !!(filters?.metadata_filter && Object.keys(filters.metadata_filter).length > 0);
+      if (!hasQuery && !hasTimeFilter && !hasMetadataFilter) {
+          throw new Error('Provide a query, metadata_filter, or time filter (time_gte or time_between) to search symbols.');
       }
 
       const { keys: bucketKeys, rangeApplied } = getBucketKeysFromTimestamps('symbols', filters?.time_gte, filters?.time_between);
@@ -198,12 +221,13 @@ export const domainService = {
           });
       }
 
-      const shouldSkipSemantic = !query || query.trim().length === 0;
-      const results = shouldSkipSemantic ? [] : await vectorService.search(query, limit);
-      const domains = await domainService.listDomains();
-      
+      const shouldSkipSemantic = !hasQuery;
+      const domains = filters?.domains && filters.domains.length > 0
+          ? filters.domains
+          : await domainService.listDomains();
+
       // Load all domains to hydrate (inefficient but safe for "local node")
-      // Optimization: Pipeline GETs? Upstash supports pipeline via REST? 
+      // Optimization: Pipeline GETs? Upstash supports pipeline via REST?
       // For now, simple Promise.all
       const domainData = await Promise.all(domains.map(d => redisService.request(['GET', `${KEYS.DOMAIN_PREFIX}${d}`])));
       const store: Record<string, CachedDomain> = {};
@@ -215,6 +239,13 @@ export const domainService = {
               } catch {}
           }
       });
+
+      const prefilteredSymbols = Object.values(store)
+          .filter((d) => d.enabled)
+          .flatMap((d) => d.symbols)
+          .filter((s) => matchesMetadataFilter(s, filters?.metadata_filter));
+
+      const results = shouldSkipSemantic ? [] : await vectorService.search(query!, limit, filters?.metadata_filter);
 
       const hydratedResults = results
         .filter(r => bucketIds.size === 0 || bucketIds.has(r.id))
@@ -234,12 +265,24 @@ export const domainService = {
               metadata: { ...(r.metadata || {}), bucket_keys: bucketKeys },
               symbol
           };
-      });
+      })
+      .filter((entry) => entry.symbol ? matchesMetadataFilter(entry.symbol, filters?.metadata_filter) : false);
+
+      if (!hasQuery) {
+          return prefilteredSymbols
+              .filter((s) => bucketIds.size === 0 || bucketIds.has(s.id))
+              .slice(0, limit)
+              .map((symbol) => ({
+                  id: symbol.id,
+                  score: 1,
+                  metadata: { source: 'structured_filter', bucket_keys: bucketKeys },
+                  document: '',
+                  symbol
+              }));
+      }
 
       if (hydratedResults.length === 0 && rangeApplied && bucketIds.size > 0) {
-          const bucketSymbols = Object.values(store)
-              .filter((d) => d.enabled)
-              .flatMap((d) => d.symbols)
+          const bucketSymbols = prefilteredSymbols
               .filter((s) => bucketIds.has(s.id));
 
           return bucketSymbols.map((symbol) => ({
