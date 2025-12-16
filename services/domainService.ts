@@ -26,6 +26,82 @@ const indexSymbolBucket = async (symbol: SymbolDef) => {
   await redisService.request(['SADD', getDayBucketKey('symbols', createdMs), symbol.id]);
 };
 
+type MetadataFilter = Record<string, any>;
+
+const toArray = (value: any): any[] => {
+  if (Array.isArray(value)) return value.filter((v) => v !== undefined && v !== null);
+  return value === undefined || value === null ? [] : [value];
+};
+
+const mergeInFilter = (target: MetadataFilter, key: string, value: any) => {
+  if (value === undefined || value === null) return;
+  if (Array.isArray(value)) {
+      const existing = target[key];
+      const nextValues = value.filter((v) => v !== undefined && v !== null);
+      if (nextValues.length === 0) return;
+
+      if (existing && typeof existing === 'object' && !Array.isArray(existing) && '$in' in existing) {
+          const merged = Array.from(new Set([...(existing.$in as any[]), ...nextValues]));
+          target[key] = { $in: merged };
+          return;
+      }
+
+      target[key] = nextValues.length === 1 ? nextValues[0] : { $in: nextValues };
+      return;
+  }
+
+  target[key] = value;
+};
+
+const normalizeMetadataFilter = (rawFilter?: MetadataFilter, domains?: string[]): MetadataFilter | undefined => {
+  const filter: MetadataFilter = {};
+
+  if (rawFilter) {
+      Object.entries(rawFilter).forEach(([key, value]) => {
+          if (value !== undefined && value !== null) {
+              if (Array.isArray(value)) {
+                  mergeInFilter(filter, key, value);
+              } else {
+                  filter[key] = value;
+              }
+          }
+      });
+  }
+
+  if (domains && domains.length > 0) {
+      mergeInFilter(filter, 'symbol_domain', domains);
+      mergeInFilter(filter, 'domain', domains);
+  }
+
+  const keys = Object.keys(filter);
+  return keys.length > 0 ? filter : undefined;
+};
+
+const valueMatches = (actual: any, expected: any): boolean => {
+  if (expected === undefined) return true;
+  if (expected && typeof expected === 'object' && !Array.isArray(expected) && '$in' in expected) {
+      const candidates = toArray((expected as any).$in);
+      if (candidates.length === 0) return true;
+      return candidates.some((candidate) => valueMatches(actual, candidate));
+  }
+
+  if (Array.isArray(expected)) {
+      return expected.some((candidate) => valueMatches(actual, candidate));
+  }
+
+  if (Array.isArray(actual)) {
+      return actual.includes(expected);
+  }
+
+  return actual === expected;
+};
+
+const matchesMetadataFilter = (symbol: SymbolDef, filter?: MetadataFilter): boolean => {
+  if (!filter || Object.keys(filter).length === 0) return true;
+
+  return Object.entries(filter).every(([key, expected]) => valueMatches((symbol as any)[key], expected));
+};
+
 // --- Public API ---
 
 export const domainService = {
@@ -178,13 +254,15 @@ export const domainService = {
   search: async (
       query: string | null,
       limit: number = 5,
-      filters?: { time_gte?: string; time_between?: string[] }
+      filters?: { time_gte?: string; time_between?: string[]; metadata_filter?: MetadataFilter; domains?: string[] }
   ): Promise<(VectorSearchResult & { symbol: SymbolDef | null })[]> => {
       const hasQuery = !!(query && query.trim().length > 0);
       const hasTimeFilter = !!(filters?.time_gte || (filters?.time_between && filters.time_between.length > 0));
       if (!hasQuery && !hasTimeFilter) {
           throw new Error('Provide a query or time filter (time_gte or time_between) to search symbols.');
       }
+
+      const metadataFilter = normalizeMetadataFilter(filters?.metadata_filter, filters?.domains);
 
       const { keys: bucketKeys, rangeApplied } = getBucketKeysFromTimestamps('symbols', filters?.time_gte, filters?.time_between);
       const bucketIds = new Set<string>();
@@ -199,7 +277,7 @@ export const domainService = {
       }
 
       const shouldSkipSemantic = !query || query.trim().length === 0;
-      const results = shouldSkipSemantic ? [] : await vectorService.search(query, limit);
+      const results = shouldSkipSemantic ? [] : await vectorService.search(query, limit, metadataFilter);
       const domains = await domainService.listDomains();
       
       // Load all domains to hydrate (inefficient but safe for "local node")
@@ -223,7 +301,7 @@ export const domainService = {
           for (const domainId of Object.keys(store)) {
             if (store[domainId].enabled) {
                 const found = store[domainId].symbols.find(s => s.id === r.id);
-                if (found) {
+                if (found && matchesMetadataFilter(found, metadataFilter)) {
                     symbol = found;
                     break;
                 }
@@ -240,7 +318,8 @@ export const domainService = {
           const bucketSymbols = Object.values(store)
               .filter((d) => d.enabled)
               .flatMap((d) => d.symbols)
-              .filter((s) => bucketIds.has(s.id));
+              .filter((s) => bucketIds.has(s.id))
+              .filter((s) => matchesMetadataFilter(s, metadataFilter));
 
           return bucketSymbols.map((symbol) => ({
               id: symbol.id,
@@ -287,6 +366,119 @@ export const domainService = {
 
     domain.lastUpdated = Date.now();
     await redisService.request(['SET', key, JSON.stringify(domain)]);
+  },
+
+  /**
+   * Unified symbol finder that combines structured filters with semantic search.
+   */
+  findSymbols: async (params: {
+      query?: string | null;
+      limit?: number;
+      symbol_domain?: string;
+      symbol_domains?: string[];
+      symbol_tag?: string;
+      last_symbol_id?: string;
+      fetch_all?: boolean;
+      metadata_filter?: MetadataFilter;
+      time_gte?: string;
+      time_between?: string[];
+  }) => {
+      const {
+          query,
+          symbol_domain,
+          symbol_domains,
+          symbol_tag,
+          last_symbol_id,
+          fetch_all,
+          metadata_filter,
+          time_gte,
+          time_between,
+      } = params;
+
+      const domainsInput = symbol_domains ?? symbol_domain ?? metadata_filter?.symbol_domain ?? 'root';
+      const domains = Array.isArray(domainsInput) ? domainsInput.filter(Boolean) : [domainsInput];
+      const uniqueDomains = Array.from(new Set(domains.length > 0 ? domains : ['root']));
+
+      const availability = await Promise.all(uniqueDomains.map((d) => domainService.hasDomain(d)));
+      const availableDomains = uniqueDomains.filter((_, i) => availability[i]);
+      const missingDomains = uniqueDomains.filter((_, i) => !availability[i]);
+
+      if (availableDomains.length === 0) {
+           return { count: 0, symbols: [], status: `Domains not found in registry: ${uniqueDomains.join(', ')}` };
+      }
+
+      const mergedMetadataFilter: MetadataFilter = { ...(metadata_filter || {}) };
+      if (symbol_tag && mergedMetadataFilter.symbol_tag === undefined) {
+          mergedMetadataFilter.symbol_tag = symbol_tag;
+      }
+      if (mergedMetadataFilter.symbol_domain === undefined) {
+          mergedMetadataFilter.symbol_domain = availableDomains;
+      }
+
+      const normalizedMetadataFilter = normalizeMetadataFilter(mergedMetadataFilter);
+      const normalizedLimit = Math.min(params.limit ?? 20, 50);
+
+      const structuredSymbols: SymbolDef[] = [];
+      const pageInfoEntries: any[] = [];
+
+      for (const domainId of availableDomains) {
+          const symbols = await domainService.getSymbols(domainId);
+          const filtered = symbols.filter((s) => matchesMetadataFilter(s, normalizedMetadataFilter));
+
+          if (fetch_all) {
+              structuredSymbols.push(...filtered);
+              continue;
+          }
+
+          let startIndex = 0;
+          if (last_symbol_id) {
+              const foundIndex = filtered.findIndex((s) => s.id === last_symbol_id);
+              if (foundIndex !== -1) startIndex = foundIndex + 1;
+          }
+
+          const paged = filtered.slice(startIndex, startIndex + normalizedLimit);
+          structuredSymbols.push(...paged);
+          pageInfoEntries.push({
+              domain: domainId,
+              limit: normalizedLimit,
+              last_id: paged.length > 0 ? paged[paged.length - 1].id : null,
+          });
+      }
+
+      const shouldSearchVector = !!(query && query.trim().length > 0) || !!time_gte || !!(time_between && time_between.length > 0);
+      const semanticResults = shouldSearchVector
+          ? await domainService.search(query || null, normalizedLimit, {
+                time_gte,
+                time_between,
+                metadata_filter: mergedMetadataFilter,
+                domains: availableDomains,
+            })
+          : [];
+
+      const combined = new Map<string, SymbolDef>();
+      semanticResults.forEach((r) => {
+          if (r.symbol) combined.set(r.symbol.id, r.symbol);
+      });
+      structuredSymbols.forEach((s) => {
+          if (!combined.has(s.id)) combined.set(s.id, s);
+      });
+
+      return {
+          count: combined.size,
+          symbols: Array.from(combined.values()),
+          semantic_results: semanticResults,
+          structured_count: structuredSymbols.length,
+          structured_page_info: pageInfoEntries.length === 1 ? pageInfoEntries[0] : pageInfoEntries,
+          missing_domains: missingDomains.length > 0 ? missingDomains : undefined,
+          filters: {
+              query: query ?? null,
+              symbol_domains: availableDomains,
+              symbol_tag,
+              metadata_filter: mergedMetadataFilter,
+              time_gte,
+              time_between,
+          },
+      };
   },
 
   /**
