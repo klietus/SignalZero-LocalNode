@@ -13,8 +13,8 @@ describe('ToolsService', () => {
         vi.spyOn(domainService, 'getSymbols').mockResolvedValue([]);
         vi.spyOn(domainService, 'listDomains').mockResolvedValue(['root']);
         vi.spyOn(domainService, 'findById').mockResolvedValue(null);
-        vi.spyOn(domainService, 'upsertSymbol').mockResolvedValue(undefined);
-        vi.spyOn(domainService, 'deleteSymbol').mockResolvedValue(undefined);
+        vi.spyOn(domainService, 'bulkUpsert').mockResolvedValue(undefined as any);
+        vi.spyOn(domainService, 'deleteSymbols').mockResolvedValue(undefined);
         vi.spyOn(domainService, 'search').mockResolvedValue([]);
         vi.spyOn(domainService, 'getMetadata').mockResolvedValue([]);
         vi.spyOn(domainService, 'processRefactorOperation').mockResolvedValue({ count: 1, renamedIds: [] });
@@ -49,25 +49,24 @@ describe('ToolsService', () => {
         });
     });
 
-    it('get_symbol_by_id calls domainService.findById', async () => {
-        vi.mocked(domainService.findById).mockResolvedValue({ id: 's1' } as any);
-        const res = await toolExecutor('get_symbol_by_id', { id: 's1' });
-        expect(domainService.findById).toHaveBeenCalledWith('s1');
-        expect(res).toEqual({ id: 's1' });
-    });
-
-    it('save_symbol calls domainService.upsertSymbol', async () => {
+    it('upsert_symbols calls domainService.bulkUpsert for adds', async () => {
         const sym = { id: 's1', symbol_domain: 'dom' };
-        await toolExecutor('save_symbol', { symbol_id: 's1', symbol_data: sym });
-        expect(domainService.upsertSymbol).toHaveBeenCalledWith('dom', sym);
+        await toolExecutor('upsert_symbols', { symbols: [{ symbol_data: sym }] });
+        expect(domainService.bulkUpsert).toHaveBeenCalledWith('dom', [sym]);
     });
 
-    it('delete_symbol calls domainService.deleteSymbol', async () => {
+    it('upsert_symbols routes renames to processRefactorOperation', async () => {
+        const sym = { id: 'new', symbol_domain: 'dom' };
+        await toolExecutor('upsert_symbols', { symbols: [{ old_id: 'old', symbol_data: sym }] });
+        expect(domainService.processRefactorOperation).toHaveBeenCalledWith([{ old_id: 'old', symbol_data: sym }]);
+    });
+
+    it('delete_symbols calls domainService.deleteSymbols', async () => {
         // Needs to find symbol to infer domain
         vi.mocked(domainService.findById).mockResolvedValue({ id: 's1', symbol_domain: 'dom' } as any);
-        
-        await toolExecutor('delete_symbol', { symbol_id: 's1' });
-        expect(domainService.deleteSymbol).toHaveBeenCalledWith('dom', 's1', true);
+
+        await toolExecutor('delete_symbols', { symbol_ids: ['s1'] });
+        expect(domainService.deleteSymbols).toHaveBeenCalledWith('dom', ['s1'], true);
     });
 
     it('find_symbols supports structured filtering when no semantic query is provided', async () => {
@@ -100,9 +99,9 @@ describe('ToolsService', () => {
         expect(traceService.addTrace).toHaveBeenCalledWith(trace);
     });
 
-    it('bulk_update_symbols calls domainService.processRefactorOperation', async () => {
-        const updates = [{ old_id: 'o1', symbol_data: { id: 'n1' } }];
-        await toolExecutor('bulk_update_symbols', { updates });
+    it('upsert_symbols handles updates via processRefactorOperation', async () => {
+        const updates = [{ old_id: 'o1', symbol_data: { id: 'n1', symbol_domain: 'root' } }];
+        await toolExecutor('upsert_symbols', { symbols: updates });
         expect(domainService.processRefactorOperation).toHaveBeenCalledWith(updates);
     });
 

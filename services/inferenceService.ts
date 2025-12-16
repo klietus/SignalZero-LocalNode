@@ -272,10 +272,10 @@ export const generateRefactor = async (
         INSTRUCTIONS:
         1. Analyze the user instruction and the current symbol list.
         2. Identify which symbols need modification (updates, renames, logic changes).
-        3. You MUST use the 'bulk_update_symbols' tool to apply these changes.
-        4. CRITICAL: For each update, provide the 'old_id' AND the COMPLETE 'symbol_data' (the entire new JSON object).
+        3. You MUST use the 'upsert_symbols' tool to apply these changes.
+        4. CRITICAL: For each update, provide the COMPLETE 'symbol_data' (the entire new JSON object).
         5. DO NOT provide partial updates. 'symbol_data' must be the full valid symbol schema, including all existing fields that haven't changed.
-        6. If renaming a symbol, ensure 'symbol_data.id' is the new ID, and 'old_id' is the previous ID.
+        6. If renaming a symbol, ensure 'symbol_data.id' is the new ID and include 'old_id' as the previous ID. For brand new symbols, omit 'old_id'.
         7. Ensure 'symbol_data.symbol_domain' IS PRESERVED as '${domain}'.
         8. Do not output text, just call the tool.
         `;

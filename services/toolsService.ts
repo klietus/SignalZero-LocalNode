@@ -4,7 +4,7 @@ import { domainService } from "./domainService.ts";
 import { domainInferenceService } from "./domainInferenceService.ts";
 import { testService } from "./testService.ts";
 import { traceService } from "./traceService.ts";
-import { LoopDefinition, LoopExecutionLog, TraceData } from "../types.ts";
+import { LoopDefinition, LoopExecutionLog, SymbolDef, TraceData } from "../types.ts";
 import { indexingService } from "./indexingService.ts";
 import { loggerService } from "./loggerService.ts";
 import { EXECUTION_ZSET_KEY, LOOP_INDEX_KEY, getExecutionKey, getLoopKey, getTraceKey } from "./loopStorage.js";
@@ -199,21 +199,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
     },
   },
   {
-    name: 'get_symbol_by_id',
-    description: 'Retrieve a specific symbol by its unique ID from the local store.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        id: {
-          type: Type.STRING,
-          description: 'The unique identifier of the symbol (e.g., SZ:BOOT-SEAL-001).',
-        },
-      },
-      required: ['id'],
-    },
-  },
-  {
-    name: 'load_symbols_bulk',
+    name: 'load_symbols',
     description: 'Retrieve multiple symbols at once by their IDs. Useful for expanding a list of linked patterns.',
     parameters: {
       type: Type.OBJECT,
@@ -228,58 +214,43 @@ export const toolDeclarations: FunctionDeclaration[] = [
     },
   },
   {
-    name: 'save_symbol',
-    description: 'Store or update a symbol in the local SignalZero registry.',
+    name: 'delete_symbols',
+    description: 'Permanently remove one or more symbols from the registry. CAUTION: Only use this tool when explicitly instructed by the user, or when completing a merge/refactor operation where a new replacement symbol has successfully been created.',
     parameters: {
       type: Type.OBJECT,
       properties: {
-        symbol_id: {
-          type: Type.STRING,
-          description: 'The unique ID for the symbol.',
-        },
-        symbol_data: SYMBOL_DATA_SCHEMA
-      },
-      required: ['symbol_id', 'symbol_data'],
-    },
-  },
-  {
-    name: 'delete_symbol',
-    description: 'Permanently remove a symbol from the registry. CAUTION: Only use this tool when explicitly instructed by the user, or when completing a merge/refactor operation where a new replacement symbol has successfully been created.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        symbol_id: { type: Type.STRING, description: 'The ID of the symbol to delete.' },
-        symbol_domain: { type: Type.STRING, description: 'The domain the symbol belongs to (optional, inferred if missing).' },
+        symbol_ids: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'The IDs of the symbols to delete.' },
+        symbol_domain: { type: Type.STRING, description: 'The domain the symbols belong to (optional, inferred if missing).' },
         cascade: { type: Type.BOOLEAN, description: 'If true, removes references to this symbol from other symbols (linked_patterns, members). Defaults to true.' }
       },
-      required: ['symbol_id']
+      required: ['symbol_ids']
     }
   },
   {
-    name: 'bulk_update_symbols',
-    description: 'Refactor multiple symbols at once. Can handle updates and renames. Used for domain-wide refactoring.',
+    name: 'upsert_symbols',
+    description: 'Upsert multiple symbols at once. Supports updates, renames (with old_id), and new symbol additions.',
     parameters: {
       type: Type.OBJECT,
       properties: {
-        updates: {
+        symbols: {
           type: Type.ARRAY,
-          description: 'List of update operations.',
+          description: 'List of symbol upsert operations.',
           items: {
             type: Type.OBJECT,
             properties: {
-              old_id: { type: Type.STRING, description: 'The current ID of the symbol being modified.' },
+              old_id: { type: Type.STRING, description: 'Optional existing ID for rename or update. If omitted, a new symbol will be added.' },
               // Explicitly reuse the full schema here so the model doesn't send empty objects
               symbol_data: SYMBOL_DATA_SCHEMA
             },
-            required: ['old_id', 'symbol_data']
+            required: ['symbol_data']
           }
         }
       },
-      required: ['updates']
+      required: ['symbols'],
     }
   },
-  {
-    name: 'compress_symbols',
+    {
+      name: 'compress_symbols',
     description: 'Merge multiple existing symbols into a single new symbol (compression). This action stores the new symbol, updates all references in the domain to point to it, and then deletes the old symbols.',
     parameters: {
       type: Type.OBJECT,
@@ -305,19 +276,8 @@ export const toolDeclarations: FunctionDeclaration[] = [
         description: { type: Type.STRING, description: 'Human-readable description of the new domain.' },
         invariants: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Optional explicit invariants. If omitted, the tool will infer them.' }
       },
-      required: ['domain_id', 'description']
-    }
-  },
-  {
-    name: 'populate_invariants',
-    description: 'Infer and populate invariant constraints for an existing domain that currently has none.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        domain_id: { type: Type.STRING, description: 'The id/slug of the existing domain missing invariants.' }
-      },
-      required: ['domain_id']
-    }
+    required: ['domain_id', 'description']
+  }
   },
   {
     name: 'list_domains',
@@ -570,16 +530,7 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
         };
       }
 
-      case 'get_symbol_by_id': {
-        const cachedSymbol = await domainService.findById(args.id);
-        if (cachedSymbol) {
-             console.log(`[ToolExecutor] Found symbol ${args.id}`);
-             return cachedSymbol;
-        }
-        return { error: "Symbol not found in registry", code: 400, id: args.id };
-      }
-
-      case 'load_symbols_bulk': {
+      case 'load_symbols': {
           const { ids } = args;
           if (!ids || !Array.isArray(ids)) return { error: "Invalid IDs array" };
 
@@ -599,87 +550,99 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
           };
       }
 
-      case 'save_symbol': {
-        const { symbol_id, symbol_data } = args;
-        if (!symbol_id || !symbol_data) {
-           return { error: "Missing symbol_id or symbol_data", code: 400 };
-        }
+      case 'upsert_symbols': {
+          const { symbols } = args;
+          if (!symbols || !Array.isArray(symbols) || symbols.length === 0) return { error: "Invalid symbols array" };
 
-        console.groupCollapsed(`[ToolExecutor] save_symbol: ${symbol_id}`);
-        console.log("Payload:", symbol_data);
-        console.groupEnd();
+          const upsertByDomain: Record<string, SymbolDef[]> = {};
+          const refactors: { old_id: string, symbol_data: SymbolDef }[] = [];
+          const domainsToCheck = new Set<string>();
 
-        try {
-            const domain = symbol_data.symbol_domain || 'root';
-            // Determine if we need to enable the domain if it's new
-            const hasDomain = await domainService.hasDomain(domain);
+          for (const entry of symbols) {
+              const { symbol_data, old_id } = entry || {};
+              if (!symbol_data || typeof symbol_data !== 'object') return { error: "Each entry must include symbol_data" };
 
-            if (!hasDomain) {
-                return { error: `Domain '${domain}' does not exist. Create the domain before saving symbols.`, code: 404 };
-            }
+              const domain = symbol_data.symbol_domain || 'root';
+              domainsToCheck.add(domain);
 
-            await domainService.upsertSymbol(domain, symbol_data);
-            console.log(`[ToolExecutor] Saved symbol ${symbol_id} to registry (Domain: ${domain})`);
+              if (old_id && old_id !== symbol_data.id) {
+                  refactors.push({ old_id, symbol_data });
+                  continue;
+              }
 
-            return {
-                status: "Symbol stored successfully.",
-                id: symbol_id,
-                domain: domain,
-                note: !hasDomain ? "New domain created" : undefined,
-                timestamp: new Date().toISOString()
-            };
-        } catch (cacheErr) {
-            console.error("Failed to write to registry", cacheErr);
-            return { error: `Failed to save symbol: ${String(cacheErr)}` };
-        }
-      }
-
-      case 'delete_symbol': {
-          const { symbol_id, symbol_domain, cascade = true } = args;
-          if (!symbol_id) return { error: "Missing symbol_id" };
-
-          let targetDomain = symbol_domain;
-          // Attempt to infer domain if missing
-          if (!targetDomain) {
-              const sym = await domainService.findById(symbol_id);
-              if (sym) targetDomain = sym.symbol_domain;
+              if (!upsertByDomain[domain]) upsertByDomain[domain] = [];
+              upsertByDomain[domain].push(symbol_data);
           }
 
-          if (!targetDomain) {
-              return { error: `Symbol ${symbol_id} not found in any active domain.` };
+          const missingDomains: string[] = [];
+          await Promise.all(Array.from(domainsToCheck).map(async (domain) => {
+              const exists = await domainService.hasDomain(domain);
+              if (!exists) missingDomains.push(domain);
+          }));
+
+          if (missingDomains.length > 0) {
+              return { error: `Domains not found: ${missingDomains.join(', ')}` , missing_domains: missingDomains, code: 404 };
           }
 
           try {
-              await domainService.deleteSymbol(targetDomain, symbol_id, cascade);
-              console.log(`[ToolExecutor] Deleted symbol ${symbol_id} from ${targetDomain}`);
-              return { 
-                  status: "success", 
-                  message: `Symbol ${symbol_id} deleted from domain '${targetDomain}'.`,
+              const upserted: { domain: string, count: number }[] = [];
+              for (const [domain, domainSymbols] of Object.entries(upsertByDomain)) {
+                  if (domainSymbols.length === 0) continue;
+                  await domainService.bulkUpsert(domain, domainSymbols);
+                  upserted.push({ domain, count: domainSymbols.length });
+              }
+
+              if (refactors.length > 0) {
+                  await domainService.processRefactorOperation(refactors);
+              }
+
+              return {
+                  status: "Upsert completed.",
+                  upserted,
+                  refactor_count: refactors.length,
+              };
+          } catch (e) {
+              return { error: `Upsert failed: ${String(e)}` };
+          }
+      }
+
+      case 'delete_symbols': {
+          const { symbol_ids, symbol_domain, cascade = true } = args;
+          if (!symbol_ids || !Array.isArray(symbol_ids) || symbol_ids.length === 0) return { error: "Missing symbol_ids" };
+
+          const domainMap: Record<string, string[]> = {};
+          const missingIds: string[] = [];
+
+          if (symbol_domain) {
+              domainMap[symbol_domain] = symbol_ids;
+          } else {
+              for (const id of symbol_ids) {
+                  const sym = await domainService.findById(id);
+                  if (sym?.symbol_domain) {
+                      if (!domainMap[sym.symbol_domain]) domainMap[sym.symbol_domain] = [];
+                      domainMap[sym.symbol_domain].push(id);
+                  } else {
+                      missingIds.push(id);
+                  }
+              }
+          }
+
+          try {
+              const deleted: { domain: string, count: number }[] = [];
+              for (const [domain, ids] of Object.entries(domainMap)) {
+                  if (ids.length === 0) continue;
+                  await domainService.deleteSymbols(domain, ids, cascade);
+                  deleted.push({ domain, count: ids.length });
+              }
+
+              return {
+                  status: deleted.length > 0 ? "success" : "no-op",
+                  deleted,
+                  missing_ids: missingIds.length > 0 ? missingIds : undefined,
                   cascade_performed: cascade
               };
           } catch (e) {
               return { error: `Delete failed: ${String(e)}` };
-          }
-      }
-
-      case 'bulk_update_symbols': {
-          const { updates } = args;
-          if (!updates || !Array.isArray(updates)) return { error: "Invalid updates array" };
-          
-          console.group("[ToolExecutor] bulk_update_symbols Payload");
-          console.log(`Count: ${updates.length}`);
-          console.log("Raw Payload:", updates);
-          console.groupEnd();
-
-          try {
-             const results = await domainService.processRefactorOperation(updates);
-             return {
-                 status: "Bulk refactor completed and re-indexed.",
-                 updated_count: results.count,
-                 renamed: results.renamedIds
-             };
-          } catch (e) {
-              return { error: `Refactor failed: ${String(e)}` };
           }
       }
 
@@ -736,35 +699,6 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
               };
           } catch (e) {
               return { error: `Failed to create domain: ${String(e)}` };
-          }
-      }
-
-      case 'populate_invariants': {
-          const { domain_id } = args;
-          if (!domain_id) {
-              return { error: "Missing domain_id." };
-          }
-
-          const domain = await domainService.getDomain(domain_id);
-          if (!domain) {
-              return { error: `Domain '${domain_id}' not found.` };
-          }
-
-          const hasInvariants = (domain.invariants || []).length > 0;
-          if (hasInvariants) {
-              return { error: `Domain '${domain_id}' already has invariants defined.` };
-          }
-
-          try {
-              const result = await domainInferenceService.populateDomainInvariants(domain_id);
-              return {
-                  status: "Domain invariants inferred and stored.",
-                  invariants: result.invariants,
-                  inferred_from: result.inferred_from,
-                  reasoning: result.reasoning,
-              };
-          } catch (e) {
-              return { error: `Failed to populate invariants: ${String(e)}` };
           }
       }
 
