@@ -65,6 +65,31 @@ async function getCollectionInstance(): Promise<Collection | null> {
     }
 }
 
+const buildWhereClause = (metadataFilter?: Record<string, unknown>): Record<string, unknown> | undefined => {
+    if (!metadataFilter) return undefined;
+
+    const entries = Object.entries(metadataFilter).filter(([, value]) =>
+        ['string', 'number', 'boolean', 'object'].includes(typeof value) && value !== undefined && value !== null
+    );
+
+    if (entries.length === 0) return undefined;
+
+    const where: Record<string, unknown> = {};
+
+    for (const [key, value] of entries) {
+        if (Array.isArray(value)) {
+            const filteredValues = value.filter((v) => ['string', 'number', 'boolean'].includes(typeof v));
+            if (filteredValues.length > 0) {
+                where[key] = { $in: filteredValues };
+            }
+        } else if (['string', 'number', 'boolean'].includes(typeof value)) {
+            where[key] = value;
+        }
+    }
+
+    return Object.keys(where).length > 0 ? where : undefined;
+};
+
 export const vectorService = {
 
     async healthCheck(): Promise<boolean> {
@@ -109,6 +134,10 @@ export const vectorService = {
                     name: symbol.name,
                     triad: symbol.triad,
                     domain: symbol.symbol_domain,
+                    symbol_domain: symbol.symbol_domain,
+                    symbol_tag: symbol.symbol_tag,
+                    role: symbol.role,
+                    macro: symbol.macro,
                     kind: symbol.kind || 'pattern'
                 }],
                 documents: [content]
@@ -154,7 +183,7 @@ export const vectorService = {
         }
     },
 
-    async search(query: string, nResults: number = 5): Promise<VectorSearchResult[]> {
+    async search(query: string, nResults: number = 5, metadataFilter?: Record<string, unknown>): Promise<VectorSearchResult[]> {
         const collection = await getCollectionInstance();
         if (!collection) return [];
 
@@ -162,7 +191,8 @@ export const vectorService = {
             const data = await collection.query({
                 queryTexts: [query],
                 nResults: nResults,
-                include: ["metadatas", "documents", "distances"]
+                include: ["metadatas", "documents", "distances"],
+                where: buildWhereClause(metadataFilter)
             });
 
             const ids = data.ids?.[0] || [];

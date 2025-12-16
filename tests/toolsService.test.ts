@@ -11,7 +11,7 @@ describe('ToolsService', () => {
     beforeEach(() => {
         vi.spyOn(domainService, 'hasDomain').mockResolvedValue(true);
         vi.spyOn(domainService, 'getSymbols').mockResolvedValue([]);
-        vi.spyOn(domainService, 'query').mockResolvedValue({ items: [], total: 0, source: 'redis_cache' });
+        vi.spyOn(domainService, 'listDomains').mockResolvedValue(['root']);
         vi.spyOn(domainService, 'findById').mockResolvedValue(null);
         vi.spyOn(domainService, 'upsertSymbol').mockResolvedValue(undefined);
         vi.spyOn(domainService, 'deleteSymbol').mockResolvedValue(undefined);
@@ -31,25 +31,22 @@ describe('ToolsService', () => {
         vi.restoreAllMocks();
     });
 
-    it('query_symbols calls domainService.query', async () => {
-        await toolExecutor('query_symbols', { symbol_domain: 'root', limit: 10 });
-        expect(domainService.query).toHaveBeenCalledWith('root', undefined, 10, undefined);
-    });
+    it('find_symbols routes semantic search to domainService.search with metadata filter', async () => {
+        vi.mocked(domainService.hasDomain).mockResolvedValue(true);
 
-    it('query_symbols supports multiple domains', async () => {
-        vi.mocked(domainService.hasDomain).mockImplementation(async () => true);
-        vi.mocked(domainService.query).mockImplementation(async (domain) => ({
-            items: [{ id: `${domain}-symbol` } as any],
-            total: 1,
-            source: 'redis_cache'
-        }));
+        await toolExecutor('find_symbols', {
+            query: 'test vector',
+            symbol_domains: ['root', 'diagnostics'],
+            limit: 3,
+            metadata_filter: { symbol_tag: 'protocol' }
+        });
 
-        const res = await toolExecutor('query_symbols', { symbol_domains: ['root', 'diagnostics'], limit: 5 });
-
-        expect(domainService.query).toHaveBeenCalledWith('root', undefined, 5, undefined);
-        expect(domainService.query).toHaveBeenCalledWith('diagnostics', undefined, 5, undefined);
-        expect(res.symbols.map((s: any) => s.id)).toEqual(['root-symbol', 'diagnostics-symbol']);
-        expect(Array.isArray(res.page_info)).toBe(true);
+        expect(domainService.search).toHaveBeenCalledWith('test vector', 3, {
+            time_gte: undefined,
+            time_between: undefined,
+            metadata_filter: { symbol_tag: 'protocol', symbol_domain: ['root', 'diagnostics'] },
+            domains: ['root', 'diagnostics']
+        });
     });
 
     it('get_symbol_by_id calls domainService.findById', async () => {
@@ -73,15 +70,18 @@ describe('ToolsService', () => {
         expect(domainService.deleteSymbol).toHaveBeenCalledWith('dom', 's1', true);
     });
 
-    it('search_symbols_vector calls domainService.search', async () => {
-        await toolExecutor('search_symbols_vector', { query: 'test' });
-        expect(domainService.search).toHaveBeenCalledWith('test', 5, { time_gte: undefined, time_between: undefined });
-    });
+    it('find_symbols supports structured filtering when no semantic query is provided', async () => {
+        vi.mocked(domainService.getSymbols).mockResolvedValue([
+            { id: 's1', symbol_tag: 'alpha', symbol_domain: 'root' } as any,
+            { id: 's2', symbol_tag: 'beta', symbol_domain: 'root' } as any,
+        ]);
 
-    it('search_symbols_vector requires query or time filter', async () => {
-        const res = await toolExecutor('search_symbols_vector', {});
-        expect(res).toEqual({ error: 'Provide a query or time filter (time_gte/time_between).' });
+        const res = await toolExecutor('find_symbols', { symbol_tag: 'alpha', limit: 1 });
+
         expect(domainService.search).not.toHaveBeenCalled();
+        expect(domainService.getSymbols).toHaveBeenCalledWith('root');
+        expect(res.symbols.map((s: any) => s.id)).toEqual(['s1']);
+        expect(res.count).toBe(1);
     });
 
     it('add_test_case calls testService.addTest', async () => {

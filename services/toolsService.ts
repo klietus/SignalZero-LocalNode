@@ -155,11 +155,15 @@ const fetchLoopExecutions = async (
 export const toolDeclarations: FunctionDeclaration[] = [
   // --- SignalZero Symbol Store Tools (Local Cache Only) ---
   {
-    name: 'query_symbols',
-    description: 'Retrieve symbols from the local SignalZero store by domain or tag.',
+    name: 'find_symbols',
+    description: 'Unified symbol finder combining structured filters and semantic vector search with optional metadata pre-filters.',
     parameters: {
       type: Type.OBJECT,
       properties: {
+        query: {
+          type: Type.STRING,
+          description: 'Semantic search query. If omitted, results are filtered using structured metadata and domain constraints only.',
+        },
         symbol_domain: {
           type: Type.STRING,
           description: 'Filter symbols by domain (e.g., root, diagnostics). Defaults to "root". Can be a single domain or list.',
@@ -172,6 +176,11 @@ export const toolDeclarations: FunctionDeclaration[] = [
         symbol_tag: {
           type: Type.STRING,
           description: 'Filter symbols by tag (e.g., system, ritual).',
+        },
+        metadata_filter: {
+          type: Type.OBJECT,
+          description: 'Metadata filter applied before semantic search (e.g., { "symbol_domain": "defense", "symbol_tag": "protocol" }). Accepts arrays for multi-domain filtering.',
+          additionalProperties: true,
         },
         last_symbol_id: {
           type: Type.STRING,
@@ -392,33 +401,6 @@ export const toolDeclarations: FunctionDeclaration[] = [
     },
   },
   {
-    name: 'search_symbols_vector',
-    description: 'Search for symbols using semantic vector similarity. Useful for finding symbols by narrative description, concept, or structural triad similarity. Time filters are day-long buckets keyed by milliseconds since epoch encoded as base64.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        query: {
-          type: Type.STRING,
-          description: 'The search query (narrative text, concept, or triad characters). Leave empty to return only time-bucketed results.',
-        },
-        limit: {
-          type: Type.INTEGER,
-          description: 'Number of results to return (default 5).',
-        },
-        time_gte: {
-          type: Type.STRING,
-          description: 'Earliest timestamp to include (milliseconds since epoch, base64 encoded). Buckets are UTC day-wide.',
-        },
-        time_between: {
-          type: Type.ARRAY,
-          description: 'Exact start and end timestamps (milliseconds since epoch, base64 encoded) to bound the UTC day buckets.',
-          items: { type: Type.STRING },
-        },
-      },
-      required: [],
-    },
-  },
-  {
     name: 'reindex_vector_store',
     description: 'Reset the ChromaDB collection and rebuild the vector index from the current symbol store.',
     parameters: {
@@ -479,9 +461,10 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
     
     switch (name) {
       
-      case 'query_symbols': {
-        const { symbol_domain, symbol_domains, symbol_tag, limit, last_symbol_id, fetch_all } = args;
+      case 'find_symbols': {
+        const { query, symbol_domain, symbol_domains, symbol_tag, limit, last_symbol_id, fetch_all, time_gte, time_between, metadata_filter } = args || {};
 
+        const maxLimit = Math.min(limit || 20, 20);
         const domainsInput = symbol_domains ?? symbol_domain ?? 'root';
         const domains = Array.isArray(domainsInput)
           ? domainsInput.filter(Boolean)
@@ -492,45 +475,97 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
         const availableDomains = uniqueDomains.filter((_, i) => availability[i]);
         const missingDomains = uniqueDomains.filter((_, i) => !availability[i]);
 
-        if (availableDomains.length === 0) {
-             return { count: 0, symbols: [], status: `Domains not found in registry: ${uniqueDomains.join(', ')}` };
+        const defaultDomains = availableDomains.length > 0 ? availableDomains : await domainService.listDomains();
+        const mergedMetadataFilter: Record<string, unknown> = { ...(metadata_filter || {}) };
+
+        if (symbol_tag) mergedMetadataFilter.symbol_tag = mergedMetadataFilter.symbol_tag ?? symbol_tag;
+
+        if (!mergedMetadataFilter.symbol_domain && !mergedMetadataFilter.domain) {
+            if (defaultDomains.length === 1) {
+                mergedMetadataFilter.symbol_domain = defaultDomains[0];
+            } else if (defaultDomains.length > 1) {
+                mergedMetadataFilter.symbol_domain = defaultDomains;
+            }
+        } else if (mergedMetadataFilter.symbol_domain && Array.isArray(mergedMetadataFilter.symbol_domain) && availableDomains.length > 0) {
+            mergedMetadataFilter.symbol_domain = (mergedMetadataFilter.symbol_domain as unknown[])
+                .filter((d) => availableDomains.includes(String(d)));
         }
 
-        if (fetch_all) {
-             const allSymbolsByDomain = await Promise.all(availableDomains.map((d) => domainService.getSymbols(d)));
-             const filtered = allSymbolsByDomain.flatMap((symbols) => {
-                 if (!symbol_tag) return symbols;
-                 return symbols.filter((s) => s.symbol_tag?.includes(symbol_tag));
-             });
+        const matchesMetadata = (symbol: any, filter?: Record<string, unknown>): boolean => {
+            if (!filter || Object.keys(filter).length === 0) return true;
+            return Object.entries(filter).every(([key, value]) => {
+                if (value === undefined || value === null) return true;
+                const symbolValue = symbol?.[key];
+                if (symbolValue === undefined || symbolValue === null) return false;
+                const filterValues = Array.isArray(value) ? value : [value];
+                return filterValues.some((fv) => {
+                    if (Array.isArray(symbolValue)) return symbolValue.map(String).includes(String(fv));
+                    return String(symbolValue) === String(fv);
+                });
+            });
+        };
 
-             return {
-                 count: filtered.length,
-                 symbols: filtered,
-                 status: "Full domain load complete",
-                 missing_domains: missingDomains.length > 0 ? missingDomains : undefined,
-             };
+        const wantsSemantic = !!(query && query.trim().length > 0) || !!time_gte || (Array.isArray(time_between) && time_between.length > 0);
+
+        if (wantsSemantic) {
+            const results = await domainService.search(query ?? null, limit || 5, {
+                time_gte,
+                time_between,
+                metadata_filter: mergedMetadataFilter,
+                domains: defaultDomains
+            });
+
+            const response: any = {
+                count: results.length,
+                results,
+                query,
+                time_gte,
+                time_between,
+                bucket_scope: 'utc_day',
+                timestamp_format: 'milliseconds_since_epoch_base64',
+                missing_domains: missingDomains.length > 0 ? missingDomains : undefined,
+            };
+
+            if ((query && query.trim().length > 0) && results.length === 0) {
+                response.message = "No relevant symbols found via vector search. Check connection to ChromaDB.";
+            }
+
+            return response;
         }
 
-        const cachedResults = await Promise.all(
-            availableDomains.map((d) => domainService.query(d, symbol_tag, limit || 20, last_symbol_id))
-        );
+        const symbols: any[] = [];
+        const pageInfoEntries: any[] = [];
 
-        const hydratedResults = cachedResults
-            .map((res, i) => ({ domain: availableDomains[i], data: res }))
-            .filter((entry) => entry.data);
+        for (const domain of defaultDomains) {
+            const domainSymbols = await domainService.getSymbols(domain);
+            const filtered = domainSymbols.filter((s) => matchesMetadata(s, mergedMetadataFilter));
 
-        const symbols = hydratedResults.flatMap((entry) => entry.data!.items);
-        const pageInfoEntries = hydratedResults.map((entry) => ({
-            domain: entry.domain,
-            limit: limit || 20,
-            last_id: entry.data!.items.length > 0 ? entry.data!.items[entry.data!.items.length - 1].id : null
-        }));
+            if (fetch_all) {
+                symbols.push(...filtered);
+                continue;
+            }
+
+            let startIndex = 0;
+            if (last_symbol_id) {
+                const foundIndex = filtered.findIndex((s) => s.id === last_symbol_id);
+                if (foundIndex !== -1) startIndex = foundIndex + 1;
+            }
+
+            const paged = filtered.slice(startIndex, startIndex + maxLimit);
+            symbols.push(...paged);
+            pageInfoEntries.push({
+                domain,
+                limit: maxLimit,
+                last_id: paged.length > 0 ? paged[paged.length - 1].id : null
+            });
+        }
 
         return {
             count: symbols.length,
             symbols,
             page_info: pageInfoEntries.length === 1 ? pageInfoEntries[0] : pageInfoEntries,
             source: "redis_cache",
+            status: fetch_all ? "Full domain load complete" : undefined,
             missing_domains: missingDomains.length > 0 ? missingDomains : undefined,
         };
       }
@@ -820,27 +855,6 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
               testId
           };
       }
-
-      case 'search_symbols_vector': {
-          const { query, limit, time_gte, time_between } = args || {};
-          if (!query && !time_gte && !time_between) return { error: "Provide a query or time filter (time_gte/time_between)." };
-
-          const results = await domainService.search(query, limit || 5, { time_gte, time_between });
-
-          if ((query && query.trim().length > 0) && results.length === 0) {
-              return { count: 0, results: [], message: "No relevant symbols found via vector search. Check connection to ChromaDB." };
-          }
-
-          return {
-              count: results.length,
-              results: results,
-              query: query,
-              time_gte,
-              time_between,
-              bucket_scope: 'utc_day',
-              timestamp_format: 'milliseconds_since_epoch_base64'
-            };
-        }
 
       case 'reindex_vector_store': {
           const { include_disabled } = args || {};
