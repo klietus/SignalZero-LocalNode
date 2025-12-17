@@ -1,6 +1,11 @@
+import { createSign } from 'crypto';
+import fs from 'fs/promises';
+
 import { loggerService } from './loggerService.ts';
 
 const API_BASE_URL = 'https://secretmanager.googleapis.com/v1';
+const TOKEN_URL = 'https://oauth2.googleapis.com/token';
+const DEFAULT_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
 
 interface ListSecretsOptions {
     projectId?: string;
@@ -8,15 +13,152 @@ interface ListSecretsOptions {
     pageToken?: string;
 }
 
-const resolveProjectId = (override?: string) => {
-    return override?.trim() || process.env.GCP_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT || '';
-};
+interface ServiceAccountKey {
+    client_email?: string;
+    private_key?: string;
+    token_uri?: string;
+    project_id?: string;
+}
 
-const getApiKey = () => process.env.API_KEY || '';
+interface CachedToken {
+    accessToken: string;
+    expiry: number;
+}
 
-const buildHeaders = (apiKey: string) => ({
-    'Accept': 'application/json',
-    'X-Goog-Api-Key': apiKey
+let cachedServiceAccount: ServiceAccountKey | null = null;
+let cachedToken: CachedToken | null = null;
+
+const getCredentialsPath = () =>
+    process.env.SECRET_MANAGER_SERVICE_ACCOUNT_JSON || process.env.GOOGLE_APPLICATION_CREDENTIALS || '';
+
+const base64UrlEncode = (input: string) =>
+    Buffer.from(input)
+        .toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
+
+async function loadServiceAccount(): Promise<ServiceAccountKey> {
+    if (cachedServiceAccount) return cachedServiceAccount;
+
+    const credentialsPath = getCredentialsPath();
+    if (!credentialsPath) {
+        throw new Error(
+            'Missing GOOGLE_APPLICATION_CREDENTIALS or SECRET_MANAGER_SERVICE_ACCOUNT_JSON environment variable for Secret Manager access.'
+        );
+    }
+
+    let fileContents: string;
+    try {
+        fileContents = await fs.readFile(credentialsPath, 'utf-8');
+    } catch (error) {
+        loggerService.error('SecretManagerService: Failed to read service account key file', { error, credentialsPath });
+        throw new Error(`Unable to read service account key file at ${credentialsPath}`);
+    }
+
+    let parsed: ServiceAccountKey;
+    try {
+        parsed = JSON.parse(fileContents);
+    } catch (error) {
+        loggerService.error('SecretManagerService: Service account key file is not valid JSON', { error });
+        throw new Error('Service account key file is not valid JSON.');
+    }
+
+    if (!parsed.client_email || !parsed.private_key) {
+        throw new Error('Service account key file must include client_email and private_key fields.');
+    }
+
+    cachedServiceAccount = parsed;
+    return parsed;
+}
+
+async function resolveProjectId(override?: string) {
+    if (override?.trim()) return override.trim();
+    const envProject = process.env.GCP_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT;
+    if (envProject?.trim()) return envProject.trim();
+
+    const credentials = await loadServiceAccount();
+    return credentials.project_id || '';
+}
+
+function createSignedJwt(credentials: ServiceAccountKey) {
+    const issuedAt = Math.floor(Date.now() / 1000);
+    const header = { alg: 'RS256', typ: 'JWT' };
+    const payload = {
+        iss: credentials.client_email,
+        sub: credentials.client_email,
+        aud: credentials.token_uri || TOKEN_URL,
+        scope: DEFAULT_SCOPE,
+        iat: issuedAt,
+        exp: issuedAt + 3600
+    };
+
+    const encodedHeader = base64UrlEncode(JSON.stringify(header));
+    const encodedPayload = base64UrlEncode(JSON.stringify(payload));
+
+    const signer = createSign('RSA-SHA256');
+    signer.update(`${encodedHeader}.${encodedPayload}`);
+    signer.end();
+    const signature = signer.sign(credentials.private_key as string, 'base64');
+
+    const encodedSignature = signature.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return `${encodedHeader}.${encodedPayload}.${encodedSignature}`;
+}
+
+async function getAccessToken() {
+    const now = Date.now();
+    if (cachedToken && cachedToken.expiry - 60000 > now) {
+        return cachedToken.accessToken;
+    }
+
+    const credentials = await loadServiceAccount();
+    const assertion = createSignedJwt(credentials);
+
+    const params = new URLSearchParams();
+    params.set('grant_type', 'urn:ietf:params:oauth:grant-type:jwt-bearer');
+    params.set('assertion', assertion);
+
+    const tokenUrl = credentials.token_uri || TOKEN_URL;
+    const response = await fetch(tokenUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString()
+    });
+
+    const bodyText = await response.text();
+    if (!response.ok) {
+        loggerService.error('SecretManagerService: Failed to fetch access token', {
+            status: response.status,
+            body_preview: bodyText.slice(0, 200)
+        });
+        throw new Error(`Failed to obtain access token for Secret Manager (status ${response.status}).`);
+    }
+
+    let json: any;
+    try {
+        json = JSON.parse(bodyText);
+    } catch (error) {
+        loggerService.error('SecretManagerService: Failed to parse access token response JSON', { error });
+        throw new Error('Access token response returned invalid JSON.');
+    }
+
+    const accessToken = json.access_token;
+    if (!accessToken) {
+        throw new Error('Access token missing from OAuth response.');
+    }
+
+    const expiresInMs = Math.max(0, Number(json.expires_in || 3600) * 1000);
+    cachedToken = {
+        accessToken,
+        expiry: now + expiresInMs
+    };
+
+    return accessToken;
+}
+
+const buildHeaders = (accessToken: string) => ({
+    Accept: 'application/json',
+    Authorization: `Bearer ${accessToken}`
 });
 
 const parseSecretName = (fullName?: string) => {
@@ -29,18 +171,16 @@ const parseSecretName = (fullName?: string) => {
 };
 
 async function listSecrets(options: ListSecretsOptions = {}) {
-    const apiKey = getApiKey();
-    if (!apiKey) {
-        throw new Error('Missing API_KEY environment variable for Secret Manager access.');
-    }
+    const accessToken = await getAccessToken();
 
-    const projectId = resolveProjectId(options.projectId);
+    const projectId = await resolveProjectId(options.projectId);
     if (!projectId) {
-        throw new Error('Missing project id for Secret Manager. Set GCP_PROJECT_ID or GOOGLE_CLOUD_PROJECT.');
+        throw new Error(
+            'Missing project id for Secret Manager. Set GCP_PROJECT_ID, GOOGLE_CLOUD_PROJECT, or include project_id in the service account key.'
+        );
     }
 
     const url = new URL(`${API_BASE_URL}/projects/${projectId}/secrets`);
-    url.searchParams.set('key', apiKey);
 
     if (options.pageSize && Number.isFinite(options.pageSize)) {
         const size = Math.max(1, Math.min(250, Math.floor(options.pageSize)));
@@ -51,7 +191,7 @@ async function listSecrets(options: ListSecretsOptions = {}) {
         url.searchParams.set('pageToken', options.pageToken);
     }
 
-    const response = await fetch(url, { headers: buildHeaders(apiKey) });
+    const response = await fetch(url, { headers: buildHeaders(accessToken) });
     const bodyText = await response.text();
 
     if (!response.ok) {
@@ -93,14 +233,13 @@ async function listSecrets(options: ListSecretsOptions = {}) {
 }
 
 async function accessSecretVersion(secretId: string, version: string = 'latest', projectIdOverride?: string) {
-    const apiKey = getApiKey();
-    if (!apiKey) {
-        throw new Error('Missing API_KEY environment variable for Secret Manager access.');
-    }
+    const accessToken = await getAccessToken();
 
-    const projectId = resolveProjectId(projectIdOverride);
+    const projectId = await resolveProjectId(projectIdOverride);
     if (!projectId) {
-        throw new Error('Missing project id for Secret Manager. Set GCP_PROJECT_ID or GOOGLE_CLOUD_PROJECT.');
+        throw new Error(
+            'Missing project id for Secret Manager. Set GCP_PROJECT_ID, GOOGLE_CLOUD_PROJECT, or include project_id in the service account key.'
+        );
     }
 
     const safeVersion = version?.trim() || 'latest';
@@ -110,9 +249,8 @@ async function accessSecretVersion(secretId: string, version: string = 'latest',
     const url = new URL(
         `${API_BASE_URL}/projects/${projectId}/secrets/${encodedSecretId}/versions/${encodedVersion}:access`
     );
-    url.searchParams.set('key', apiKey);
 
-    const response = await fetch(url, { headers: buildHeaders(apiKey) });
+    const response = await fetch(url, { headers: buildHeaders(accessToken) });
     const bodyText = await response.text();
 
     if (!response.ok) {

@@ -409,7 +409,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   },
   {
     name: 'list_secrets',
-    description: 'List secrets from Google Secret Manager using the configured inference API key.',
+    description: 'List secrets from Google Secret Manager using the configured service account credentials.',
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -431,7 +431,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   },
   {
     name: 'get_secret',
-    description: 'Retrieve a secret value from Google Secret Manager using the configured inference API key.',
+    description: 'Retrieve a secret value from Google Secret Manager using the configured service account credentials.',
     parameters: {
       type: Type.OBJECT,
       properties: {

@@ -22,6 +22,15 @@ SignalZero is a live recursive symbolic system designed to detect coercion, rest
     PORT=3000
     ```
 
+    If you plan to use the Google Secret Manager tools, point the server to a service account key JSON file:
+
+    ```env
+    GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+    # or
+    SECRET_MANAGER_SERVICE_ACCOUNT_JSON=/path/to/service-account.json
+    GCP_PROJECT_ID=your_project_id # optional override if not present in the key file
+    ```
+
 3.  **Run Development Server**
     Start the server in watch mode:
     ```bash
