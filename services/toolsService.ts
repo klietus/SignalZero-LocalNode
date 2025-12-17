@@ -9,6 +9,7 @@ import { indexingService } from "./indexingService.ts";
 import { loggerService } from "./loggerService.ts";
 import { EXECUTION_ZSET_KEY, LOOP_INDEX_KEY, getExecutionKey, getLoopKey, getTraceKey } from "./loopStorage.js";
 import { redisService } from "./redisService.js";
+import { secretManagerService } from "./secretManagerService.ts";
 
 // Shared Symbol Data Schema Properties for reuse in tools
 const SYMBOL_DATA_SCHEMA = {
@@ -404,6 +405,50 @@ export const toolDeclarations: FunctionDeclaration[] = [
         }
       },
       required: ['query']
+    }
+  },
+  {
+    name: 'list_secrets',
+    description: 'List secrets from Google Secret Manager using the configured inference API key.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        project_id: {
+          type: Type.STRING,
+          description: 'Optional GCP project ID override. Defaults to GCP_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variables.'
+        },
+        page_size: {
+          type: Type.INTEGER,
+          description: 'Number of secrets to fetch (1-250). Defaults to the Secret Manager service default.'
+        },
+        page_token: {
+          type: Type.STRING,
+          description: 'Pagination token from a previous list_secrets call.'
+        }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'get_secret',
+    description: 'Retrieve a secret value from Google Secret Manager using the configured inference API key.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        secret_id: {
+          type: Type.STRING,
+          description: 'ID of the secret to retrieve (without the project path).'
+        },
+        version: {
+          type: Type.STRING,
+          description: "Secret version to access (defaults to 'latest')."
+        },
+        project_id: {
+          type: Type.STRING,
+          description: 'Optional GCP project ID override. Defaults to GCP_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variables.'
+        }
+      },
+      required: ['secret_id']
     }
   },
   {
@@ -918,6 +963,39 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
               };
           } catch (error) {
               return { error: `Google Custom Search failed: ${String(error)}` };
+          }
+      }
+
+      case 'list_secrets': {
+          const { project_id, page_size, page_token } = args || {};
+          try {
+              const result = await secretManagerService.listSecrets({
+                  projectId: typeof project_id === 'string' && project_id.trim() ? project_id.trim() : undefined,
+                  pageSize: Number.isFinite(page_size) ? Number(page_size) : undefined,
+                  pageToken: typeof page_token === 'string' && page_token.trim() ? page_token : undefined
+              });
+              return result;
+          } catch (error) {
+              return { error: `Failed to list secrets: ${String(error)}` };
+          }
+      }
+
+      case 'get_secret': {
+          const { secret_id, version, project_id } = args || {};
+          if (!secret_id || typeof secret_id !== 'string') {
+              return { error: "Missing secret_id argument" };
+          }
+
+          const safeVersion = typeof version === 'string' && version.trim() ? version.trim() : 'latest';
+
+          try {
+              return await secretManagerService.accessSecretVersion(
+                  secret_id,
+                  safeVersion,
+                  typeof project_id === 'string' && project_id.trim() ? project_id.trim() : undefined
+              );
+          } catch (error) {
+              return { error: `Failed to access secret: ${String(error)}` };
           }
       }
 
