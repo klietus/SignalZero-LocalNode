@@ -382,6 +382,11 @@ export const toolDeclarations: FunctionDeclaration[] = [
         url: {
           type: Type.STRING,
           description: 'The absolute URL to fetch (http or https).'
+        },
+        headers: {
+          type: Type.OBJECT,
+          description: 'Optional custom HTTP headers to include in the request. Values must be strings.',
+          additionalProperties: true
         }
       },
       required: ['url']
@@ -805,16 +810,30 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
       }
 
       case 'web_fetch': {
-          const { url } = args;
+          const { url, headers } = args;
           if (!url || typeof url !== 'string') {
               return { error: "Missing or invalid 'url' argument." };
           }
 
+          if (headers !== undefined && (headers === null || typeof headers !== 'object' || Array.isArray(headers))) {
+              return { error: "Invalid 'headers' argument: expected an object with string values." };
+          }
+
+          const requestHeaders: Record<string, string> = {
+              'User-Agent': 'Mozilla/5.0 (compatible; SignalZeroBot/1.0; +https://signalzero.ai)',
+          };
+
+          if (headers && typeof headers === 'object') {
+              for (const [key, value] of Object.entries(headers)) {
+                  if (typeof value === 'string') {
+                      requestHeaders[key] = value;
+                  }
+              }
+          }
+
           try {
               const response = await fetch(url, {
-                  headers: {
-                      'User-Agent': 'Mozilla/5.0 (compatible; SignalZeroBot/1.0; +https://signalzero.ai)',
-                  }
+                  headers: requestHeaders
               });
 
               const text = await response.text();
