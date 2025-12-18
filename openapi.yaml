@@ -1175,6 +1175,10 @@ components:
           type: array
           items:
             type: string
+        activation_conditions:
+          type: array
+          items:
+            type: string
     SymbolPersonaDef:
       type: object
       properties:
@@ -1219,6 +1223,10 @@ components:
           $ref: '#/components/schemas/SymbolLatticeDef'
         persona:
           $ref: '#/components/schemas/SymbolPersonaDef'
+        activation_conditions:
+          type: array
+          items:
+            type: string
         symbol_domain:
           type: string
         symbol_tag:
