@@ -200,7 +200,6 @@ class LoopService {
 
     private async schedulerTick() {
         try {
-            loggerService.info('LoopService: Scheduler tick started');
             const loops = (await this.listLoops()).filter((loop) => loop.enabled);
             const now = new Date();
             const checkedLoops: { loopId: string; nextRun: string | null }[] = [];
@@ -216,6 +215,9 @@ class LoopService {
                 }
             }
 
+            if (dueLoops.length === 0) return;
+
+            loggerService.info('LoopService: Scheduler tick started');
             loggerService.info('LoopService: Scheduler checked loops', { checkedLoops, referenceTime: now.toISOString() });
 
             if (dueLoops.length > 0) {
