@@ -613,6 +613,23 @@ app.get('/api/loops', async (req, res) => {
     }
 });
 
+// Place this before the /:id route to avoid being captured by the dynamic segment
+app.get('/api/loops/logs', async (req, res) => {
+    try {
+        const limit = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : undefined;
+        const includeTraces = req.query.includeTraces === 'true';
+        const logs = await loopService.getExecutionLogs(
+            typeof req.query.loopId === 'string' ? req.query.loopId : undefined,
+            Number.isFinite(limit) ? limit : 20,
+            includeTraces
+        );
+        res.json({ logs });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
 app.get('/api/loops/:id', async (req, res) => {
     try {
         const loop = await loopService.getLoop(req.params.id);
@@ -649,22 +666,6 @@ app.delete('/api/loops/:id', async (req, res) => {
     try {
         const removed = await loopService.deleteLoop(req.params.id);
         res.json({ status: removed ? 'deleted' : 'not_found' });
-    } catch (e) {
-        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
-        res.status(500).json({ error: String(e) });
-    }
-});
-
-app.get('/api/loops/logs', async (req, res) => {
-    try {
-        const limit = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : undefined;
-        const includeTraces = req.query.includeTraces === 'true';
-        const logs = await loopService.getExecutionLogs(
-            typeof req.query.loopId === 'string' ? req.query.loopId : undefined,
-            Number.isFinite(limit) ? limit : 20,
-            includeTraces
-        );
-        res.json({ logs });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
