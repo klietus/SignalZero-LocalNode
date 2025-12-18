@@ -28,7 +28,8 @@ const SYMBOL_DATA_SCHEMA = {
             properties: {
                 topology: { type: Type.STRING, description: "inductive, deductive, bidirectional, invariant, energy" },
                 closure: { type: Type.STRING, description: "loop, branch, collapse, constellation, synthesis" },
-                members: { type: Type.ARRAY, items: { type: Type.STRING }, description: "List of member symbol IDs" }
+                members: { type: Type.ARRAY, items: { type: Type.STRING }, description: "List of member symbol IDs" },
+                activation_conditions: { type: Type.ARRAY, items: { type: Type.STRING } }
             }
         },
         persona: {
@@ -42,7 +43,8 @@ const SYMBOL_DATA_SCHEMA = {
                 linked_personas: { type: Type.ARRAY, items: { type: Type.STRING } }
             }
         },
-        facets: { 
+        activation_conditions: { type: Type.ARRAY, items: { type: Type.STRING } },
+        facets: {
             type: Type.OBJECT,
             properties: {
                 function: { type: Type.STRING },
