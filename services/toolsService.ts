@@ -774,6 +774,7 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
                 name: d.name,
                 description: d.description || "No description provided.",
                 invariants: d.invariants || [],
+                readOnly: d.readOnly === true,
                 personas: personas
               };
             });

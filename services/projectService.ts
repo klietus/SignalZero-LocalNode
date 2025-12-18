@@ -56,6 +56,7 @@ export const projectService = {
                     name: meta?.name || id,
                     description: meta?.description || "",
                     invariants: meta?.invariants || [],
+                    readOnly: meta?.readOnly || false,
                     items: symbols
                 };
                 domainsFolder?.file(`${id}.json`, JSON.stringify(domainData, null, 2));
@@ -141,7 +142,8 @@ export const projectService = {
                                     await domainService.updateDomainMetadata(id, {
                                         name: json.name,
                                         description: json.description,
-                                        invariants: json.invariants
+                                        invariants: json.invariants,
+                                        readOnly: json.readOnly
                                     });
                                     
                                     domainStats.push({

@@ -6,7 +6,7 @@ import { getChatSession, resetChatSession, sendMessageAndHandleTools, runSignalZ
 import { createToolExecutor } from './services/toolsService.js';
 import { settingsService } from './services/settingsService.js';
 import { ACTIVATION_PROMPT } from './symbolic_system/activation_prompt.js';
-import { domainService } from './services/domainService.js';
+import { domainService, ReadOnlyDomainError } from './services/domainService.js';
 import { traceService } from './services/traceService.js';
 import { projectService } from './services/projectService.js';
 import { testService } from './services/testService.js';
@@ -26,6 +26,16 @@ const app = express();
 app.use(cors());
 // @ts-ignore
 app.use(express.json({ limit: '50mb' }));
+
+const isReadOnlyError = (error: unknown): error is ReadOnlyDomainError => {
+    return error instanceof ReadOnlyDomainError || (typeof error === 'object' && error !== null && (error as any).name === 'ReadOnlyDomainError');
+};
+
+const buildReadOnlyResponse = (error: any) => ({
+    error: (error as Error)?.message || 'Domain is read-only',
+    domainId: error?.domainId,
+    symbolId: error?.symbolId
+});
 
 // Request Logging Middleware
 app.use((req, res, next) => {
@@ -293,7 +303,11 @@ app.post('/api/symbols/refactor', async (req, res) => {
         res.json(result);
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
-        res.status(500).json({ error: String(e) });
+        if (isReadOnlyError(e)) {
+            res.status(400).json(buildReadOnlyResponse(e));
+        } else {
+            res.status(500).json({ error: String(e) });
+        }
     }
 });
 
@@ -309,7 +323,11 @@ app.post('/api/symbols/compress', async (req, res) => {
         res.json(result);
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
-        res.status(500).json({ error: String(e) });
+        if (isReadOnlyError(e)) {
+            res.status(400).json(buildReadOnlyResponse(e));
+        } else {
+            res.status(500).json({ error: String(e) });
+        }
     }
 });
 
@@ -365,7 +383,11 @@ app.post('/api/domains/:id/symbols', async (req, res) => {
         res.json({ status: 'success', id: symbol.id });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
-        res.status(500).json({ error: String(e) });
+        if (isReadOnlyError(e)) {
+            res.status(400).json(buildReadOnlyResponse(e));
+        } else {
+            res.status(500).json({ error: String(e) });
+        }
     }
 });
 
@@ -381,7 +403,11 @@ app.post('/api/domains/:id/symbols/bulk', async (req, res) => {
         res.json({ status: 'success', count: symbols.length });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
-        res.status(500).json({ error: String(e) });
+        if (isReadOnlyError(e)) {
+            res.status(400).json(buildReadOnlyResponse(e));
+        } else {
+            res.status(500).json({ error: String(e) });
+        }
     }
 });
 
