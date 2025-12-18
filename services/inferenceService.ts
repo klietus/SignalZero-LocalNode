@@ -15,9 +15,9 @@ if (!process.env.API_KEY) {
 }
 export const ai = new GoogleGenAI({ apiKey });
 
-type ModelName = 'gemini-3-pro-preview' | 'gemini-2.5-pro' | 'gemini-2.5-flash';
+type ModelName = 'gemini-3-pro-preview' | 'gemini-3-flash-preview' | 'gemini-2.5-pro' | 'gemini-2.5-flash';
 
-const MODEL_FALLBACK_ORDER: ModelName[] = ['gemini-3-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash'];
+const MODEL_FALLBACK_ORDER: ModelName[] = ['gemini-3-pro-preview', 'gemini-3-flash-preview', 'gemini-2.5-pro', 'gemini-2.5-flash'];
 
 const chatModelMap = new WeakMap<Chat, number>();
 let chatSessionModelIndex: number | null = null;
@@ -32,7 +32,7 @@ const createChatInstance = (model: ModelName, systemInstruction: string) => {
     tools: [{ functionDeclarations: toolDeclarations }],
   };
 
-  if (model !== 'gemini-2.5-flash') {
+  if (!model.includes('flash')) {
     config.thinkingConfig = { thinkingBudget: 16000 };
   }
 
