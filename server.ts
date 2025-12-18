@@ -42,7 +42,7 @@ const PORT = process.env.PORT || 3001;
 app.get('/api/health', async (req, res) => {
     const redis = await domainService.healthCheck();
     const vector = await vectorService.healthCheck();
-    
+
     const status = redis && vector ? 'healthy' : 'degraded';
     
     res.json({
@@ -53,6 +53,29 @@ app.get('/api/health', async (req, res) => {
         },
         timestamp: new Date().toISOString()
     });
+});
+
+// System Settings
+app.get('/api/settings', (req, res) => {
+    try {
+        const settings = settingsService.getSystemSettings();
+        res.json(settings);
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: 'Failed to load settings' });
+    }
+});
+
+app.post('/api/settings', (req, res) => {
+    try {
+        const { redis, chroma, geminiKey } = req.body || {};
+        settingsService.setSystemSettings({ redis, chroma, geminiKey });
+        const updated = settingsService.getSystemSettings();
+        res.json(updated);
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: 'Failed to update settings' });
+    }
 });
 
 // Index Management

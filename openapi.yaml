@@ -16,6 +16,31 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthStatus'
+  /settings:
+    get:
+      summary: Get system settings
+      responses:
+        '200':
+          description: Current configuration for external services
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemSettings'
+    post:
+      summary: Update system settings
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemSettingsUpdate'
+      responses:
+        '200':
+          description: Updated configuration for external services
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemSettings'
   /chat:
     post:
       summary: Send a message to the chat
@@ -884,6 +909,82 @@ components:
           type: string
           format: date-time
           description: Time the health check was performed
+    SystemSettings:
+      type: object
+      properties:
+        redis:
+          $ref: '#/components/schemas/RedisConnectionSettings'
+        chroma:
+          $ref: '#/components/schemas/ChromaSettings'
+        geminiKey:
+          type: string
+          description: API key used for Gemini access
+    SystemSettingsUpdate:
+      type: object
+      properties:
+        redis:
+          $ref: '#/components/schemas/RedisSettingsUpdate'
+        chroma:
+          $ref: '#/components/schemas/ChromaSettingsUpdate'
+        geminiKey:
+          type: string
+          description: API key used for Gemini access
+    RedisSettingsUpdate:
+      type: object
+      properties:
+        server:
+          type: string
+        port:
+          type: integer
+        password:
+          type: string
+        redisUrl:
+          type: string
+        redisToken:
+          type: string
+        redisServer:
+          type: string
+        redisPort:
+          type: integer
+        redisPassword:
+          type: string
+    ChromaSettingsUpdate:
+      type: object
+      properties:
+        url:
+          type: string
+        collection:
+          type: string
+        chromaUrl:
+          type: string
+        collectionName:
+          type: string
+        useExternal:
+          type: boolean
+    RedisConnectionSettings:
+      type: object
+      properties:
+        server:
+          type: string
+          description: Redis server host
+        port:
+          type: integer
+          description: Redis server port
+        password:
+          type: string
+          description: Password or token for Redis authentication
+    ChromaSettings:
+      type: object
+      properties:
+        url:
+          type: string
+          description: Base URL for the Chroma instance
+        collection:
+          type: string
+          description: Default Chroma collection name
+        useExternal:
+          type: boolean
+          description: Whether to use an external vector database
     Sender:
       type: string
       enum:
