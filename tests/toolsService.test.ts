@@ -83,6 +83,16 @@ describe('ToolsService', () => {
         expect(res.count).toBe(1);
     });
 
+    it('list_domains exposes readOnly flag in response', async () => {
+        vi.mocked(domainService.getMetadata).mockResolvedValue([
+            { id: 'd1', name: 'Domain 1', readOnly: true, description: '', invariants: [] } as any,
+        ]);
+
+        const res = await toolExecutor('list_domains', {});
+
+        expect(res.domains[0].readOnly).toBe(true);
+    });
+
     it('add_test_case calls testService.addTest', async () => {
         await toolExecutor('add_test_case', { name: 'Case', prompt: 'Do something', testSetId: 'ts1', expectedActivations: [] });
         expect(testService.addTest).toHaveBeenCalledWith('ts1', 'Do something', [], 'Case');

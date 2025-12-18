@@ -18,7 +18,36 @@ export interface CachedDomain {
   symbols: SymbolDef[];
   description?: string;
   invariants?: string[];
+  readOnly: boolean;
 }
+
+export class ReadOnlyDomainError extends Error {
+  domainId: string;
+  symbolId?: string;
+
+  constructor(domainId: string, symbolId?: string) {
+    super(`Domain '${domainId}' is read-only; cannot modify symbol '${symbolId || 'unknown'}'.`);
+    this.domainId = domainId;
+    this.symbolId = symbolId;
+    this.name = 'ReadOnlyDomainError';
+  }
+}
+
+const parseDomain = (data: string, domainId: string): CachedDomain => {
+  const domain: CachedDomain = JSON.parse(data);
+  if (domain.readOnly === undefined) domain.readOnly = false;
+  if (!domain.id) domain.id = domainId;
+  if (!domain.symbols) domain.symbols = [];
+  if (!domain.invariants) domain.invariants = [];
+  if (domain.description === undefined) domain.description = "";
+  return domain;
+};
+
+const ensureWritableDomain = (domain: CachedDomain, domainId: string, symbolId?: string) => {
+  if (domain.readOnly) {
+      throw new ReadOnlyDomainError(domainId, symbolId);
+  }
+};
 
 const indexSymbolBucket = async (symbol: SymbolDef) => {
   const createdMs = decodeTimestamp(symbol.created_at);
@@ -64,7 +93,7 @@ export const domainService = {
    */
   createDomain: async (
     domainId: string,
-    metadata: { name?: string; description?: string; invariants?: string[] } = {}
+    metadata: { name?: string; description?: string; invariants?: string[]; readOnly?: boolean } = {}
   ): Promise<CachedDomain> => {
     const exists = await domainService.hasDomain(domainId);
     if (exists) {
@@ -78,6 +107,7 @@ export const domainService = {
         description: metadata.description || "",
         invariants: metadata.invariants || [],
         enabled: true,
+        readOnly: metadata.readOnly === true,
         lastUpdated: now,
         symbols: []
     };
@@ -112,7 +142,7 @@ export const domainService = {
     const data = await redisService.request(['GET', `${KEYS.DOMAIN_PREFIX}${domainId}`]);
     if (!data) return null;
     try {
-      return JSON.parse(data);
+      return parseDomain(data, domainId);
     } catch (e) {
       console.error(`[DomainService] Failed to parse domain ${domainId}`, e);
       return null;
@@ -126,7 +156,7 @@ export const domainService = {
     const data = await redisService.request(['GET', `${KEYS.DOMAIN_PREFIX}${domainId}`]);
     if (!data) return false;
     try {
-      const domain: CachedDomain = JSON.parse(data);
+      const domain = parseDomain(data, domainId);
       return domain.enabled;
     } catch {
       return false;
@@ -140,7 +170,7 @@ export const domainService = {
     const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
     const data = await redisService.request(['GET', key]);
     if (data) {
-      const domain: CachedDomain = JSON.parse(data);
+      const domain = parseDomain(data, domainId);
       domain.enabled = enabled;
       await redisService.request(['SET', key, JSON.stringify(domain)]);
     }
@@ -149,14 +179,15 @@ export const domainService = {
   /**
    * Updates domain metadata without touching symbols.
    */
-  updateDomainMetadata: async (domainId: string, metadata: { name?: string, description?: string, invariants?: string[] }) => {
+  updateDomainMetadata: async (domainId: string, metadata: { name?: string, description?: string, invariants?: string[], readOnly?: boolean }) => {
     const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
     const data = await redisService.request(['GET', key]);
     if (data) {
-      const domain: CachedDomain = JSON.parse(data);
+      const domain = parseDomain(data, domainId);
       if (metadata.name) domain.name = metadata.name;
       if (metadata.description !== undefined) domain.description = metadata.description;
       if (metadata.invariants !== undefined) domain.invariants = metadata.invariants;
+      if (metadata.readOnly !== undefined) domain.readOnly = metadata.readOnly;
       domain.lastUpdated = Date.now();
       await redisService.request(['SET', key, JSON.stringify(domain)]);
     }
@@ -170,7 +201,7 @@ export const domainService = {
     const data = await redisService.request(['GET', key]);
     
     if (data) {
-      const domain: CachedDomain = JSON.parse(data);
+      const domain = parseDomain(data, domainId);
       // Clean up vector store
       for (const s of domain.symbols) {
           await vectorService.deleteSymbol(s.id);
@@ -235,7 +266,7 @@ export const domainService = {
       domainData.forEach((d, i) => {
           if (d) {
               try {
-                  store[domains[i]] = JSON.parse(d);
+                  store[domains[i]] = parseDomain(d, domains[i]);
               } catch {}
           }
       });
@@ -314,7 +345,7 @@ export const domainService = {
     const data = await redisService.request(['GET', key]);
     if (!data) return;
 
-    const domain: CachedDomain = JSON.parse(data);
+    const domain = parseDomain(data, domainId);
     const idsToDelete = new Set(symbolIds);
 
     domain.symbols = domain.symbols.filter(s => !idsToDelete.has(s.id));
@@ -349,7 +380,7 @@ export const domainService = {
       const data = await redisService.request(['GET', key]);
       if (!data) return;
 
-      const domain: CachedDomain = JSON.parse(data);
+      const domain = parseDomain(data, domainId);
       let updatedCount = 0;
 
       domain.symbols.forEach(s => {
@@ -382,7 +413,7 @@ export const domainService = {
     const data = await redisService.request(['GET', `${KEYS.DOMAIN_PREFIX}${domainId}`]);
     if (!data) return [];
     try {
-        const domain: CachedDomain = JSON.parse(data);
+        const domain = parseDomain(data, domainId);
         return domain.symbols || [];
     } catch {
         return [];
@@ -407,14 +438,17 @@ export const domainService = {
             lastUpdated: Date.now(),
             symbols: [],
             description: "",
-            invariants: []
+            invariants: [],
+            readOnly: false
         };
         // Add to Set
         await redisService.request(['SADD', KEYS.DOMAINS_SET, domainId]);
     } else {
-        domain = JSON.parse(data);
+        domain = parseDomain(data, domainId);
         if (!domain.id) domain.id = domainId; // migration safety
     }
+
+    ensureWritableDomain(domain, domainId, symbol.id);
 
     const nowB64 = currentTimestampBase64();
     const existingIndex = domain.symbols.findIndex(s => s.id === symbol.id);
@@ -458,12 +492,15 @@ export const domainService = {
               lastUpdated: Date.now(),
               symbols: [],
               description: "",
-              invariants: []
+              invariants: [],
+              readOnly: false
           };
           await redisService.request(['SADD', KEYS.DOMAINS_SET, domainId]);
       } else {
-          domain = JSON.parse(data);
+          domain = parseDomain(data, domainId);
       }
+
+      ensureWritableDomain(domain, domainId, symbols[0]?.id);
 
       const symbolMap = new Map(domain.symbols.map(s => [s.id, s]));
       const nowB64 = currentTimestampBase64();
@@ -504,11 +541,13 @@ export const domainService = {
           
           let domain: CachedDomain;
           if (!data) {
-             domain = { id: domainId, name: domainId, enabled: true, lastUpdated: Date.now(), symbols: [] };
+             domain = { id: domainId, name: domainId, enabled: true, lastUpdated: Date.now(), symbols: [], readOnly: false };
              await redisService.request(['SADD', KEYS.DOMAINS_SET, domainId]);
           } else {
-             domain = JSON.parse(data);
+             domain = parseDomain(data, domainId);
           }
+
+          ensureWritableDomain(domain, domainId, domainUpdates[0]?.symbol_data?.id);
 
           const existingCreatedAt = new Map<string, string>();
           domain.symbols.forEach((s) => {
@@ -583,7 +622,7 @@ export const domainService = {
     const data = await redisService.request(['GET', key]);
     if (!data) return null;
 
-    const domain: CachedDomain = JSON.parse(data);
+    const domain = parseDomain(data, domainId);
     if (!domain.enabled) return null;
 
     let results = domain.symbols;
@@ -614,9 +653,10 @@ export const domainService = {
     // Fetch all domains (parallel)
     const rawData = await Promise.all(domains.map(d => redisService.request(['GET', `${KEYS.DOMAIN_PREFIX}${d}`])));
     
-    for (const data of rawData) {
+    for (let i = 0; i < rawData.length; i++) {
+        const data = rawData[i];
         if (!data) continue;
-        const domain: CachedDomain = JSON.parse(data);
+        const domain = parseDomain(data, domains[i]);
         if (domain.enabled) {
             const found = domain.symbols.find(s => s.id === id);
             if (found) return found;
@@ -635,7 +675,7 @@ export const domainService = {
     return rawData
       .map((data, i) => {
           if (!data) return null;
-          const d: CachedDomain = JSON.parse(data);
+          const d = parseDomain(data, domains[i]);
           return {
               id: domains[i],
               name: d.name || domains[i],
@@ -643,7 +683,8 @@ export const domainService = {
               count: d.symbols.length,
               lastUpdated: d.lastUpdated,
               description: d.description || "",
-              invariants: d.invariants || []
+              invariants: d.invariants || [],
+              readOnly: d.readOnly
           };
       })
       .filter((d): d is any => d !== null);
@@ -659,10 +700,10 @@ export const domainService = {
 
       const allSymbols: SymbolDef[] = [];
 
-      rawData.forEach((data) => {
+      rawData.forEach((data, idx) => {
           if (!data) return;
           try {
-              const domain: CachedDomain = JSON.parse(data);
+              const domain = parseDomain(data, domains[idx]);
               if (includeDisabled || domain.enabled) {
                   allSymbols.push(...(domain.symbols || []));
               }

@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 import { app } from '../server.ts';
-import { domainService } from '../services/domainService.ts';
+import { domainService, ReadOnlyDomainError } from '../services/domainService.ts';
 import { traceService } from '../services/traceService.ts';
 import { testService } from '../services/testService.ts';
 import { projectService } from '../services/projectService.ts';
@@ -85,10 +85,21 @@ describe('Server API Endpoints', () => {
 
     it('GET /api/symbols/:id should return symbol', async () => {
         vi.mocked(domainService.findById).mockResolvedValue({ id: 's1' } as any);
-        
+
         const res = await request(app).get('/api/symbols/s1');
         expect(res.status).toBe(200);
         expect(res.body.id).toBe('s1');
+    });
+
+    it('POST /api/domains/:id/symbols should reject writes to read-only domains', async () => {
+        vi.mocked(domainService.upsertSymbol).mockRejectedValue(new ReadOnlyDomainError('d1', 's1'));
+
+        const res = await request(app)
+            .post('/api/domains/d1/symbols')
+            .send({ id: 's1' });
+
+        expect(res.status).toBe(400);
+        expect(res.body.error).toContain('read-only');
     });
 
     // --- Tests ---
