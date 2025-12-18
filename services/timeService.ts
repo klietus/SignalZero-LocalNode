@@ -66,7 +66,5 @@ export const getBucketKeysFromTimestamps = (
 };
 
 export const buildSystemMetadataBlock = () => ({
-  system_time_ms_b64: currentTimestampBase64(),
-  timestamp_format: 'milliseconds_since_epoch_base64',
-  bucket_scope: 'utc_day',
+  system_time_iso: new Date().toISOString(),
 });
