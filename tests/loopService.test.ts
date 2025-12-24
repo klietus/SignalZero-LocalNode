@@ -40,4 +40,29 @@ describe('loopService', () => {
         expect(logs).toHaveLength(1);
         expect(logs[0].loopId).toBe('loop-logs');
     });
+
+    it('replaces all loops and clears executions', async () => {
+        await loopService.upsertLoop('existing', '* * * * *', 'old', true);
+        const now = new Date().toISOString();
+        await redisService.request(['ZADD', 'sz:loops:executions', Date.parse(now), 'exec-old']);
+        await redisService.request(['SET', 'sz:loops:execution:exec-old', JSON.stringify({ id: 'exec-old' })]);
+        await redisService.request(['SET', 'sz:loops:execution:exec-old:traces', JSON.stringify([])]);
+
+        const imported = [{
+            id: 'new-loop',
+            schedule: '*/5 * * * *',
+            prompt: 'imported',
+            enabled: true,
+            createdAt: now,
+            updatedAt: now
+        }];
+
+        await loopService.replaceAllLoops(imported as any);
+        const loops = await loopService.listLoops();
+        expect(loops).toHaveLength(1);
+        expect(loops[0].id).toBe('new-loop');
+
+        const logs = await loopService.getExecutionLogs();
+        expect(logs).toHaveLength(0);
+    });
 });

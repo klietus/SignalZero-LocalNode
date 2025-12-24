@@ -1428,6 +1428,8 @@ components:
           $ref: '#/components/schemas/ProjectMeta'
         testCaseCount:
           type: number
+        loopCount:
+          type: number
         domains:
           type: array
           items:

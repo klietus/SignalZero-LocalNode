@@ -2,7 +2,8 @@ import { loggerService } from './loggerService.ts';
 import JSZip from 'jszip';
 import { domainService } from './domainService.ts';
 import { testService } from './testService.ts';
-import { ProjectMeta, ProjectImportStats, DomainImportStat } from '../types.ts';
+import { ProjectMeta, ProjectImportStats, DomainImportStat, LoopDefinition } from '../types.ts';
+import { loopService } from './loopService.ts';
 import { redisService } from './redisService.ts';
 
 const ACTIVE_PROJECT_KEY = 'sz:project:active:meta';
@@ -42,7 +43,11 @@ export const projectService = {
             const tests = await testService.getTests();
             zip.file("tests.json", JSON.stringify(tests, null, 2));
 
-            // 4. Domains
+            // 4. Loops
+            const loops = await loopService.listLoops();
+            zip.file("loops.json", JSON.stringify(loops, null, 2));
+
+            // 5. Domains
             const domainsFolder = zip.folder("domains");
             const domainIds = await domainService.listDomains();
             const allMeta = await domainService.getMetadata();
@@ -92,6 +97,7 @@ export const projectService = {
                 updated_at: new Date().toISOString()
             };
             let testCount = 0;
+            let loopCount = 0;
             const domainStats: DomainImportStat[] = [];
             let totalSymbols = 0;
 
@@ -120,7 +126,14 @@ export const projectService = {
                 loggerService.info(`Project Import: Loaded ${testCount} test cases.`);
             }
 
-            // 4. Domains
+            // 4. Loops
+            const loopsFile = zip.file("loops.json");
+            const loops: LoopDefinition[] = loopsFile ? JSON.parse(await loopsFile.async("string")) : [];
+            await loopService.replaceAllLoops(Array.isArray(loops) ? loops : []);
+            loopCount = Array.isArray(loops) ? loops.length : 0;
+            loggerService.info(`Project Import: ${loopCount > 0 ? `Loaded ${loopCount} loops.` : 'Cleared existing loops.'}`);
+
+            // 5. Domains
             loggerService.info("Project Import: Clearing existing domains.");
             await domainService.clearAll();
             loggerService.info("Project Import: Processing domains from zip.");
@@ -175,6 +188,7 @@ export const projectService = {
                 stats: {
                     meta,
                     testCaseCount: testCount,
+                    loopCount,
                     domains: domainStats,
                     totalSymbols
                 }

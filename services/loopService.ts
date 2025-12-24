@@ -40,6 +40,26 @@ class LoopService {
         };
     }
 
+    private normalizeImportedLoop(definition: LoopDefinition): LoopDefinition {
+        const nowIso = new Date().toISOString();
+        this.validateSchedule(definition.schedule);
+
+        return {
+            id: definition.id,
+            schedule: definition.schedule,
+            prompt: definition.prompt ?? '',
+            enabled: definition.enabled ?? true,
+            createdAt: definition.createdAt || nowIso,
+            updatedAt: definition.updatedAt || nowIso,
+            lastRunAt: definition.lastRunAt,
+        };
+    }
+
+    private async persistLoop(loop: LoopDefinition): Promise<void> {
+        await redisService.request(['SADD', LOOP_INDEX_KEY, loop.id]);
+        await redisService.request(['SET', getLoopKey(loop.id), JSON.stringify(loop)]);
+    }
+
     async listLoops(): Promise<LoopDefinition[]> {
         const ids = await redisService.request(['SMEMBERS', LOOP_INDEX_KEY]);
         if (!Array.isArray(ids) || ids.length === 0) return [];
@@ -73,8 +93,7 @@ class LoopService {
         const existing = await this.getLoop(id);
         const loop = this.createLoopPayload(id, schedule, prompt, enabled, existing || undefined);
 
-        await redisService.request(['SADD', LOOP_INDEX_KEY, id]);
-        await redisService.request(['SET', getLoopKey(id), JSON.stringify(loop)]);
+        await this.persistLoop(loop);
         loggerService.info('LoopService: Upserted loop', { id, enabled, schedule });
         return loop;
     }
@@ -304,6 +323,35 @@ class LoopService {
             }
         }
         return results;
+    }
+
+    async clearAllLoops(): Promise<void> {
+        const loopIds: string[] = await redisService.request(['SMEMBERS', LOOP_INDEX_KEY]);
+        const loopKeys = Array.isArray(loopIds) ? loopIds.map((id) => getLoopKey(id)) : [];
+        if (loopKeys.length > 0) {
+            await redisService.request(['DEL', ...loopKeys]);
+        }
+        await redisService.request(['DEL', LOOP_INDEX_KEY]);
+
+        const executionIds: string[] = await redisService.request(['ZRANGEBYSCORE', EXECUTION_ZSET_KEY, '-inf', '+inf']);
+        if (Array.isArray(executionIds) && executionIds.length > 0) {
+            const executionKeys = executionIds.flatMap((id) => [getExecutionKey(id), getTraceKey(id)]);
+            await redisService.request(['DEL', ...executionKeys]);
+            await redisService.request(['ZREM', EXECUTION_ZSET_KEY, ...executionIds]);
+        } else {
+            await redisService.request(['DEL', EXECUTION_ZSET_KEY]);
+        }
+    }
+
+    async replaceAllLoops(definitions: LoopDefinition[]): Promise<void> {
+        await this.clearAllLoops();
+        if (!definitions || definitions.length === 0) return;
+
+        for (const definition of definitions) {
+            const normalized = this.normalizeImportedLoop(definition);
+            await this.persistLoop(normalized);
+            loggerService.info('LoopService: Imported loop', { loopId: normalized.id });
+        }
     }
 }
 

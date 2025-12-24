@@ -226,6 +226,7 @@ export interface LoopExecutionLog {
 export interface ProjectImportStats {
     meta: ProjectMeta;
     testCaseCount: number;
+    loopCount: number;
     domains: DomainImportStat[];
     totalSymbols: number;
 }
