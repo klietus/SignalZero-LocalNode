@@ -1175,10 +1175,6 @@ components:
           type: array
           items:
             type: string
-        activation_conditions:
-          type: array
-          items:
-            type: string
     SymbolPersonaDef:
       type: object
       properties:
@@ -1186,10 +1182,6 @@ components:
           type: string
         function:
           type: string
-        activation_conditions:
-          type: array
-          items:
-            type: string
         fallback_behavior:
           type: array
           items:
@@ -1239,6 +1231,18 @@ components:
           type: array
           items:
             type: string
+      required:
+        - id
+        - name
+        - triad
+        - role
+        - macro
+        - activation_conditions
+        - symbol_domain
+        - symbol_tag
+        - facets
+        - failure_mode
+        - linked_patterns
     ModelScore:
       type: object
       properties:
