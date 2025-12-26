@@ -28,8 +28,7 @@ const SYMBOL_DATA_SCHEMA = {
             properties: {
                 topology: { type: Type.STRING, description: "inductive, deductive, bidirectional, invariant, energy" },
                 closure: { type: Type.STRING, description: "loop, branch, collapse, constellation, synthesis" },
-                members: { type: Type.ARRAY, items: { type: Type.STRING }, description: "List of member symbol IDs" },
-                activation_conditions: { type: Type.ARRAY, items: { type: Type.STRING } }
+                members: { type: Type.ARRAY, items: { type: Type.STRING }, description: "List of member symbol IDs" }
             }
         },
         persona: {
@@ -38,7 +37,6 @@ const SYMBOL_DATA_SCHEMA = {
             properties: {
                 recursion_level: { type: Type.STRING },
                 function: { type: Type.STRING },
-                activation_conditions: { type: Type.ARRAY, items: { type: Type.STRING } },
                 fallback_behavior: { type: Type.ARRAY, items: { type: Type.STRING } },
                 linked_personas: { type: Type.ARRAY, items: { type: Type.STRING } }
             }
@@ -62,7 +60,7 @@ const SYMBOL_DATA_SCHEMA = {
         failure_mode: { type: Type.STRING },
         linked_patterns: { type: Type.ARRAY, items: { type: Type.STRING } }
     },
-    required: ['id', 'kind', 'triad', 'macro', 'role', 'name', 'facets', 'symbol_domain', 'failure_mode', 'linked_patterns']
+    required: ['id', 'kind', 'triad', 'macro', 'role', 'name', 'activation_conditions', 'facets', 'symbol_domain', 'failure_mode', 'linked_patterns']
 };
 
 const TRACE_DATA_SCHEMA = {
