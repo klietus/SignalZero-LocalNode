@@ -2,6 +2,7 @@
 import { FunctionDeclaration, Type } from "@google/genai";
 import { domainService } from "./domainService.ts";
 import { domainInferenceService } from "./domainInferenceService.ts";
+import { loopService } from "./loopService.ts";
 import { testService } from "./testService.ts";
 import { traceService } from "./traceService.ts";
 import { LoopDefinition, LoopExecutionLog, SymbolDef, TraceData } from "../types.ts";
@@ -286,6 +287,20 @@ export const toolDeclarations: FunctionDeclaration[] = [
     parameters: {
       type: Type.OBJECT,
       properties: {},
+    },
+  },
+  {
+    name: 'upsert_loop',
+    description: 'Create or update a background loop definition, adjusting its schedule, prompt, and enabled status.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        loop_id: { type: Type.STRING, description: 'Unique identifier for the loop. Will be created if it does not exist.' },
+        schedule: { type: Type.STRING, description: 'Cron expression defining how often the loop should run.' },
+        prompt: { type: Type.STRING, description: 'Loop prompt that will be appended to the activation prompt before execution.' },
+        enabled: { type: Type.BOOLEAN, description: 'Set to true to enable the loop or false to disable it.' },
+      },
+      required: ['loop_id', 'schedule', 'prompt'],
     },
   },
   {
@@ -783,12 +798,39 @@ export const createToolExecutor = (getApiKey: () => string | null) => {
         } catch (error) {
           console.error("Tool execution failed:", error);
           return { error: `Failed to list domains: ${String(error)}` };
-        }
+      }
       }
 
       case 'list_loops': {
           const loops = await fetchLoopDefinitions();
           return { loops };
+      }
+
+      case 'upsert_loop': {
+          const { loop_id, schedule, prompt, enabled } = args || {};
+
+          if (!loop_id || !schedule || !prompt) {
+              return { error: "Missing required 'loop_id', 'schedule', or 'prompt' argument." };
+          }
+
+          if (enabled !== undefined && typeof enabled !== 'boolean') {
+              return { error: "Invalid 'enabled' flag. Expected a boolean value." };
+          }
+
+          try {
+              const loop = await loopService.upsertLoop(
+                  String(loop_id),
+                  String(schedule),
+                  String(prompt),
+                  enabled === undefined ? true : enabled
+              );
+              return {
+                  status: 'Loop upserted successfully.',
+                  loop,
+              };
+          } catch (error) {
+              return { error: `Failed to upsert loop: ${String(error)}` };
+          }
       }
 
       case 'list_loop_executions': {
