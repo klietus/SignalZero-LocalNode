@@ -65,6 +65,7 @@ export const getBucketKeysFromTimestamps = (
   return { keys: enumerateBucketKeys(type, start, end), rangeApplied: true };
 };
 
-export const buildSystemMetadataBlock = () => ({
+export const buildSystemMetadataBlock = (context?: Record<string, any>) => ({
   system_time_iso: new Date().toISOString(),
+  ...(context ? { context } : {}),
 });
