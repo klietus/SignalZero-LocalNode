@@ -1,164 +1,144 @@
-
-import { GoogleGenAI, Chat, GenerateContentResponse } from "@google/genai";
+import OpenAI from "openai";
+import type {
+  ChatCompletionChunk,
+  ChatCompletionMessageParam,
+  ChatCompletionMessageToolCall,
+} from "openai/resources/chat/completions";
 import { toolDeclarations } from "./toolsService.ts";
-import { ACTIVATION_PROMPT } from '../symbolic_system/activation_prompt.ts';
-import { EvaluationMetrics, TraceData, TestMeta, SymbolDef } from '../types.ts';
-import { domainService } from './domainService.ts';
-import { embedText } from './embeddingService.ts';
-import { buildSystemMetadataBlock } from './timeService.ts';
+import { ACTIVATION_PROMPT } from "../symbolic_system/activation_prompt.ts";
+import { EvaluationMetrics, TestMeta, SymbolDef } from "../types.ts";
+import { domainService } from "./domainService.ts";
+import { embedText } from "./embeddingService.ts";
+import { buildSystemMetadataBlock } from "./timeService.ts";
+import { settingsService } from "./settingsService.ts";
+import { loggerService } from "./loggerService.ts";
 
-// Initialize the client strictly with process.env.API_KEY
-// Export for use in vectorService
-const apiKey = process.env.API_KEY || "missing-api-key";
-if (!process.env.API_KEY) {
-    console.warn("WARNING: API_KEY not found in environment. AI features will fail until configured.");
+interface ChatSessionState {
+  messages: ChatCompletionMessageParam[];
+  systemInstruction: string;
+  model: string;
 }
-export const ai = new GoogleGenAI({ apiKey });
 
-type ModelName = 'gemini-3-pro-preview' | 'gemini-2.5-pro' | 'gemini-2.5-flash';
+const MAX_TOOL_LOOPS = 20;
 
-const MODEL_FALLBACK_ORDER: ModelName[] = ['gemini-3-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash'];
-
-const chatModelMap = new WeakMap<Chat, number>();
-let chatSessionModelIndex: number | null = null;
-let chatSessionSystemInstruction: string | null = null;
-
-// Create a persistent chat session
-let chatSession: Chat | null = null;
-
-const createChatInstance = (model: ModelName, systemInstruction: string) => {
-  const config: Parameters<typeof ai.chats.create>[0]["config"] = {
-    systemInstruction,
-    tools: [{ functionDeclarations: toolDeclarations }],
-  };
-
-  if (!model.includes('flash')) {
-    config.thinkingConfig = { thinkingBudget: 16000 };
-  }
-
-  const chat = ai.chats.create({
-    model,
-    config,
+const getClient = () => {
+  const { endpoint } = settingsService.getInferenceSettings();
+  const apiKey = settingsService.getApiKey() || "lm-studio";
+  return new OpenAI({
+    baseURL: endpoint,
+    apiKey,
   });
-
-  chatModelMap.set(chat, MODEL_FALLBACK_ORDER.indexOf(model));
-
-  return chat;
 };
 
-const buildChatWithFallback = (systemInstruction: string, startingIndex = 0) => {
-  const errors: string[] = [];
+const getModel = () => settingsService.getInferenceSettings().model;
 
-  for (let offset = 0; offset < MODEL_FALLBACK_ORDER.length; offset++) {
-    const index = (startingIndex + offset) % MODEL_FALLBACK_ORDER.length;
-    const model = MODEL_FALLBACK_ORDER[index];
+const buildMetadataWrappedContent = (message: string) =>
+  `${message}\n\n[SYSTEM_METADATA] ${JSON.stringify(buildSystemMetadataBlock())}`;
 
-    try {
-      const chat = createChatInstance(model, systemInstruction);
-      return { chat, index };
-    } catch (error) {
-      errors.push(`${model}: ${String(error)}`);
-    }
+const extractTextDelta = (delta: ChatCompletionChunk["choices"][number]["delta"]) => {
+  if (!delta?.content) return "";
+  if (typeof delta.content === "string") return delta.content;
+  if (Array.isArray(delta.content)) {
+    return delta.content
+      .map((item: any) => {
+        if (typeof item === "string") return item;
+        if (item?.text) return item.text;
+        return "";
+      })
+      .join("");
   }
-
-  throw new Error(`All models failed: ${errors.join(' | ')}`);
+  return "";
 };
 
-const switchChatAfterError = (systemInstruction: string, failedIndex: number, persistSession: boolean) => {
-  const errors: string[] = [];
+const mergeToolCallDelta = (
+  collected: Map<number, ChatCompletionMessageToolCall>,
+  toolCalls?: ChatCompletionMessageToolCall[]
+) => {
+  if (!toolCalls) return collected;
+  for (const call of toolCalls) {
+    const index = call.index ?? 0;
+    const existing = collected.get(index) || {
+      id: call.id ?? "",
+      type: "function",
+      function: { name: "", arguments: "" },
+      index,
+    };
 
-  for (let offset = 1; offset < MODEL_FALLBACK_ORDER.length; offset++) {
-    const index = (failedIndex + offset) % MODEL_FALLBACK_ORDER.length;
-    const model = MODEL_FALLBACK_ORDER[index];
+    const nextArgs = call.function?.arguments ?? "";
+    const nextName = call.function?.name || existing.function.name;
 
-    try {
-      const chat = createChatInstance(model, systemInstruction);
-
-      if (persistSession) {
-        chatSession = chat;
-        chatSessionModelIndex = index;
-        chatSessionSystemInstruction = systemInstruction;
-      }
-
-      return { chat, index };
-    } catch (error) {
-      errors.push(`${model}: ${String(error)}`);
-    }
+    collected.set(index, {
+      ...existing,
+      id: call.id || existing.id,
+      function: {
+        name: nextName,
+        arguments: `${existing.function.arguments || ""}${nextArgs || ""}`,
+      },
+      type: "function",
+      index,
+    });
   }
-
-  throw new Error(`All models failed: ${errors.join(' | ')}`);
+  return collected;
 };
+
+const parseToolArguments = (args: string) => {
+  if (!args) return {};
+  try {
+    return JSON.parse(args);
+  } catch (error) {
+    loggerService.warn("Failed to parse tool arguments, passing raw string", { args, error });
+    return {};
+  }
+};
+
+let chatSession: ChatSessionState | null = null;
+
+const createChatSession = (systemInstruction: string): ChatSessionState => ({
+  messages: [{ role: "system", content: systemInstruction }],
+  systemInstruction,
+  model: getModel(),
+});
 
 export const getChatSession = (systemInstruction: string) => {
-  if (!chatSession || chatSessionSystemInstruction !== systemInstruction) {
-    const { chat, index } = buildChatWithFallback(systemInstruction);
-    chatSession = chat;
-    chatSessionModelIndex = index;
-    chatSessionSystemInstruction = systemInstruction;
+  if (!chatSession || chatSession.systemInstruction !== systemInstruction) {
+    chatSession = createChatSession(systemInstruction);
+  }
+  const currentModel = getModel();
+  if (chatSession.model !== currentModel) {
+    chatSession.model = currentModel;
   }
   return chatSession;
 };
 
 export const resetChatSession = () => {
   chatSession = null;
-  chatSessionModelIndex = null;
-  chatSessionSystemInstruction = null;
 };
 
 export const createFreshChatSession = (systemInstruction: string) => {
-  const { chat } = buildChatWithFallback(systemInstruction);
-  return chat;
-};
-
-const generateWithModelFallback = async (operation: (model: ModelName) => Promise<GenerateContentResponse>) => {
-  const errors: string[] = [];
-
-  for (const model of MODEL_FALLBACK_ORDER) {
-    try {
-      return await operation(model);
-    } catch (error) {
-      errors.push(`${model}: ${String(error)}`);
-    }
-  }
-
-  throw new Error(`All models failed: ${errors.join(' | ')}`);
-};
-
-const wrapMessageWithMetadata = (message: any) => {
-  const metadataText = { text: `[SYSTEM_METADATA] ${JSON.stringify(buildSystemMetadataBlock())}` };
-
-  if (Array.isArray(message)) {
-      return [...message, metadataText];
-  }
-
-  if (typeof message === 'string') {
-      return [ { text: message }, metadataText ];
-  }
-
-  return [message, metadataText];
+  return createChatSession(systemInstruction);
 };
 
 // --- Embedding Helper ---
 export const generateEmbedding = async (text: string): Promise<number[]> => {
-    return embedText(text);
+  return embedText(text);
 };
 
 export const generateGapSynthesis = async (
-    promptOriginal: string, 
-    szResponse: string, 
-    baseResponse: string,
-    activeDomains: string[] = [],
-    existingSymbols: SymbolDef[] = []
+  promptOriginal: string,
+  szResponse: string,
+  baseResponse: string,
+  activeDomains: string[] = [],
+  existingSymbols: SymbolDef[] = []
 ): Promise<string> => {
-    try {
-        const contextSummary = existingSymbols.slice(0, 50).map(s => 
-            `- ID: ${s.id} | Domain: ${s.symbol_domain} | Name: ${s.name}`
-        ).join('\n');
+  const contextSummary = existingSymbols
+    .slice(0, 50)
+    .map((s) => `- ID: ${s.id} | Domain: ${s.symbol_domain} | Name: ${s.name}`)
+    .join("\n");
 
-        const prompt = `
+  const prompt = `
         TASK: Analyze the symbolic delta between two model responses and synthesize new SignalZero Symbols that bridge the gap.
 
-        ACTIVE DOMAINS: ${activeDomains.join(', ')}
+        ACTIVE DOMAINS: ${activeDomains.join(", ")}
 
         EXISTING SYMBOLS CONTEXT (Sample):
         ${contextSummary}
@@ -189,153 +169,227 @@ export const generateGapSynthesis = async (
         Return valid JSON object(s) wrapped in <sz_symbol></sz_symbol> tags. You may return multiple symbols if the gap requires a structure.
         `;
 
-        const response = await generateWithModelFallback((model) => ai.models.generateContent({
-          model,
-          contents: [{ parts: [{ text: prompt }] }],
-          config: { temperature: 0.7 }
-        }));
+  const client = getClient();
+  const result = await client.chat.completions.create({
+    model: getModel(),
+    messages: [{ role: "user", content: prompt }],
+    temperature: 0.7,
+  });
 
-        return response.text || "";
-    } catch (error) {
-        console.error("Gap synthesis failed:", error);
-        throw error;
-    }
+  return result.choices[0]?.message?.content ?? "";
 };
+
+const streamAssistantResponse = async function* (
+  messages: ChatCompletionMessageParam[],
+  model: string
+): AsyncGenerator<{
+  text?: string;
+  toolCalls?: ChatCompletionMessageToolCall[];
+  assistantMessage?: ChatCompletionMessageParam;
+}> {
+  const client = getClient();
+  const stream = await client.chat.completions.create({
+    model,
+    messages,
+    tools: toolDeclarations,
+    stream: true,
+    temperature: 0.3,
+  });
+
+  let textAccumulator = "";
+  const collectedToolCalls = new Map<number, ChatCompletionMessageToolCall>();
+
+  for await (const part of stream) {
+    const delta = part.choices?.[0]?.delta;
+    if (!delta) continue;
+
+    const textChunk = extractTextDelta(delta);
+    if (textChunk) {
+      textAccumulator += textChunk;
+      yield { text: textChunk };
+    }
+
+    if (delta.tool_calls && delta.tool_calls.length > 0) {
+      mergeToolCallDelta(collectedToolCalls, delta.tool_calls as any);
+    }
+  }
+
+  const completedToolCalls = Array.from(collectedToolCalls.values());
+  if (completedToolCalls.length > 0) {
+    yield { toolCalls: completedToolCalls };
+  }
+
+  const assistantMessage: ChatCompletionMessageParam = {
+    role: "assistant",
+    content: textAccumulator,
+    ...(completedToolCalls.length > 0 ? { tool_calls: completedToolCalls } : {}),
+  };
+
+  yield { assistantMessage };
+};
+
+// Helper to handle the stream and potential function calls recursively
+export async function* sendMessageAndHandleTools(
+  chat: ChatSessionState,
+  message: string,
+  toolExecutor: (name: string, args: any) => Promise<any>,
+  systemInstruction?: string
+): AsyncGenerator<
+  { text?: string; toolCalls?: any[]; isComplete?: boolean },
+  void,
+  unknown
+> {
+  if (systemInstruction && chat.systemInstruction !== systemInstruction) {
+    chat.messages = [{ role: "system", content: systemInstruction }];
+    chat.systemInstruction = systemInstruction;
+  }
+
+  const currentModel = getModel();
+  if (chat.model !== currentModel) {
+    chat.model = currentModel;
+  }
+
+  chat.messages.push({ role: "user", content: buildMetadataWrappedContent(message) });
+
+  let loops = 0;
+  while (loops < MAX_TOOL_LOOPS) {
+    const assistantMessage = streamAssistantResponse(chat.messages, chat.model);
+    let yieldedToolCalls: ChatCompletionMessageToolCall[] | undefined;
+
+    let nextAssistant: ChatCompletionMessageParam | null = null;
+    for await (const chunk of assistantMessage) {
+      if (chunk.text) yield { text: chunk.text };
+      if (chunk.toolCalls) yieldedToolCalls = chunk.toolCalls;
+      if (chunk.assistantMessage) nextAssistant = chunk.assistantMessage;
+    }
+
+    if (!nextAssistant) {
+      yield { text: "Error: No assistant message returned." };
+      break;
+    }
+
+    chat.messages.push(nextAssistant);
+
+    if (!yieldedToolCalls || yieldedToolCalls.length === 0) {
+      break;
+    }
+
+    const toolResponses: ChatCompletionMessageParam[] = [];
+    for (const call of yieldedToolCalls) {
+      if (!call.function?.name) continue;
+      try {
+        const args = parseToolArguments(call.function.arguments || "");
+        const result = await toolExecutor(call.function.name, args);
+        toolResponses.push({
+          role: "tool",
+          content: JSON.stringify(result),
+          tool_call_id: call.id,
+        });
+      } catch (err) {
+        loggerService.error(`Error executing tool ${call.function.name}`, { err });
+        toolResponses.push({
+          role: "tool",
+          content: JSON.stringify({ error: String(err) }),
+          tool_call_id: call.id,
+        });
+      }
+    }
+
+    chat.messages.push(...toolResponses);
+    loops++;
+  }
+
+  yield { isComplete: true };
+}
 
 // --- Test Runner Functions ---
 
 export const runSignalZeroTest = async (
-    prompt: string,
-    toolExecutor: (name: string, args: any) => Promise<any>,
-    primingPrompts: string[] = ["Load domains"],
-    systemInstruction: string = ACTIVATION_PROMPT,
-): Promise<{ text: string, meta: TestMeta }> => {
+  prompt: string,
+  toolExecutor: (name: string, args: any) => Promise<any>,
+  primingPrompts: string[] = ["Load domains"],
+  systemInstruction: string = ACTIVATION_PROMPT
+): Promise<{ text: string; meta: TestMeta }> => {
   const startTime = Date.now();
-  
-  // Snapshot context - Async fetch
+
   const allDomains = await domainService.listDomains();
-  // Filter for enabled domains
-  const loadedDomains = [];
+  const loadedDomains: string[] = [];
   let symbolCount = 0;
-  
+
   for (const d of allDomains) {
-      if (await domainService.isEnabled(d)) {
-          loadedDomains.push(d);
-          const syms = await domainService.getSymbols(d);
-          symbolCount += syms.length;
-      }
+    if (await domainService.isEnabled(d)) {
+      loadedDomains.push(d);
+      const syms = await domainService.getSymbols(d);
+      symbolCount += syms.length;
+    }
   }
 
   try {
-    // Create ephemeral chat with full system context
     const chat = createFreshChatSession(systemInstruction);
 
-    // Helper to execute a turn with tool handling
     const executeTurn = async (msg: string): Promise<string> => {
-        let currentResponse = await chat.sendMessage({ message: wrapMessageWithMetadata(msg) });
-        let turnText = currentResponse.text || "";
-        
-        let loops = 0;
-        // Allow up to 20 turns of tool use for deep symbolic chains
-        while (loops < 20) {
-            const calls = currentResponse.candidates?.[0]?.content?.parts
-                ?.filter((p) => p.functionCall)
-                .map((p) => p.functionCall);
-
-            if (!calls || calls.length === 0) break;
-
-            const functionResponses = [];
-            for (const call of calls) {
-                if (!call) continue;
-                try {
-                    if (call.name) {
-                        const result = await toolExecutor(call.name, call.args);
-                        functionResponses.push({
-                            id: call.id,
-                            name: call.name,
-                            response: { result: result }
-                        });
-                    }
-                } catch (e) {
-                    console.error("Test tool exec failed", e);
-                     functionResponses.push({
-                            id: call.id,
-                            name: call.name,
-                            response: { error: String(e) }
-                        });
-                }
-            }
-
-            currentResponse = await chat.sendMessage({ message: wrapMessageWithMetadata(functionResponses.map(fr => ({ functionResponse: fr }))) });
-            if (currentResponse.text) {
-                turnText += currentResponse.text;
-            }
-            loops++;
-        }
-        return turnText;
+      let turnText = "";
+      for await (const chunk of sendMessageAndHandleTools(chat, msg, toolExecutor, systemInstruction)) {
+        if (chunk.text) turnText += chunk.text;
+      }
+      return turnText;
     };
 
-    // 1. Run Priming Prompts (silent execution, we don't return their output but they set state)
     for (const primeMsg of primingPrompts) {
-        await executeTurn(primeMsg);
+      await executeTurn(primeMsg);
     }
 
-    // 2. Run Actual Test Prompt
     const finalResponse = await executeTurn(prompt);
-
     const endTime = Date.now();
 
-    // Note: Traces are now captured via tool executor side-effects in traceService, handled by caller.
-
     return {
-        text: finalResponse,
-        meta: {
-            startTime: new Date(startTime).toISOString(),
-            endTime: new Date(endTime).toISOString(),
-            durationMs: endTime - startTime,
-            loadedDomains: loadedDomains,
-            symbolCount: symbolCount
-        }
+      text: finalResponse,
+      meta: {
+        startTime: new Date(startTime).toISOString(),
+        endTime: new Date(endTime).toISOString(),
+        durationMs: endTime - startTime,
+        loadedDomains: loadedDomains,
+        symbolCount: symbolCount,
+      },
     };
-
   } catch (error) {
-    console.error("SignalZero Test Run Failed:", error);
+    loggerService.error("SignalZero Test Run Failed:", { error });
     const endTime = Date.now();
     return {
-        text: `ERROR: ${String(error)}`,
-        meta: {
-            startTime: new Date(startTime).toISOString(),
-            endTime: new Date(endTime).toISOString(),
-            durationMs: endTime - startTime,
-            loadedDomains: [],
-            symbolCount: 0
-        }
+      text: `ERROR: ${String(error)}`,
+      meta: {
+        startTime: new Date(startTime).toISOString(),
+        endTime: new Date(endTime).toISOString(),
+        durationMs: endTime - startTime,
+        loadedDomains: [],
+        symbolCount: 0,
+      },
     };
   }
 };
 
 export const runBaselineTest = async (prompt: string): Promise<string> => {
-    const errors: string[] = [];
-    for (let offset = 0; offset < MODEL_FALLBACK_ORDER.length; offset++) {
-        const model = MODEL_FALLBACK_ORDER[offset];
-        try {
-            // Baseline: No system prompt, no tools
-            const chat = ai.chats.create({
-                model,
-            });
-            const result = await chat.sendMessage({ message: prompt });
-            chatModelMap.set(chat, offset);
-            return result.text || "";
-        } catch (error) {
-            errors.push(`${model}: ${String(error)}`);
-        }
-    }
-    return `ERROR: All models failed (${errors.join(' | ')})`;
+  try {
+    const client = getClient();
+    const completion = await client.chat.completions.create({
+      model: getModel(),
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.4,
+    });
+
+    return completion.choices[0]?.message?.content || "";
+  } catch (error) {
+    return `ERROR: ${String(error)}`;
+  }
 };
 
-export const evaluateComparison = async (prompt: string, szResponse: string, baseResponse: string): Promise<EvaluationMetrics> => {
-    try {
-        const evalPrompt = `
+export const evaluateComparison = async (
+  prompt: string,
+  szResponse: string,
+  baseResponse: string
+): Promise<EvaluationMetrics> => {
+  try {
+    const evalPrompt = `
         ACT AS A JUDGE. Compare two LLM responses to the prompt: "${prompt}".
         
         Response A (Symbolic Kernel):
@@ -371,143 +425,35 @@ export const evaluateComparison = async (prompt: string, szResponse: string, bas
         }
         `;
 
-        const result = await generateWithModelFallback((model) => ai.models.generateContent({
-            model,
-            contents: evalPrompt,
-            config: { responseMimeType: "application/json" }
-        }));
+    const client = getClient();
+    const result = await client.chat.completions.create({
+      model: getModel(),
+      messages: [{ role: "user", content: evalPrompt }],
+      temperature: 0,
+      response_format: { type: "json_object" },
+    });
 
-        const json = JSON.parse(result.text || "{}");
-        
-        const defaultScore = { alignment_score: 0, drift_detected: false, symbolic_depth: 0, reasoning_depth: 0, auditability_score: 0 };
+    const messageText = result.choices[0]?.message?.content || "{}";
+    const json = JSON.parse(messageText);
 
-        return {
-            sz: json.sz || defaultScore,
-            base: json.base || defaultScore,
-            overall_reasoning: json.overall_reasoning || "No reasoning provided."
-        };
+    const defaultScore = {
+      alignment_score: 0,
+      drift_detected: false,
+      symbolic_depth: 0,
+      reasoning_depth: 0,
+      auditability_score: 0,
+    };
 
-    } catch (error) {
-        return {
-            sz: { alignment_score: 0, drift_detected: false, symbolic_depth: 0, reasoning_depth: 0, auditability_score: 0 },
-            base: { alignment_score: 0, drift_detected: false, symbolic_depth: 0, reasoning_depth: 0, auditability_score: 0 },
-            overall_reasoning: `Eval Failed: ${String(error)}`
-        };
-    }
-};
-
-// Helper to handle the stream and potential function calls recursively
-export async function* sendMessageAndHandleTools(
-  chat: Chat,
-  message: string,
-  toolExecutor: (name: string, args: any) => Promise<any>,
-  systemInstruction?: string
-): AsyncGenerator<
-  { text?: string; toolCalls?: any[]; isComplete?: boolean },
-  void,
-  unknown
-> {
-  let currentInput: any = message;
-  let loops = 0;
-  const MAX_LOOPS = 20;
-  let activeChat: Chat = chat;
-  let activeModelIndex = chatModelMap.get(chat) ?? chatSessionModelIndex ?? 0;
-  const fallbackErrors: string[] = [];
-  const effectiveSystemInstruction = systemInstruction || chatSessionSystemInstruction;
-  let modelSwitchCount = 0;
-
-  while (loops < MAX_LOOPS) {
-    let responseStream;
-    try {
-      responseStream = await activeChat.sendMessageStream({ message: wrapMessageWithMetadata(currentInput) });
-    } catch (error) {
-      const modelName = MODEL_FALLBACK_ORDER[activeModelIndex] || 'unknown-model';
-      fallbackErrors.push(`${modelName}: ${String(error)}`);
-
-      if (!effectiveSystemInstruction) {
-        yield { text: `Error: ${String(error)}` };
-        return;
-      }
-
-      if (modelSwitchCount >= MODEL_FALLBACK_ORDER.length - 1) {
-        yield { text: `Error: All models failed (${fallbackErrors.join(' | ')})` };
-        return;
-      }
-
-      try {
-        const { chat: switchedChat, index } = switchChatAfterError(
-          effectiveSystemInstruction,
-          activeModelIndex,
-          chat === chatSession
-        );
-        activeChat = switchedChat;
-        activeModelIndex = index;
-        modelSwitchCount++;
-        responseStream = await activeChat.sendMessageStream({ message: wrapMessageWithMetadata(currentInput) });
-      } catch (switchError) {
-        fallbackErrors.push(String(switchError));
-        yield { text: `Error: All models failed (${fallbackErrors.join(' | ')})` };
-        return;
-      }
-    }
-
-    // We use 'any' here to avoid strict type import dependencies that might fail build
-    let toolCallsToExecute: any[] = [];
-
-    // 1. Consume the stream
-    for await (const chunk of responseStream) {
-      const c = chunk as GenerateContentResponse;
-      
-      // Check for text
-      if (c.text) {
-        yield { text: c.text };
-      }
-
-      // Check for function calls
-      const calls = c.candidates?.[0]?.content?.parts
-        ?.filter((p) => p.functionCall)
-        .map((p) => p.functionCall);
-
-      if (calls && calls.length > 0) {
-        toolCallsToExecute.push(...calls);
-        yield { toolCalls: calls }; // Notify UI that we found tools
-      }
-    }
-
-    // 2. If no tool calls, we are finished with the model's turn
-    if (toolCallsToExecute.length === 0) {
-      break;
-    }
-
-    // 3. Execute tools
-    const functionResponses = [];
-    for (const call of toolCallsToExecute) {
-      if (!call.name) continue;
-      
-      try {
-        const result = await toolExecutor(call.name, call.args);
-        
-        functionResponses.push({
-          id: call.id, // Important: pass back the call ID
-          name: call.name,
-          response: { result: result }, // Structure expected by Gemini
-        });
-        
-      } catch (err) {
-        console.error(`Error executing tool ${call.name}:`, err);
-        functionResponses.push({
-            id: call.id,
-            name: call.name,
-            response: { error: String(err) },
-        });
-      }
-    }
-
-    // 4. Send the tool results back to the model in the next iteration
-    // The loop continues, sending the function responses as the message content
-    currentInput = functionResponses.map(fr => ({ functionResponse: fr }));
-    loops++;
+    return {
+      sz: json.sz || defaultScore,
+      base: json.base || defaultScore,
+      overall_reasoning: json.overall_reasoning || "No reasoning provided.",
+    };
+  } catch (error) {
+    return {
+      sz: { alignment_score: 0, drift_detected: false, symbolic_depth: 0, reasoning_depth: 0, auditability_score: 0 },
+      base: { alignment_score: 0, drift_detected: false, symbolic_depth: 0, reasoning_depth: 0, auditability_score: 0 },
+      overall_reasoning: `Eval Failed: ${String(error)}`,
+    };
   }
-
-  yield { isComplete: true };
-}
+};

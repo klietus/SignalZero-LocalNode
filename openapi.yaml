@@ -916,9 +916,8 @@ components:
           $ref: '#/components/schemas/RedisConnectionSettings'
         chroma:
           $ref: '#/components/schemas/ChromaSettings'
-        geminiKey:
-          type: string
-          description: API key used for Gemini access
+        inference:
+          $ref: '#/components/schemas/InferenceSettings'
     SystemSettingsUpdate:
       type: object
       properties:
@@ -926,9 +925,8 @@ components:
           $ref: '#/components/schemas/RedisSettingsUpdate'
         chroma:
           $ref: '#/components/schemas/ChromaSettingsUpdate'
-        geminiKey:
-          type: string
-          description: API key used for Gemini access
+        inference:
+          $ref: '#/components/schemas/InferenceSettingsUpdate'
     RedisSettingsUpdate:
       type: object
       properties:
@@ -985,6 +983,22 @@ components:
         useExternal:
           type: boolean
           description: Whether to use an external vector database
+    InferenceSettings:
+      type: object
+      properties:
+        endpoint:
+          type: string
+          description: OpenAI-compatible inference endpoint (LM Studio default http://localhost:1234/v1)
+        model:
+          type: string
+          description: Model name to use for inference (e.g., lmstudio-community/Meta-Llama-3-70B-Instruct)
+    InferenceSettingsUpdate:
+      type: object
+      properties:
+        endpoint:
+          type: string
+        model:
+          type: string
     Sender:
       type: string
       enum:
