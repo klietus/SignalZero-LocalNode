@@ -6,7 +6,7 @@ SignalZero is a live recursive symbolic system designed to detect coercion, rest
 
 *   **Node.js** (v18 or higher recommended)
 *   **npm**
-*   A **Google Gemini API Key** (Get one at [aistudio.google.com](https://aistudio.google.com))
+*   An **OpenAI-compatible endpoint** (LM Studio recommended) hosting **Llama 3.1 70B Instruct**
 
 ## Setup Instructions
 
@@ -16,9 +16,12 @@ SignalZero is a live recursive symbolic system designed to detect coercion, rest
     ```
 
 2.  **Environment Configuration**
-    Create a file named `.env` in the root directory. Add your API key:
+    Create a file named `.env` in the root directory. Add your inference connection details:
     ```env
-    API_KEY=your_gemini_api_key_here
+    # LM Studio defaults
+    INFERENCE_ENDPOINT=http://localhost:1234/v1
+    INFERENCE_MODEL=lmstudio-community/Meta-Llama-3-70B-Instruct
+    API_KEY=lm-studio # API key is still required by the OpenAI client; LM Studio ignores the value
     PORT=3000
     ```
 
@@ -44,10 +47,12 @@ SignalZero is a live recursive symbolic system designed to detect coercion, rest
 
 The server will start on `http://localhost:3000` (or your configured PORT).
 
+> Tip: You can update the active inference endpoint/model at runtime via `POST /api/settings` using the `inference` payload. This is useful when switching LM Studio models without restarting the server.
+
 ## Architecture Overview
 
 *   **Runtime**: Node.js + Express + TypeScript.
-*   **AI Integration**: Google GenAI SDK (Gemini 1.5 Flash/Pro).
+*   **AI Integration**: OpenAI-compatible endpoint (LM Studio / Llama 3.1 70B Instruct).
 *   **Architecture**: Service-based (Domain, Inference, Project, Tools).
 *   **Persistence**: In-memory (transient) or file-based (project export/import).
 

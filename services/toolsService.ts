@@ -1,5 +1,5 @@
 
-import { FunctionDeclaration, Type } from "@google/genai";
+import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import { domainService } from "./domainService.ts";
 import { domainInferenceService } from "./domainInferenceService.ts";
 import { loopService } from "./loopService.ts";
@@ -14,85 +14,85 @@ import { secretManagerService } from "./secretManagerService.ts";
 
 // Shared Symbol Data Schema Properties for reuse in tools
 const SYMBOL_DATA_SCHEMA = {
-    type: Type.OBJECT,
+    type: 'object',
     description: 'The full JSON object representing the Symbol schema.',
     properties: {
-        id: { type: Type.STRING },
-        kind: { type: Type.STRING, description: "Type of symbol: 'pattern', 'lattice', or 'persona'. Defaults to 'pattern'." },
-        triad: { type: Type.STRING },
-        macro: { type: Type.STRING },
-        role: { type: Type.STRING },
-        name: { type: Type.STRING },
+        id: { type: 'string' },
+        kind: { type: 'string', description: "Type of symbol: 'pattern', 'lattice', or 'persona'. Defaults to 'pattern'." },
+        triad: { type: 'string' },
+        macro: { type: 'string' },
+        role: { type: 'string' },
+        name: { type: 'string' },
         lattice: {
-            type: Type.OBJECT,
+            type: 'object',
             description: "Configuration for lattice symbols (execution topology)",
             properties: {
-                topology: { type: Type.STRING, description: "inductive, deductive, bidirectional, invariant, energy" },
-                closure: { type: Type.STRING, description: "loop, branch, collapse, constellation, synthesis" },
-                members: { type: Type.ARRAY, items: { type: Type.STRING }, description: "List of member symbol IDs" }
+                topology: { type: 'string', description: "inductive, deductive, bidirectional, invariant, energy" },
+                closure: { type: 'string', description: "loop, branch, collapse, constellation, synthesis" },
+                members: { type: 'array', items: { type: 'string' }, description: "List of member symbol IDs" }
             }
         },
         persona: {
-            type: Type.OBJECT,
+            type: 'object',
             description: "Configuration for persona symbols",
             properties: {
-                recursion_level: { type: Type.STRING },
-                function: { type: Type.STRING },
-                fallback_behavior: { type: Type.ARRAY, items: { type: Type.STRING } },
-                linked_personas: { type: Type.ARRAY, items: { type: Type.STRING } }
+                recursion_level: { type: 'string' },
+                function: { type: 'string' },
+                fallback_behavior: { type: 'array', items: { type: 'string' } },
+                linked_personas: { type: 'array', items: { type: 'string' } }
             }
         },
-        activation_conditions: { type: Type.ARRAY, items: { type: Type.STRING } },
+        activation_conditions: { type: 'array', items: { type: 'string' } },
         facets: {
-            type: Type.OBJECT,
+            type: 'object',
             properties: {
-                function: { type: Type.STRING },
-                topology: { type: Type.STRING },
-                commit: { type: Type.STRING },
-                gate: { type: Type.ARRAY, items: { type: Type.STRING } },
-                substrate: { type: Type.ARRAY, items: { type: Type.STRING } },
-                temporal: { type: Type.STRING },
-                invariants: { type: Type.ARRAY, items: { type: Type.STRING } }
+                function: { type: 'string' },
+                topology: { type: 'string' },
+                commit: { type: 'string' },
+                gate: { type: 'array', items: { type: 'string' } },
+                substrate: { type: 'array', items: { type: 'string' } },
+                temporal: { type: 'string' },
+                invariants: { type: 'array', items: { type: 'string' } }
             },
             required: ['function', 'topology', 'commit', 'gate', 'substrate', 'temporal', 'invariants']
         },
-        symbol_domain: { type: Type.STRING },
-        symbol_tag: { type: Type.STRING },
-        failure_mode: { type: Type.STRING },
-        linked_patterns: { type: Type.ARRAY, items: { type: Type.STRING } }
+        symbol_domain: { type: 'string' },
+        symbol_tag: { type: 'string' },
+        failure_mode: { type: 'string' },
+        linked_patterns: { type: 'array', items: { type: 'string' } }
     },
     required: ['id', 'kind', 'triad', 'macro', 'role', 'name', 'activation_conditions', 'facets', 'symbol_domain', 'failure_mode', 'linked_patterns']
 };
 
 const TRACE_DATA_SCHEMA = {
-    type: Type.OBJECT,
+    type: 'object',
     description: 'The full JSON object representing a symbolic reasoning trace.',
     properties: {
-        id: { type: Type.STRING },
-        entry_node: { type: Type.STRING },
-        activated_by: { type: Type.STRING },
+        id: { type: 'string' },
+        entry_node: { type: 'string' },
+        activated_by: { type: 'string' },
         activation_path: {
-            type: Type.ARRAY,
+            type: 'array',
             items: {
-                type: Type.OBJECT,
+                type: 'object',
                 properties: {
-                    symbol_id: { type: Type.STRING },
-                    reason: { type: Type.STRING },
-                    link_type: { type: Type.STRING }
+                    symbol_id: { type: 'string' },
+                    reason: { type: 'string' },
+                    link_type: { type: 'string' }
                 },
                 required: ['symbol_id', 'reason', 'link_type']
             }
         },
         source_context: {
-            type: Type.OBJECT,
+            type: 'object',
             properties: {
-                symbol_domain: { type: Type.STRING },
-                trigger_vector: { type: Type.STRING }
+                symbol_domain: { type: 'string' },
+                trigger_vector: { type: 'string' }
             },
             required: ['symbol_domain', 'trigger_vector']
         },
-        output_node: { type: Type.STRING },
-        status: { type: Type.STRING }
+        output_node: { type: 'string' },
+        status: { type: 'string' }
     },
     required: ['entry_node', 'activated_by', 'activation_path', 'source_context', 'output_node', 'status']
 };
@@ -154,327 +154,384 @@ const fetchLoopExecutions = async (
 };
 
 // 1. Define the Schema for the tools
-export const toolDeclarations: FunctionDeclaration[] = [
+export const toolDeclarations: ChatCompletionTool[] = [
   // --- SignalZero Symbol Store Tools (Local Cache Only) ---
   {
-    name: 'find_symbols',
-    description: 'Unified symbol finder combining structured filters and semantic vector search with optional metadata pre-filters.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        query: {
-          type: Type.STRING,
-          description: 'Semantic search query. If omitted, results are filtered using structured metadata and domain constraints only.',
-        },
-        symbol_domain: {
-          type: Type.STRING,
-          description: 'Filter symbols by domain (e.g., root, diagnostics). Defaults to "root". Can be a single domain or list.',
-        },
-        symbol_domains: {
-          type: Type.ARRAY,
-          items: { type: Type.STRING },
-          description: 'Provide multiple domains to search across in a single query.',
-        },
-        symbol_tag: {
-          type: Type.STRING,
-          description: 'Filter symbols by tag (e.g., system, ritual).',
-        },
-        metadata_filter: {
-          type: Type.OBJECT,
-          description: 'Metadata filter applied before semantic search (e.g., { "symbol_domain": "defense", "symbol_tag": "protocol" }). Accepts arrays for multi-domain filtering.',
-          additionalProperties: true,
-        },
-        last_symbol_id: {
-          type: Type.STRING,
-          description: 'The ID of the last symbol from the previous page, used for cursor-based pagination.',
-        },
-        limit: {
-          type: Type.INTEGER,
-          description: 'Maximum number of symbols to return (default 20, max 20).',
-        },
-        fetch_all: {
-          type: Type.BOOLEAN,
-          description: 'If true, iteratively fetches ALL pages for the specified domain until complete.',
-        }
-      },
-      required: [],
-    },
-  },
-  {
-    name: 'load_symbols',
-    description: 'Retrieve multiple symbols at once by their IDs. Useful for expanding a list of linked patterns.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        ids: {
-          type: Type.ARRAY,
-          items: { type: Type.STRING },
-          description: 'List of symbol IDs to retrieve.',
-        },
-      },
-      required: ['ids'],
-    },
-  },
-  {
-    name: 'delete_symbols',
-    description: 'Permanently remove one or more symbols from the registry. CAUTION: Only use this tool when explicitly instructed by the user, or when completing a merge/refactor operation where a new replacement symbol has successfully been created.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        symbol_ids: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'The IDs of the symbols to delete.' },
-        symbol_domain: { type: Type.STRING, description: 'The domain the symbols belong to (optional, inferred if missing).' },
-        cascade: { type: Type.BOOLEAN, description: 'If true, removes references to this symbol from other symbols (linked_patterns, members). Defaults to true.' }
-      },
-      required: ['symbol_ids']
-    }
-  },
-  {
-    name: 'upsert_symbols',
-    description: 'Upsert multiple symbols at once. Supports updates, renames (with old_id), and new symbol additions.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        symbols: {
-          type: Type.ARRAY,
-          description: 'List of symbol upsert operations.',
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              old_id: { type: Type.STRING, description: 'Optional existing ID for rename or update. If omitted, a new symbol will be added.' },
-              // Explicitly reuse the full schema here so the model doesn't send empty objects
-              symbol_data: SYMBOL_DATA_SCHEMA
-            },
-            required: ['symbol_data']
+    type: 'function',
+    function: {
+      name: 'find_symbols',
+      description: 'Unified symbol finder combining structured filters and semantic vector search with optional metadata pre-filters.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'Semantic search query. If omitted, results are filtered using structured metadata and domain constraints only.',
+          },
+          symbol_domain: {
+            type: 'string',
+            description: 'Filter symbols by domain (e.g., root, diagnostics). Defaults to "root". Can be a single domain or list.',
+          },
+          symbol_domains: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Provide multiple domains to search across in a single query.',
+          },
+          symbol_tag: {
+            type: 'string',
+            description: 'Filter symbols by tag (e.g., system, ritual).',
+          },
+          metadata_filter: {
+            type: 'object',
+            description: 'Metadata filter applied before semantic search (e.g., { "symbol_domain": "defense", "symbol_tag": "protocol" }). Accepts arrays for multi-domain filtering.',
+            additionalProperties: true,
+          },
+          last_symbol_id: {
+            type: 'string',
+            description: 'The ID of the last symbol from the previous page, used for cursor-based pagination.',
+          },
+          limit: {
+            type: 'integer',
+            description: 'Maximum number of symbols to return (default 20, max 20).',
+          },
+          fetch_all: {
+            type: 'boolean',
+            description: 'If true, iteratively fetches ALL pages for the specified domain until complete.',
           }
-        }
+        },
+        required: [],
       },
-      required: ['symbols'],
     }
   },
-    {
+  {
+    type: 'function',
+    function: {
+      name: 'load_symbols',
+      description: 'Retrieve multiple symbols at once by their IDs. Useful for expanding a list of linked patterns.',
+      parameters: {
+        type: 'object',
+        properties: {
+          ids: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'List of symbol IDs to retrieve.',
+          },
+        },
+        required: ['ids'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_symbols',
+      description: 'Permanently remove one or more symbols from the registry. CAUTION: Only use this tool when explicitly instructed by the user, or when completing a merge/refactor operation where a new replacement symbol has successfully been created.',
+      parameters: {
+        type: 'object',
+        properties: {
+          symbol_ids: { type: 'array', items: { type: 'string' }, description: 'The IDs of the symbols to delete.' },
+          symbol_domain: { type: 'string', description: 'The domain the symbols belong to (optional, inferred if missing).' },
+          cascade: { type: 'boolean', description: 'If true, removes references to this symbol from other symbols (linked_patterns, members). Defaults to true.' }
+        },
+        required: ['symbol_ids']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'upsert_symbols',
+      description: 'Upsert multiple symbols at once. Supports updates, renames (with old_id), and new symbol additions.',
+      parameters: {
+        type: 'object',
+        properties: {
+          symbols: {
+            type: 'array',
+            description: 'List of symbol upsert operations.',
+            items: {
+              type: 'object',
+              properties: {
+                old_id: { type: 'string', description: 'Optional existing ID for rename or update. If omitted, a new symbol will be added.' },
+                // Explicitly reuse the full schema here so the model doesn't send empty objects
+                symbol_data: SYMBOL_DATA_SCHEMA
+              },
+              required: ['symbol_data']
+            }
+          }
+        },
+        required: ['symbols'],
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
       name: 'compress_symbols',
-    description: 'Merge multiple existing symbols into a single new symbol (compression). This action stores the new symbol, updates all references in the domain to point to it, and then deletes the old symbols.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        new_symbol: SYMBOL_DATA_SCHEMA,
-        old_ids: {
-          type: Type.ARRAY,
-          items: { type: Type.STRING },
-          description: 'List of old symbol IDs to remove after merging.'
-        }
-      },
-      required: ['new_symbol', 'old_ids']
+      description: 'Merge multiple existing symbols into a single new symbol (compression). This action stores the new symbol, updates all references in the domain to point to it, and then deletes the old symbols.',
+      parameters: {
+        type: 'object',
+        properties: {
+          new_symbol: SYMBOL_DATA_SCHEMA,
+          old_ids: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'List of old symbol IDs to remove after merging.'
+          }
+        },
+        required: ['new_symbol', 'old_ids']
+      }
     }
   },
   {
-    name: 'create_domain',
-    description: 'Create a new SignalZero domain. When only a domain id and description are provided, the tool infers invariants using semantic similarity to the root domain and the two closest domains before saving.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        domain_id: { type: Type.STRING, description: 'The unique id/slug for the domain.' },
-        name: { type: Type.STRING, description: 'Optional display name for the domain.' },
-        description: { type: Type.STRING, description: 'Human-readable description of the new domain.' },
-        invariants: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Optional explicit invariants. If omitted, the tool will infer them.' }
-      },
-    required: ['domain_id', 'description']
-  }
-  },
-  {
-    name: 'list_domains',
-    description: 'List all available symbol domains in the local registry. Returns name, id, description, invariant constraints, list of symbol_ids, and full definitions for persona symbols.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {},
-    },
-  },
-  {
-    name: 'upsert_loop',
-    description: 'Create or update a background loop definition, adjusting its schedule, prompt, and enabled status.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        loop_id: { type: Type.STRING, description: 'Unique identifier for the loop. Will be created if it does not exist.' },
-        schedule: { type: Type.STRING, description: 'Cron expression defining how often the loop should run.' },
-        prompt: { type: Type.STRING, description: 'Loop prompt that will be appended to the activation prompt before execution.' },
-        enabled: { type: Type.BOOLEAN, description: 'Set to true to enable the loop or false to disable it.' },
-      },
-      required: ['loop_id', 'schedule', 'prompt'],
-    },
-  },
-  {
-    name: 'list_loops',
-    description: 'List configured background loops with their schedules, prompts, and status flags.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {},
-    },
-  },
-  {
-    name: 'list_loop_executions',
-    description: 'List recent loop execution logs. Optionally filter by loop id and include symbolic traces.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        loop_id: { type: Type.STRING, description: 'Filter executions to a specific loop id.' },
-        limit: { type: Type.INTEGER, description: 'Maximum number of executions to return (default 20).' },
-        include_traces: { type: Type.BOOLEAN, description: 'Include symbolic traces captured during each execution.' }
-      },
-    },
-  },
-  {
-    name: 'add_test_case',
-    description: 'Add a new test case prompt to the persistent Test Runner suite.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        name: {
-          type: Type.STRING,
-          description: 'A human-friendly name for the test case.',
+    type: 'function',
+    function: {
+      name: 'create_domain',
+      description: 'Create a new SignalZero domain. When only a domain id and description are provided, the tool infers invariants using semantic similarity to the root domain and the two closest domains before saving.',
+      parameters: {
+        type: 'object',
+        properties: {
+          domain_id: { type: 'string', description: 'The unique id/slug for the domain.' },
+          name: { type: 'string', description: 'Optional display name for the domain.' },
+          description: { type: 'string', description: 'Human-readable description of the new domain.' },
+          invariants: { type: 'array', items: { type: 'string' }, description: 'Optional explicit invariants. If omitted, the tool will infer them.' }
         },
-        prompt: {
-          type: Type.STRING,
-          description: 'The prompt string to verify or test the system with.',
-        },
-        testSetId: {
-          type: Type.STRING,
-          description: 'Identifier of the test set to append the case to.'
-        },
-        expectedActivations: {
-          type: Type.ARRAY,
-          description: 'List of symbol IDs that must appear in the resulting trace for the test to pass.',
-          items: { type: Type.STRING }
-        }
+      required: ['domain_id', 'description']
+    }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_domains',
+      description: 'List all available symbol domains in the local registry. Returns name, id, description, invariant constraints, list of symbol_ids, and full definitions for persona symbols.',
+      parameters: {
+        type: 'object',
+        properties: {},
       },
-      required: ['name', 'prompt', 'testSetId', 'expectedActivations'],
     },
   },
   {
-    name: 'list_test_sets',
-    description: 'List all configured test sets with their metadata and test case names.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {},
-    },
-  },
-  {
-    name: 'delete_test_case',
-    description: 'Delete an existing test case from a specific test set.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        testSetId: {
-          type: Type.STRING,
-          description: 'Identifier of the test set that contains the test case.'
+    type: 'function',
+    function: {
+      name: 'upsert_loop',
+      description: 'Create or update a background loop definition, adjusting its schedule, prompt, and enabled status.',
+      parameters: {
+        type: 'object',
+        properties: {
+          loop_id: { type: 'string', description: 'Unique identifier for the loop. Will be created if it does not exist.' },
+          schedule: { type: 'string', description: 'Cron expression defining how often the loop should run.' },
+          prompt: { type: 'string', description: 'Loop prompt that will be appended to the activation prompt before execution.' },
+          enabled: { type: 'boolean', description: 'Set to true to enable the loop or false to disable it.' },
         },
-        testId: {
-          type: Type.STRING,
-          description: 'Identifier of the test case to remove.'
-        }
+        required: ['loop_id', 'schedule', 'prompt'],
       },
-      required: ['testSetId', 'testId'],
     },
   },
   {
-    name: 'reindex_vector_store',
-    description: 'Reset the ChromaDB collection and rebuild the vector index from the current symbol store.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        include_disabled: {
-          type: Type.BOOLEAN,
-          description: 'If true, include symbols from disabled domains in the reindex job.'
+    type: 'function',
+    function: {
+      name: 'list_loops',
+      description: 'List configured background loops with their schedules, prompts, and status flags.',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_loop_executions',
+      description: 'List recent loop execution logs. Optionally filter by loop id and include symbolic traces.',
+      parameters: {
+        type: 'object',
+        properties: {
+          loop_id: { type: 'string', description: 'Filter executions to a specific loop id.' },
+          limit: { type: 'integer', description: 'Maximum number of executions to return (default 20).' },
+          include_traces: { type: 'boolean', description: 'Include symbolic traces captured during each execution.' }
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'add_test_case',
+      description: 'Add a new test case prompt to the persistent Test Runner suite.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: 'A human-friendly name for the test case.',
+          },
+          prompt: {
+            type: 'string',
+            description: 'The prompt string to verify or test the system with.',
+          },
+          testSetId: {
+            type: 'string',
+            description: 'Identifier of the test set to append the case to.'
+          },
+          expectedActivations: {
+            type: 'array',
+            description: 'List of symbol IDs that must appear in the resulting trace for the test to pass.',
+            items: { type: 'string' }
+          }
+        },
+        required: ['name', 'prompt', 'testSetId', 'expectedActivations'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_test_sets',
+      description: 'List all configured test sets with their metadata and test case names.',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_test_case',
+      description: 'Delete an existing test case from a specific test set.',
+      parameters: {
+        type: 'object',
+        properties: {
+          testSetId: {
+            type: 'string',
+            description: 'Identifier of the test set that contains the test case.'
+          },
+          testId: {
+            type: 'string',
+            description: 'Identifier of the test case to remove.'
+          }
+        },
+        required: ['testSetId', 'testId'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'reindex_vector_store',
+      description: 'Reset the ChromaDB collection and rebuild the vector index from the current symbol store.',
+      parameters: {
+        type: 'object',
+        properties: {
+          include_disabled: {
+            type: 'boolean',
+            description: 'If true, include symbols from disabled domains in the reindex job.'
+          }
         }
       }
     }
   },
   {
-    name: 'web_fetch',
-    description: 'Fetch a URL over HTTP(S) and return the response body for downstream analysis.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        url: {
-          type: Type.STRING,
-          description: 'The absolute URL to fetch (http or https).'
+    type: 'function',
+    function: {
+      name: 'web_fetch',
+      description: 'Fetch a URL over HTTP(S) and return the response body for downstream analysis.',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: {
+            type: 'string',
+            description: 'The absolute URL to fetch (http or https).'
+          },
+          headers: {
+            type: 'object',
+            description: 'Optional custom HTTP headers to include in the request. Values must be strings.',
+            additionalProperties: true
+          }
         },
-        headers: {
-          type: Type.OBJECT,
-          description: 'Optional custom HTTP headers to include in the request. Values must be strings.',
-          additionalProperties: true
-        }
-      },
-      required: ['url']
+        required: ['url']
+      }
     }
   },
   {
-    name: 'web_search',
-    description: 'Perform a Google Custom Search for a query and return structured JSON results.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        query: {
-          type: Type.STRING,
-          description: 'The search query to look up on Google Custom Search.'
-        }
-      },
-      required: ['query']
+    type: 'function',
+    function: {
+      name: 'web_search',
+      description: 'Perform a Google Custom Search for a query and return structured JSON results.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'The search query to look up on Google Custom Search.'
+          }
+        },
+        required: ['query']
+      }
     }
   },
   {
-    name: 'list_secrets',
-    description: 'List secrets from Google Secret Manager using the configured service account credentials.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        project_id: {
-          type: Type.STRING,
-          description: 'Optional GCP project ID override. Defaults to GCP_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variables.'
+    type: 'function',
+    function: {
+      name: 'list_secrets',
+      description: 'List secrets from Google Secret Manager using the configured service account credentials.',
+      parameters: {
+        type: 'object',
+        properties: {
+          project_id: {
+            type: 'string',
+            description: 'Optional GCP project ID override. Defaults to GCP_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variables.'
+          },
+          page_size: {
+            type: 'integer',
+            description: 'Number of secrets to fetch (1-250). Defaults to the Secret Manager service default.'
+          },
+          page_token: {
+            type: 'string',
+            description: 'Pagination token from a previous list_secrets call.'
+          }
         },
-        page_size: {
-          type: Type.INTEGER,
-          description: 'Number of secrets to fetch (1-250). Defaults to the Secret Manager service default.'
-        },
-        page_token: {
-          type: Type.STRING,
-          description: 'Pagination token from a previous list_secrets call.'
-        }
-      },
-      required: []
+        required: []
+      }
     }
   },
   {
-    name: 'get_secret',
-    description: 'Retrieve a secret value from Google Secret Manager using the configured service account credentials.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        secret_id: {
-          type: Type.STRING,
-          description: 'ID of the secret to retrieve (without the project path).'
+    type: 'function',
+    function: {
+      name: 'get_secret',
+      description: 'Retrieve a secret value from Google Secret Manager using the configured service account credentials.',
+      parameters: {
+        type: 'object',
+        properties: {
+          secret_id: {
+            type: 'string',
+            description: 'ID of the secret to retrieve (without the project path).'
+          },
+          version: {
+            type: 'string',
+            description: "Secret version to access (defaults to 'latest')."
+          },
+          project_id: {
+            type: 'string',
+            description: 'Optional GCP project ID override. Defaults to GCP_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variables.'
+          }
         },
-        version: {
-          type: Type.STRING,
-          description: "Secret version to access (defaults to 'latest')."
-        },
-        project_id: {
-          type: Type.STRING,
-          description: 'Optional GCP project ID override. Defaults to GCP_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variables.'
-        }
-      },
-      required: ['secret_id']
+        required: ['secret_id']
+      }
     }
   },
   {
-    name: 'log_trace',
-    description: 'Log a symbolic reasoning trace. This must be called for every symbolic operation or deduction chain to maintain the recursive log.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        trace: TRACE_DATA_SCHEMA
-      },
-      required: ['trace']
+    type: 'function',
+    function: {
+      name: 'log_trace',
+      description: 'Log a symbolic reasoning trace. This must be called for every symbolic operation or deduction chain to maintain the recursive log.',
+      parameters: {
+        type: 'object',
+        properties: {
+          trace: TRACE_DATA_SCHEMA
+        },
+        required: ['trace']
+      }
     }
   }
 ];

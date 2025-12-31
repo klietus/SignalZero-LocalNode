@@ -19,19 +19,9 @@ describe('SettingsService', () => {
         expect(settingsService.getApiKey()).toBe('test-key');
     });
 
-    it('should get Gemini key from env', () => {
-        process.env.GEMINI_API_KEY = 'gemini-key';
-        expect(settingsService.getGeminiKey()).toBe('gemini-key');
-    });
-
     it('should set API key to env', () => {
         settingsService.setApiKey('new-key');
         expect(process.env.API_KEY).toBe('new-key');
-    });
-
-    it('should set Gemini key to env', () => {
-        settingsService.setGeminiKey('new-gemini');
-        expect(process.env.GEMINI_API_KEY).toBe('new-gemini');
     });
 
     it('should get user profile from env', () => {
@@ -133,14 +123,15 @@ describe('SettingsService', () => {
         expect(process.env.CHROMA_COLLECTION).toBe('default');
     });
 
-    it('should aggregate system settings including gemini key', () => {
+    it('should aggregate system settings including inference settings', () => {
         process.env.REDIS_SERVER = 'redis-host';
         process.env.REDIS_PORT = '6390';
         process.env.REDIS_PASSWORD = 'pw';
         process.env.CHROMA_URL = 'http://chroma:8000';
         process.env.CHROMA_COLLECTION = 'col';
         process.env.USE_EXTERNAL_VECTOR_DB = 'false';
-        process.env.GEMINI_API_KEY = 'gemini-api-key';
+        process.env.INFERENCE_ENDPOINT = 'http://localhost:1234/v1';
+        process.env.INFERENCE_MODEL = 'Meta-Llama-3-70B-Instruct';
 
         const systemSettings = settingsService.getSystemSettings();
 
@@ -155,7 +146,10 @@ describe('SettingsService', () => {
                 collection: 'col',
                 useExternal: false
             },
-            geminiKey: 'gemini-api-key'
+            inference: {
+                endpoint: 'http://localhost:1234/v1',
+                model: 'Meta-Llama-3-70B-Instruct'
+            }
         });
     });
 
@@ -173,13 +167,16 @@ describe('SettingsService', () => {
                 collectionName: 'initial-collection',
                 useExternal: true
             },
-            geminiKey: 'first-key'
+            inference: {
+                endpoint: 'http://localhost:1234/v1',
+                model: 'lmstudio-community/Meta-Llama-3-70B-Instruct'
+            }
         });
 
         settingsService.setSystemSettings({
             redis: { redisPassword: 'updated-pw' },
             chroma: { collectionName: 'updated-collection' },
-            geminiKey: 'updated-key'
+            inference: { model: 'Meta-Llama-3-70B-Instruct' }
         });
 
         expect(settingsService.getSystemSettings()).toEqual({
@@ -193,7 +190,10 @@ describe('SettingsService', () => {
                 collection: 'updated-collection',
                 useExternal: true
             },
-            geminiKey: 'updated-key'
+            inference: {
+                endpoint: 'http://localhost:1234/v1',
+                model: 'Meta-Llama-3-70B-Instruct'
+            }
         });
     });
 });
