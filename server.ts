@@ -15,6 +15,7 @@ import { loggerService } from './services/loggerService.js';
 import { systemPromptService } from './services/systemPromptService.js';
 import { fileURLToPath } from 'url';
 import { loopService } from './services/loopService.js';
+import { contextService } from './services/contextService.js';
 
 import { vectorService } from './services/vectorService.js';
 import { indexingService } from './services/indexingService.js';
@@ -120,7 +121,7 @@ systemPromptService.loadPrompt(ACTIVATION_PROMPT)
 
 // Chat Endpoint
 app.post('/api/chat', async (req, res) => {
-  const { message } = req.body;
+  const { message, newSession } = req.body;
 
   if (!message) {
      res.status(400).json({ error: 'Message is required' });
@@ -128,11 +129,15 @@ app.post('/api/chat', async (req, res) => {
   }
 
   try {
+    const { session: contextSession, created } = await contextService.ensureConversationSession(newSession === true, { source: 'openapi' });
+    if (created || newSession === true) {
+        resetChatSession();
+    }
     const chat = getChatSession(activeSystemPrompt);
-    const toolExecutor = createToolExecutor(() => settingsService.getApiKey());
+    const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), contextSession.id);
     
     // Use the streaming helper but collect the full response for the HTTP response
-    const stream = sendMessageAndHandleTools(chat, message, toolExecutor, activeSystemPrompt);
+    const stream = sendMessageAndHandleTools(chat, message, toolExecutor, activeSystemPrompt, contextSession.id);
     
     let fullResponseText = "";
     let toolCalls: any[] = [];
@@ -145,7 +150,9 @@ app.post('/api/chat', async (req, res) => {
     res.json({
         role: 'model',
         content: fullResponseText,
-        toolCalls: toolCalls.length > 0 ? toolCalls : undefined
+        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+        contextSessionId: contextSession.id,
+        contextStatus: contextSession.status
     });
 
   } catch (error) {
@@ -158,6 +165,7 @@ app.post('/api/chat', async (req, res) => {
 app.post('/api/chat/reset', (req, res) => {
     resetChatSession();
     traceService.clear();
+    contextService.closeConversationSessions();
     res.json({ status: 'Chat session reset' });
 });
 
@@ -180,6 +188,33 @@ app.post('/api/system/prompt', async (req, res) => {
         }
     } else {
         res.status(400).json({ error: 'Prompt is required' });
+    }
+});
+
+// Context Sessions
+app.get('/api/contexts', async (req, res) => {
+    try {
+        const contexts = await contextService.listSessions();
+        res.json({ contexts });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: 'Failed to list contexts' });
+    }
+});
+
+app.get('/api/contexts/:id/history', async (req, res) => {
+    try {
+        const session = await contextService.getSession(req.params.id);
+        if (!session) {
+            res.status(404).json({ error: 'Context session not found' });
+            return;
+        }
+
+        const history = await contextService.getHistory(req.params.id);
+        res.json({ session, history });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: 'Failed to get context history' });
     }
 });
 

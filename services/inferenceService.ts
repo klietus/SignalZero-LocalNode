@@ -12,6 +12,7 @@ import { embedText } from "./embeddingService.ts";
 import { buildSystemMetadataBlock } from "./timeService.ts";
 import { settingsService } from "./settingsService.ts";
 import { loggerService } from "./loggerService.ts";
+import { contextService } from "./contextService.js";
 
 interface ChatSessionState {
   messages: ChatCompletionMessageParam[];
@@ -233,7 +234,8 @@ export async function* sendMessageAndHandleTools(
   chat: ChatSessionState,
   message: string,
   toolExecutor: (name: string, args: any) => Promise<any>,
-  systemInstruction?: string
+  systemInstruction?: string,
+  contextSessionId?: string
 ): AsyncGenerator<
   { text?: string; toolCalls?: any[]; isComplete?: boolean },
   void,
@@ -249,7 +251,16 @@ export async function* sendMessageAndHandleTools(
     chat.model = currentModel;
   }
 
-  chat.messages.push({ role: "user", content: buildMetadataWrappedContent(message) });
+  const userMessage: ChatCompletionMessageParam = { role: "user", content: buildMetadataWrappedContent(message) };
+  chat.messages.push(userMessage);
+
+  if (contextSessionId) {
+    await contextService.recordMessage(contextSessionId, {
+      role: "user",
+      content: message,
+      metadata: { kind: "user_prompt" },
+    });
+  }
 
   let loops = 0;
   while (loops < MAX_TOOL_LOOPS) {
@@ -270,6 +281,19 @@ export async function* sendMessageAndHandleTools(
 
     chat.messages.push(nextAssistant);
 
+    if (contextSessionId) {
+      await contextService.recordMessage(contextSessionId, {
+        role: "assistant",
+        content: typeof nextAssistant.content === "string" ? nextAssistant.content : JSON.stringify(nextAssistant.content),
+        toolCalls: nextAssistant.tool_calls?.map((call) => ({
+          id: call.id,
+          name: call.function?.name,
+          arguments: call.function?.arguments,
+        })),
+        metadata: { kind: "assistant_response" },
+      });
+    }
+
     if (!yieldedToolCalls || yieldedToolCalls.length === 0) {
       break;
     }
@@ -285,6 +309,17 @@ export async function* sendMessageAndHandleTools(
           content: JSON.stringify(result),
           tool_call_id: call.id,
         });
+
+        if (contextSessionId) {
+          await contextService.recordMessage(contextSessionId, {
+            role: "tool",
+            content: JSON.stringify(result),
+            toolName: call.function.name,
+            toolCallId: call.id,
+            toolArgs: args,
+            metadata: { kind: "tool_result" },
+          });
+        }
       } catch (err) {
         loggerService.error(`Error executing tool ${call.function.name}`, { err });
         toolResponses.push({
@@ -292,6 +327,17 @@ export async function* sendMessageAndHandleTools(
           content: JSON.stringify({ error: String(err) }),
           tool_call_id: call.id,
         });
+
+        if (contextSessionId) {
+          await contextService.recordMessage(contextSessionId, {
+            role: "tool",
+            content: JSON.stringify({ error: String(err) }),
+            toolName: call.function.name,
+            toolCallId: call.id,
+            toolArgs: parseToolArguments(call.function.arguments || ""),
+            metadata: { kind: "tool_error" },
+          });
+        }
       }
     }
 
