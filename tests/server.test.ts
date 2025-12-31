@@ -55,6 +55,29 @@ describe('Server API Endpoints', () => {
         expect(res.body.content).toBe('Response');
     });
 
+    it('POST /api/chat should reuse provided context session', async () => {
+        vi.mocked(contextService.getSession).mockResolvedValue({ id: 'ctx-99', status: 'open' } as any);
+
+        const res = await request(app)
+            .post('/api/chat')
+            .send({ message: 'Hello', contextSessionId: 'ctx-99' });
+
+        expect(res.status).toBe(200);
+        expect(contextService.getSession).toHaveBeenCalledWith('ctx-99');
+        expect(res.body.contextSessionId).toBe('ctx-99');
+    });
+
+    it('POST /api/chat should return 404 for missing context session', async () => {
+        vi.mocked(contextService.getSession).mockResolvedValue(null as any);
+
+        const res = await request(app)
+            .post('/api/chat')
+            .send({ message: 'Hello', contextSessionId: 'missing' });
+
+        expect(res.status).toBe(404);
+        expect(res.body.error).toContain('Context session not found');
+    });
+
     it('GET /api/contexts should list contexts', async () => {
         vi.mocked(contextService.listSessions).mockResolvedValue([{ id: 'ctx-1', status: 'open' } as any]);
 

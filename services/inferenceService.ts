@@ -92,7 +92,8 @@ const parseToolArguments = (args: string) => {
   }
 };
 
-let chatSession: ChatSessionState | null = null;
+const DEFAULT_CHAT_KEY = "default";
+const chatSessions = new Map<string, ChatSessionState>();
 
 const createChatSession = (systemInstruction: string): ChatSessionState => ({
   messages: [{ role: "system", content: systemInstruction }],
@@ -100,23 +101,37 @@ const createChatSession = (systemInstruction: string): ChatSessionState => ({
   model: getModel(),
 });
 
-export const getChatSession = (systemInstruction: string) => {
-  if (!chatSession || chatSession.systemInstruction !== systemInstruction) {
-    chatSession = createChatSession(systemInstruction);
+export const getChatSession = (systemInstruction: string, contextSessionId?: string) => {
+  const key = contextSessionId || DEFAULT_CHAT_KEY;
+  const existing = chatSessions.get(key);
+
+  if (!existing || existing.systemInstruction !== systemInstruction) {
+    const fresh = createChatSession(systemInstruction);
+    chatSessions.set(key, fresh);
   }
+
+  const chat = chatSessions.get(key)!;
   const currentModel = getModel();
-  if (chatSession.model !== currentModel) {
-    chatSession.model = currentModel;
+  if (chat.model !== currentModel) {
+    chat.model = currentModel;
   }
-  return chatSession;
+  return chat;
 };
 
-export const resetChatSession = () => {
-  chatSession = null;
+export const resetChatSession = (contextSessionId?: string) => {
+  if (contextSessionId) {
+    chatSessions.delete(contextSessionId);
+  } else {
+    chatSessions.clear();
+  }
 };
 
-export const createFreshChatSession = (systemInstruction: string) => {
-  return createChatSession(systemInstruction);
+export const createFreshChatSession = (systemInstruction: string, contextSessionId?: string) => {
+  const session = createChatSession(systemInstruction);
+  if (contextSessionId) {
+    chatSessions.set(contextSessionId, session);
+  }
+  return session;
 };
 
 // --- Embedding Helper ---
