@@ -53,6 +53,9 @@ paths:
               properties:
                 message:
                   type: string
+                newSession:
+                  type: boolean
+                  description: Set to true to force a new conversational context (closes any existing open conversation).
       responses:
         '200':
           description: Successful response
@@ -69,6 +72,10 @@ paths:
                     type: array
                     items:
                       type: object
+                  contextSessionId:
+                    type: string
+                  contextStatus:
+                    type: string
   /chat/reset:
     post:
       summary: Reset the chat session
@@ -78,10 +85,48 @@ paths:
           content:
             application/json:
               schema:
+                  type: object
+                  properties:
+                    status:
+                      type: string
+  /contexts:
+    get:
+      summary: List all context sessions
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
                 type: object
                 properties:
-                  status:
-                    type: string
+                  contexts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ContextSession'
+  /contexts/{id}/history:
+    get:
+      summary: Get chat history for a context session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session:
+                    $ref: '#/components/schemas/ContextSession'
+                  history:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ContextMessage'
   /system/prompt:
     get:
       summary: Get the current system prompt
@@ -1507,6 +1552,60 @@ components:
           type: object
         document:
           type: string
+    ContextSession:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [conversation, loop]
+        status:
+          type: string
+          enum: [open, closed]
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+        closedAt:
+          type: string
+          nullable: true
+        metadata:
+          type: object
+          additionalProperties: true
+    ContextMessage:
+      type: object
+      properties:
+        role:
+          type: string
+        content:
+          type: string
+        timestamp:
+          type: string
+        toolName:
+          type: string
+          nullable: true
+        toolCallId:
+          type: string
+          nullable: true
+        toolArgs:
+          type: object
+          nullable: true
+          additionalProperties: true
+        toolCalls:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              arguments:
+                type: string
+        metadata:
+          type: object
+          additionalProperties: true
     Domain:
       type: object
       properties:
