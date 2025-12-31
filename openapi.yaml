@@ -56,6 +56,9 @@ paths:
                 newSession:
                   type: boolean
                   description: Set to true to force a new conversational context (closes any existing open conversation).
+                contextSessionId:
+                  type: string
+                  description: Optional context session id to continue a specific context.
       responses:
         '200':
           description: Successful response

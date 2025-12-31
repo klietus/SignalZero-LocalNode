@@ -121,7 +121,7 @@ systemPromptService.loadPrompt(ACTIVATION_PROMPT)
 
 // Chat Endpoint
 app.post('/api/chat', async (req, res) => {
-  const { message, newSession } = req.body;
+  const { message, newSession, contextSessionId } = req.body;
 
   if (!message) {
      res.status(400).json({ error: 'Message is required' });
@@ -129,11 +129,28 @@ app.post('/api/chat', async (req, res) => {
   }
 
   try {
-    const { session: contextSession, created } = await contextService.ensureConversationSession(newSession === true, { source: 'openapi' });
-    if (created || newSession === true) {
-        resetChatSession();
+    let contextSession;
+    let created = false;
+
+    if (contextSessionId) {
+        contextSession = await contextService.getSession(contextSessionId);
+        if (!contextSession) {
+            res.status(404).json({ error: 'Context session not found' });
+            return;
+        }
+        if (newSession === true) {
+            resetChatSession(contextSession.id);
+        }
+    } else {
+        const ensured = await contextService.ensureConversationSession(newSession === true, { source: 'openapi' });
+        contextSession = ensured.session;
+        created = ensured.created;
+        if (created || newSession === true) {
+            resetChatSession();
+        }
     }
-    const chat = getChatSession(activeSystemPrompt);
+
+    const chat = getChatSession(activeSystemPrompt, contextSession.id);
     const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), contextSession.id);
     
     // Use the streaming helper but collect the full response for the HTTP response
