@@ -1,7 +1,5 @@
 
 
-import { FunctionDeclaration } from "@google/genai";
-
 export enum Sender {
   USER = 'user',
   MODEL = 'model',
