@@ -19,7 +19,12 @@ export interface RedisSettings {
 export interface SystemSettings {
   redis?: Partial<RedisSettings>;
   chroma?: Partial<VectorSettings>;
-  geminiKey?: string;
+  inference?: Partial<InferenceSettings>;
+}
+
+export interface InferenceSettings {
+  endpoint: string;
+  model: string;
 }
 
 export const settingsService = {
@@ -28,18 +33,10 @@ export const settingsService = {
     return process.env.API_KEY || '';
   },
 
-  getGeminiKey: (): string => {
-    return process.env.GEMINI_API_KEY || '';
-  },
-  
   // No-op for server-side setters usually, or implement FS write if needed.
   // For this implementation, we rely on env vars.
   setApiKey: (key: string) => {
     process.env.API_KEY = key;
-  },
-
-  setGeminiKey: (key: string) => {
-    process.env.GEMINI_API_KEY = key;
   },
 
   getUser: (): UserProfile | null => {
@@ -126,10 +123,24 @@ export const settingsService = {
     process.env.CHROMA_COLLECTION = settings.collectionName;
   },
 
+  // --- Inference Settings ---
+  getInferenceSettings: (): InferenceSettings => {
+    return {
+      endpoint: process.env.INFERENCE_ENDPOINT || 'http://localhost:1234/v1',
+      model: process.env.INFERENCE_MODEL || 'lmstudio-community/Meta-Llama-3-70B-Instruct'
+    };
+  },
+
+  setInferenceSettings: (settings: InferenceSettings) => {
+    process.env.INFERENCE_ENDPOINT = settings.endpoint;
+    process.env.INFERENCE_MODEL = settings.model;
+  },
+
   // --- Aggregated Settings ---
   getSystemSettings: () => {
     const redisSettings = settingsService.getRedisSettings();
     const vectorSettings = settingsService.getVectorSettings();
+    const inferenceSettings = settingsService.getInferenceSettings();
 
     return {
       redis: {
@@ -142,7 +153,10 @@ export const settingsService = {
         collection: vectorSettings.collectionName,
         useExternal: vectorSettings.useExternal,
       },
-      geminiKey: settingsService.getGeminiKey(),
+      inference: {
+        endpoint: inferenceSettings.endpoint,
+        model: inferenceSettings.model,
+      },
     };
   },
 
@@ -169,8 +183,13 @@ export const settingsService = {
       });
     }
 
-    if (typeof settings.geminiKey === 'string') {
-      settingsService.setGeminiKey(settings.geminiKey);
+    if (settings.inference) {
+      const currentInference = settingsService.getInferenceSettings();
+      const inferenceInput = settings.inference as Record<string, unknown>;
+      settingsService.setInferenceSettings({
+        endpoint: (inferenceInput.endpoint as string | undefined) ?? currentInference.endpoint,
+        model: (inferenceInput.model as string | undefined) ?? currentInference.model,
+      });
     }
   },
 

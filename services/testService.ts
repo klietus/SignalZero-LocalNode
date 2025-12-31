@@ -121,7 +121,7 @@ export const testService = {
   /**
    * Starts a new test run.
    * NOTE: The actual execution logic (runTestFn) is passed in to avoid circular dependencies 
-   * between testService, gemini, and toolsService.
+   * between testService, inference, and toolsService.
    */
   startTestRun: async (
       testSetId: string,

@@ -1,6 +1,8 @@
-import { GoogleGenAI } from "@google/genai";
+import OpenAI from "openai";
 import { domainService } from "./domainService.ts";
 import { embedText } from "./embeddingService.ts";
+import { settingsService } from "./settingsService.ts";
+import { loggerService } from "./loggerService.ts";
 
 interface DomainDescriptor {
     id: string;
@@ -13,12 +15,11 @@ interface SimilarDomain extends DomainDescriptor {
     similarity: number;
 }
 
-const apiKey = process.env.API_KEY || "missing-api-key";
-if (!process.env.API_KEY) {
-    console.warn("WARNING: API_KEY not found in environment. Domain inference will not work until configured.");
-}
-
-const ai = new GoogleGenAI({ apiKey });
+const getClient = () => {
+    const { endpoint } = settingsService.getInferenceSettings();
+    const apiKey = settingsService.getApiKey() || "lm-studio";
+    return new OpenAI({ baseURL: endpoint, apiKey });
+};
 
 const cosineSimilarity = (a: number[], b: number[]): number => {
     if (!a.length || !b.length || a.length !== b.length) return 0;
@@ -98,16 +99,19 @@ ${closest.map((d) => `- ${d.id} (${d.similarity.toFixed(3)}): invariants=${d.inv
 Return JSON with the field "invariants" as a non-empty array of concise invariant statements. You may include an optional "reasoning" note, but no additional text.
 `;
 
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.0-flash-lite',
-            contents: [{ parts: [{ text: prompt }] }],
-            config: { responseMimeType: "application/json" }
+        const client = getClient();
+        const response = await client.chat.completions.create({
+            model: settingsService.getInferenceSettings().model,
+            messages: [{ role: 'user', content: prompt }],
+            temperature: 0,
+            response_format: { type: 'json_object' }
         });
 
         let parsed: any = {};
         try {
-            parsed = JSON.parse(response.text || '{}');
+            parsed = JSON.parse(response.choices[0]?.message?.content || '{}');
         } catch (err) {
+            loggerService.error('Failed to parse invariant JSON', { err });
             throw new Error(`Failed to parse invariant JSON: ${String(err)}`);
         }
 
