@@ -11,6 +11,7 @@ import { createFreshChatSession, sendMessageAndHandleTools } from './inferenceSe
 import { settingsService } from './settingsService.js';
 import { traceService } from './traceService.js';
 import { EXECUTION_ZSET_KEY, LOOP_INDEX_KEY, getExecutionKey, getLoopKey, getTraceKey } from './loopStorage.js';
+import { contextService } from './contextService.js';
 const ONE_MINUTE_MS = 60_000;
 const ONE_HOUR_MS = 60 * ONE_MINUTE_MS;
 const ONE_WEEK_MS = 7 * 24 * ONE_HOUR_MS;
@@ -157,6 +158,7 @@ class LoopService {
         this.executingLoops.add(loop.id);
         const executionId = `${loop.id}-${Date.now()}`;
         const startedAt = new Date().toISOString();
+        const contextSession = await contextService.startLoopSession(loop.id, { executionId });
         const baselineTraceIds = new Set(traceService.getTraces().map((t) => t.id));
         loggerService.info('LoopService: Executing loop', { loopId: loop.id, executionId });
 
@@ -172,8 +174,13 @@ class LoopService {
             const systemInstruction = await this.buildSystemInstruction(loop.prompt);
             const chat = createFreshChatSession(systemInstruction);
 
-            const toolExecutor = createToolExecutor(() => settingsService.getApiKey());
-            const stream = sendMessageAndHandleTools(chat, loop.prompt, toolExecutor, systemInstruction);
+            const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), contextSession.id);
+            const stream = sendMessageAndHandleTools(chat, loop.prompt, toolExecutor, systemInstruction, contextSession.id);
+            await contextService.recordMessage(contextSession.id, {
+                role: "system",
+                content: loop.prompt,
+                metadata: { kind: "loop_prompt", loopId: loop.id, executionId }
+            });
             const toolCalls: any[] = [];
 
             for await (const chunk of stream) {
@@ -214,6 +221,7 @@ class LoopService {
             await this.persistExecution(executionLog, traces);
             loggerService.info('LoopService: Loop execution recorded', { loopId: loop.id, executionId, status });
             this.executingLoops.delete(loop.id);
+            await contextService.closeLoopSession(contextSession.id);
         }
     }
 

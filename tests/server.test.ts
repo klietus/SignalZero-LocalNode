@@ -6,12 +6,22 @@ import { domainService, ReadOnlyDomainError } from '../services/domainService.ts
 import { traceService } from '../services/traceService.ts';
 import { testService } from '../services/testService.ts';
 import { projectService } from '../services/projectService.ts';
+import { contextService } from '../services/contextService.ts';
 
 // Mock Services
 vi.mock('../services/domainService');
 vi.mock('../services/traceService');
 vi.mock('../services/testService');
 vi.mock('../services/projectService');
+vi.mock('../services/contextService', () => ({
+    contextService: {
+        ensureConversationSession: vi.fn().mockResolvedValue({ session: { id: 'ctx-1', status: 'open' }, created: false }),
+        closeConversationSessions: vi.fn(),
+        listSessions: vi.fn().mockResolvedValue([]),
+        getSession: vi.fn(),
+        getHistory: vi.fn()
+    }
+}));
 vi.mock('../services/inferenceService', () => ({
     getChatSession: vi.fn(),
     resetChatSession: vi.fn(),
@@ -43,6 +53,24 @@ describe('Server API Endpoints', () => {
         
         expect(res.status).toBe(200);
         expect(res.body.content).toBe('Response');
+    });
+
+    it('GET /api/contexts should list contexts', async () => {
+        vi.mocked(contextService.listSessions).mockResolvedValue([{ id: 'ctx-1', status: 'open' } as any]);
+
+        const res = await request(app).get('/api/contexts');
+        expect(res.status).toBe(200);
+        expect(res.body.contexts[0].id).toBe('ctx-1');
+    });
+
+    it('GET /api/contexts/:id/history should return history', async () => {
+        vi.mocked(contextService.getSession).mockResolvedValue({ id: 'ctx-1', status: 'open' } as any);
+        vi.mocked(contextService.getHistory).mockResolvedValue([{ role: 'user', content: 'hi', timestamp: new Date().toISOString() }]);
+
+        const res = await request(app).get('/api/contexts/ctx-1/history');
+        expect(res.status).toBe(200);
+        expect(res.body.session.id).toBe('ctx-1');
+        expect(res.body.history).toHaveLength(1);
     });
 
     // --- Domains ---
