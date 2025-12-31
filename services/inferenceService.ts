@@ -33,8 +33,8 @@ const getClient = () => {
 
 const getModel = () => settingsService.getInferenceSettings().model;
 
-const buildMetadataWrappedContent = (message: string) =>
-  `${message}\n\n[SYSTEM_METADATA] ${JSON.stringify(buildSystemMetadataBlock())}`;
+const buildMetadataWrappedContent = (message: string, context?: Record<string, any>) =>
+  `${message}\n\n[SYSTEM_METADATA] ${JSON.stringify(buildSystemMetadataBlock(context))}`;
 
 const extractTextDelta = (delta: ChatCompletionChunk["choices"][number]["delta"]) => {
   if (!delta?.content) return "";
@@ -251,7 +251,43 @@ export async function* sendMessageAndHandleTools(
     chat.model = currentModel;
   }
 
-  const userMessage: ChatCompletionMessageParam = { role: "user", content: buildMetadataWrappedContent(message) };
+  let contextMetadata: Record<string, any> | undefined;
+
+  if (contextSessionId) {
+    try {
+      const session = await contextService.getSession(contextSessionId);
+      if (session) {
+        const lifecycle = session.status === "closed" ? "zombie" : "live";
+        contextMetadata = {
+          id: session.id,
+          type: session.type,
+          status: session.status,
+          lifecycle,
+          readonly: session.metadata?.readOnly === true,
+          created_at: session.createdAt,
+          updated_at: session.updatedAt,
+          closed_at: session.closedAt,
+          metadata: session.metadata,
+        };
+      }
+    } catch (error) {
+      loggerService.warn("Failed to load context metadata for system block", { contextSessionId, error });
+    }
+
+    if (!contextMetadata) {
+      contextMetadata = {
+        id: contextSessionId,
+        status: "unknown",
+        lifecycle: "unknown",
+        readonly: false,
+      };
+    }
+  }
+
+  const userMessage: ChatCompletionMessageParam = {
+    role: "user",
+    content: buildMetadataWrappedContent(message, contextMetadata),
+  };
   chat.messages.push(userMessage);
 
   if (contextSessionId) {
