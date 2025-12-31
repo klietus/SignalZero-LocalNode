@@ -227,6 +227,31 @@ export interface ProjectImportStats {
     totalSymbols: number;
 }
 
+// Context Sessions
+export type ContextKind = 'conversation' | 'loop';
+export type ContextStatus = 'open' | 'closed';
+
+export interface ContextMessage {
+  role: string;
+  content: string;
+  timestamp: string;
+  toolName?: string;
+  toolCallId?: string;
+  toolArgs?: Record<string, any>;
+  toolCalls?: { id?: string; name?: string; arguments?: string }[];
+  metadata?: Record<string, any>;
+}
+
+export interface ContextSession {
+  id: string;
+  type: ContextKind;
+  status: ContextStatus;
+  createdAt: string;
+  updatedAt: string;
+  closedAt?: string;
+  metadata?: Record<string, any>;
+}
+
 export interface VectorSearchResult {
     id: string;
     score: number;

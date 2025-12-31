@@ -11,6 +11,7 @@ import { loggerService } from "./loggerService.ts";
 import { EXECUTION_ZSET_KEY, LOOP_INDEX_KEY, getExecutionKey, getLoopKey, getTraceKey } from "./loopStorage.js";
 import { redisService } from "./redisService.js";
 import { secretManagerService } from "./secretManagerService.ts";
+import { contextService } from "./contextService.js";
 
 // Shared Symbol Data Schema Properties for reuse in tools
 const SYMBOL_DATA_SCHEMA = {
@@ -537,9 +538,14 @@ export const toolDeclarations: ChatCompletionTool[] = [
 ];
 
 // 2. Define the execution logic
-export const createToolExecutor = (getApiKey: () => string | null) => {
+export const createToolExecutor = (getApiKey: () => string | null, contextSessionId?: string) => {
   return async (name: string, args: any): Promise<any> => {
     console.log(`[ToolExecutor] Executing ${name} with`, args);
+
+    const writeAllowed = await contextService.isWriteAllowed(contextSessionId, name);
+    if (!writeAllowed) {
+      return { error: `Session ${contextSessionId} is closed. Write operations are not allowed.`, code: 403 };
+    }
     
     switch (name) {
       
