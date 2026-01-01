@@ -232,14 +232,20 @@ export type ContextKind = 'conversation' | 'loop';
 export type ContextStatus = 'open' | 'closed';
 
 export interface ContextMessage {
+  id: string;
   role: string;
   content: string;
   timestamp: string;
-  toolName?: string;
-  toolCallId?: string;
-  toolArgs?: Record<string, any>;
-  toolCalls?: { id?: string; name?: string; arguments?: string }[];
+  toolName?: string | null;
+  toolCallId?: string | null;
+  toolArgs?: Record<string, any> | null;
+  toolCalls?: {
+      id?: string;
+      name?: string;
+      arguments?: any;
+  }[];
   metadata?: Record<string, any>;
+  correlationId?: string;
 }
 
 export interface ContextSession {
@@ -248,8 +254,16 @@ export interface ContextSession {
   status: ContextStatus;
   createdAt: string;
   updatedAt: string;
-  closedAt?: string;
+  closedAt?: string | null;
   metadata?: Record<string, any>;
+  activeMessageId?: string | null;
+}
+
+export interface ContextHistoryGroup {
+    correlationId: string;
+    userMessage: ContextMessage;
+    assistantMessages: ContextMessage[];
+    status: 'processing' | 'complete';
 }
 
 export interface VectorSearchResult {

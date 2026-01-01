@@ -161,46 +161,29 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'find_symbols',
-      description: 'Unified symbol finder combining structured filters and semantic vector search with optional metadata pre-filters.',
+      description: 'Unified symbol finder that accepts multiple search queries at once. Supports semantic vector search and structured metadata filtering. Results from all queries are aggregated and deduplicated.',
       parameters: {
         type: 'object',
         properties: {
-          query: {
-            type: 'string',
-            description: 'Semantic search query. If omitted, results are filtered using structured metadata and domain constraints only.',
-          },
-          symbol_domain: {
-            type: 'string',
-            description: 'Filter symbols by domain (e.g., root, diagnostics). Defaults to "root". Can be a single domain or list.',
-          },
-          symbol_domains: {
+          queries: {
             type: 'array',
-            items: { type: 'string' },
-            description: 'Provide multiple domains to search across in a single query.',
-          },
-          symbol_tag: {
-            type: 'string',
-            description: 'Filter symbols by tag (e.g., system, ritual).',
-          },
-          metadata_filter: {
-            type: 'object',
-            description: 'Metadata filter applied before semantic search (e.g., { "symbol_domain": "defense", "symbol_tag": "protocol" }). Accepts arrays for multi-domain filtering.',
-            additionalProperties: true,
-          },
-          last_symbol_id: {
-            type: 'string',
-            description: 'The ID of the last symbol from the previous page, used for cursor-based pagination.',
-          },
-          limit: {
-            type: 'integer',
-            description: 'Maximum number of symbols to return (default 20, max 20).',
-          },
-          fetch_all: {
-            type: 'boolean',
-            description: 'If true, iteratively fetches ALL pages for the specified domain until complete.',
+            description: 'List of search queries to execute in parallel.',
+            items: {
+              type: 'object',
+              properties: {
+                query: { type: 'string', description: 'Semantic search string. Only applied if provided.' },
+                symbol_domains: { type: 'array', items: { type: 'string' }, description: 'Filter by multiple domains. Defaults to all domains if omitted.' },
+                symbol_tag: { type: 'string', description: 'Filter by symbol tag. Only applied if provided.' },
+                metadata_filter: { type: 'object', additionalProperties: true, description: 'Direct metadata key-value filters. Only applied if provided.' },
+                limit: { type: 'integer', description: 'Maximum symbols to return for this specific query (default 50, max 50).' },
+                time_gte: { type: 'string', description: "Filter by creation time >= timestamp. Only applied if provided." },
+                time_between: { type: 'array', items: { type: 'string' }, description: "Filter by creation time range [start, end]. Only applied if provided." },
+                fetch_all: { type: 'boolean', description: "Fetch all matching symbols for this query (bypass limit)." }
+              }
+            }
           }
         },
-        required: [],
+        required: ['queries'],
       },
     }
   },
@@ -550,111 +533,82 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
     switch (name) {
       
       case 'find_symbols': {
-        const { query, symbol_domain, symbol_domains, symbol_tag, limit, last_symbol_id, fetch_all, time_gte, time_between, metadata_filter } = args || {};
+        const { queries } = args || {};
+        // Fallback for single query args if model uses old schema (or hallucinated)
+        const queryList = Array.isArray(queries) ? queries : [args]; 
 
-        const maxLimit = Math.min(limit || 20, 20);
-        const domainsInput = symbol_domains ?? symbol_domain ?? 'root';
-        const domains = Array.isArray(domainsInput)
-          ? domainsInput.filter(Boolean)
-          : [domainsInput];
-        const uniqueDomains = Array.from(new Set(domains.length > 0 ? domains : ['root']));
+        const aggregatedSymbols = new Map<string, any>();
+        const executionLog: any[] = [];
 
-        const availability = await Promise.all(uniqueDomains.map((d) => domainService.hasDomain(d)));
-        const availableDomains = uniqueDomains.filter((_, i) => availability[i]);
-        const missingDomains = uniqueDomains.filter((_, i) => !availability[i]);
-
-        const defaultDomains = availableDomains.length > 0 ? availableDomains : await domainService.listDomains();
-        const mergedMetadataFilter: Record<string, unknown> = { ...(metadata_filter || {}) };
-
-        if (symbol_tag) mergedMetadataFilter.symbol_tag = mergedMetadataFilter.symbol_tag ?? symbol_tag;
-
-        if (!mergedMetadataFilter.symbol_domain && !mergedMetadataFilter.domain) {
-            if (defaultDomains.length === 1) {
-                mergedMetadataFilter.symbol_domain = defaultDomains[0];
-            } else if (defaultDomains.length > 1) {
-                mergedMetadataFilter.symbol_domain = defaultDomains;
+        for (const queryConfig of queryList) {
+            const { query, symbol_domains, symbol_tag, limit, fetch_all, time_gte, time_between, metadata_filter } = queryConfig;
+            
+            const maxLimit = Math.min(limit || 50, 50);
+            
+            // Default to all domains if none specified
+            let targetDomains: string[];
+            if (symbol_domains && Array.isArray(symbol_domains)) {
+                targetDomains = symbol_domains;
+            } else {
+                targetDomains = await domainService.listDomains();
             }
-        } else if (mergedMetadataFilter.symbol_domain && Array.isArray(mergedMetadataFilter.symbol_domain) && availableDomains.length > 0) {
-            mergedMetadataFilter.symbol_domain = (mergedMetadataFilter.symbol_domain as unknown[])
-                .filter((d) => availableDomains.includes(String(d)));
-        }
 
-        const matchesMetadata = (symbol: any, filter?: Record<string, unknown>): boolean => {
-            if (!filter || Object.keys(filter).length === 0) return true;
-            return Object.entries(filter).every(([key, value]) => {
-                if (value === undefined || value === null) return true;
-                const symbolValue = symbol?.[key];
-                if (symbolValue === undefined || symbolValue === null) return false;
-                const filterValues = Array.isArray(value) ? value : [value];
-                return filterValues.some((fv) => {
-                    if (Array.isArray(symbolValue)) return symbolValue.map(String).includes(String(fv));
-                    return String(symbolValue) === String(fv);
+            const mergedMetadataFilter: Record<string, unknown> = { ...(metadata_filter || {}) };
+            if (symbol_tag) mergedMetadataFilter.symbol_tag = symbol_tag;
+
+            const matchesMetadata = (symbol: any, filter?: Record<string, unknown>): boolean => {
+                if (!filter || Object.keys(filter).length === 0) return true;
+                return Object.entries(filter).every(([key, value]) => {
+                    if (value === undefined || value === null) return true;
+                    const symbolValue = symbol?.[key];
+                    if (symbolValue === undefined || symbolValue === null) return false;
+                    const filterValues = Array.isArray(value) ? value : [value];
+                    return filterValues.some((fv) => {
+                        if (Array.isArray(symbolValue)) return symbolValue.map(String).includes(String(fv));
+                        return String(symbolValue) === String(fv);
+                    });
                 });
-            });
-        };
-
-        const wantsSemantic = !!(query && query.trim().length > 0) || !!time_gte || (Array.isArray(time_between) && time_between.length > 0);
-
-        if (wantsSemantic) {
-            const results = await domainService.search(query ?? null, limit || 5, {
-                time_gte,
-                time_between,
-                metadata_filter: mergedMetadataFilter,
-                domains: defaultDomains
-            });
-
-            const response: any = {
-                count: results.length,
-                results,
-                query,
-                time_gte,
-                time_between,
-                bucket_scope: 'utc_day',
-                timestamp_format: 'milliseconds_since_epoch_base64',
-                missing_domains: missingDomains.length > 0 ? missingDomains : undefined,
             };
 
-            if ((query && query.trim().length > 0) && results.length === 0) {
-                response.message = "No relevant symbols found via vector search. Check connection to ChromaDB.";
-            }
+            const wantsSemantic = !!(query && query.trim().length > 0) || !!time_gte || (Array.isArray(time_between) && time_between.length > 0);
+            
+            let queryResultCount = 0;
 
-            return response;
+            if (wantsSemantic) {
+                const results = await domainService.search(query ?? null, maxLimit, {
+                    time_gte,
+                    time_between,
+                    metadata_filter: Object.keys(mergedMetadataFilter).length > 0 ? mergedMetadataFilter : undefined,
+                    domains: targetDomains
+                });
+                
+                results.forEach((r: any) => {
+                    if (!aggregatedSymbols.has(r.id)) aggregatedSymbols.set(r.id, r);
+                });
+                queryResultCount = results.length;
+            } else {
+                for (const domain of targetDomains) {
+                    const domainSymbols = await domainService.getSymbols(domain);
+                    const filtered = domainSymbols.filter((s) => matchesMetadata(s, mergedMetadataFilter));
+                    
+                    const paged = fetch_all ? filtered : filtered.slice(0, maxLimit);
+                    
+                    paged.forEach((s) => {
+                        if (!aggregatedSymbols.has(s.id)) aggregatedSymbols.set(s.id, s);
+                    });
+                    queryResultCount += paged.length;
+                }
+            }
+            
+            executionLog.push({ query: query || 'structured_filter', count: queryResultCount });
         }
 
-        const symbols: any[] = [];
-        const pageInfoEntries: any[] = [];
-
-        for (const domain of defaultDomains) {
-            const domainSymbols = await domainService.getSymbols(domain);
-            const filtered = domainSymbols.filter((s) => matchesMetadata(s, mergedMetadataFilter));
-
-            if (fetch_all) {
-                symbols.push(...filtered);
-                continue;
-            }
-
-            let startIndex = 0;
-            if (last_symbol_id) {
-                const foundIndex = filtered.findIndex((s) => s.id === last_symbol_id);
-                if (foundIndex !== -1) startIndex = foundIndex + 1;
-            }
-
-            const paged = filtered.slice(startIndex, startIndex + maxLimit);
-            symbols.push(...paged);
-            pageInfoEntries.push({
-                domain,
-                limit: maxLimit,
-                last_id: paged.length > 0 ? paged[paged.length - 1].id : null
-            });
-        }
+        loggerService.info(`find_symbols returning ${aggregatedSymbols.size} unique symbols across ${queryList.length} queries.`);
 
         return {
-            count: symbols.length,
-            symbols,
-            page_info: pageInfoEntries.length === 1 ? pageInfoEntries[0] : pageInfoEntries,
-            source: "redis_cache",
-            status: fetch_all ? "Full domain load complete" : undefined,
-            missing_domains: missingDomains.length > 0 ? missingDomains : undefined,
+            count: aggregatedSymbols.size,
+            symbols: Array.from(aggregatedSymbols.values()),
+            execution_log: executionLog
         };
       }
 
@@ -850,8 +804,8 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                 name: d.name,
                 description: d.description || "No description provided.",
                 invariants: d.invariants || [],
-                readOnly: d.readOnly === true,
-                personas: personas
+                readOnly: d.readOnly === true
+                //personas: personas
               };
             });
 

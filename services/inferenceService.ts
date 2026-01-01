@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { randomUUID } from "crypto";
 import type {
   ChatCompletionChunk,
   ChatCompletionMessageParam,
@@ -34,7 +35,7 @@ const getClient = () => {
 const getModel = () => settingsService.getInferenceSettings().model;
 
 const buildMetadataWrappedContent = (message: string, context?: Record<string, any>) =>
-  `${message}\n\n[SYSTEM_METADATA] ${JSON.stringify(buildSystemMetadataBlock(context))}`;
+  `[USER MESSAGE] ${message}\n\n[TURN METADATA] ${JSON.stringify(buildSystemMetadataBlock(context))}`;
 
 const extractTextDelta = (delta: ChatCompletionChunk["choices"][number]["delta"]) => {
   if (!delta?.content) return "";
@@ -82,13 +83,17 @@ const mergeToolCallDelta = (
   return collected;
 };
 
-const parseToolArguments = (args: string) => {
-  if (!args) return {};
+const parseToolArguments = (args: string): { data: any; error?: string } => {
+  if (!args || args.trim() === "") return { data: {} };
   try {
-    return JSON.parse(args);
-  } catch (error) {
-    loggerService.warn("Failed to parse tool arguments, passing raw string", { args, error });
-    return {};
+    return { data: JSON.parse(args) };
+  } catch (error: any) {
+    const message = error.message || String(error);
+    loggerService.warn("Failed to parse tool arguments", { args, error: message });
+    return { 
+      data: {}, 
+      error: `JSON Parse Error: ${message}. Ensure you are providing a valid JSON object matching the tool's schema.` 
+    };
   }
 };
 
@@ -250,7 +255,8 @@ export async function* sendMessageAndHandleTools(
   message: string,
   toolExecutor: (name: string, args: any) => Promise<any>,
   systemInstruction?: string,
-  contextSessionId?: string
+  contextSessionId?: string,
+  userMessageId?: string
 ): AsyncGenerator<
   { text?: string; toolCalls?: any[]; isComplete?: boolean },
   void,
@@ -276,13 +282,8 @@ export async function* sendMessageAndHandleTools(
         contextMetadata = {
           id: session.id,
           type: session.type,
-          status: session.status,
           lifecycle,
-          readonly: session.metadata?.readOnly === true,
-          created_at: session.createdAt,
-          updated_at: session.updatedAt,
-          closed_at: session.closedAt,
-          metadata: session.metadata,
+          readonly: session.metadata?.readOnly === true
         };
       }
     } catch (error) {
@@ -307,6 +308,7 @@ export async function* sendMessageAndHandleTools(
 
   if (contextSessionId) {
     await contextService.recordMessage(contextSessionId, {
+      id: userMessageId || randomUUID(),
       role: "user",
       content: message,
       metadata: { kind: "user_prompt" },
@@ -315,14 +317,45 @@ export async function* sendMessageAndHandleTools(
 
   let loops = 0;
   while (loops < MAX_TOOL_LOOPS) {
-    const assistantMessage = streamAssistantResponse(chat.messages, chat.model);
-    let yieldedToolCalls: ChatCompletionMessageToolCall[] | undefined;
+    if (contextSessionId) {
+        const session = await contextService.getSession(contextSessionId);
+        if (!session || session.status === 'closed') {
+            loggerService.info("Context closed during inference, aborting.", { contextSessionId });
+            yield { text: "\n[System] Context archived. Inference aborted." };
+            break;
+        }
+    }
 
+    const MAX_RETRIES = 3;
+    let retries = 0;
+    let yieldedToolCalls: ChatCompletionMessageToolCall[] | undefined;
     let nextAssistant: ChatCompletionMessageParam | null = null;
-    for await (const chunk of assistantMessage) {
-      if (chunk.text) yield { text: chunk.text };
-      if (chunk.toolCalls) yieldedToolCalls = chunk.toolCalls;
-      if (chunk.assistantMessage) nextAssistant = chunk.assistantMessage;
+    let textAccumulated = "";
+
+    while (retries < MAX_RETRIES) {
+        const assistantMessage = streamAssistantResponse(chat.messages, chat.model);
+        textAccumulated = ""; 
+        yieldedToolCalls = undefined;
+        nextAssistant = null;
+
+        for await (const chunk of assistantMessage) {
+            if (chunk.text) {
+                textAccumulated += chunk.text;
+                yield { text: chunk.text };
+            }
+            if (chunk.toolCalls) {
+                yieldedToolCalls = chunk.toolCalls;
+                yield { toolCalls: chunk.toolCalls };
+            }
+            if (chunk.assistantMessage) nextAssistant = chunk.assistantMessage;
+        }
+
+        if (textAccumulated.trim() || (yieldedToolCalls && yieldedToolCalls.length > 0)) {
+            break;
+        }
+
+        retries++;
+        loggerService.warn(`Empty model response (no text, no tools). Retry ${retries}/${MAX_RETRIES}...`, { contextSessionId });
     }
 
     if (!nextAssistant) {
@@ -330,10 +363,26 @@ export async function* sendMessageAndHandleTools(
       break;
     }
 
+    // SANITIZE: Check for and fix malformed tool arguments before persisting or using in next turn
+    if (nextAssistant.tool_calls) {
+        for (const call of nextAssistant.tool_calls) {
+            const { error: parseError } = parseToolArguments(call.function.arguments || "");
+            if (parseError) {
+                loggerService.warn("Detected malformed JSON in tool call. Sanitizing for history.", { 
+                    callId: call.id, 
+                    toolName: call.function.name 
+                });
+                // Replace with valid empty JSON to prevent upstream 500s
+                call.function.arguments = "{}";
+            }
+        }
+    }
+
     chat.messages.push(nextAssistant);
 
     if (contextSessionId) {
       await contextService.recordMessage(contextSessionId, {
+        id: randomUUID(),
         role: "assistant",
         content: typeof nextAssistant.content === "string" ? nextAssistant.content : JSON.stringify(nextAssistant.content),
         toolCalls: nextAssistant.tool_calls?.map((call) => ({
@@ -342,6 +391,7 @@ export async function* sendMessageAndHandleTools(
           arguments: call.function?.arguments,
         })),
         metadata: { kind: "assistant_response" },
+        correlationId: userMessageId
       });
     }
 
@@ -352,8 +402,39 @@ export async function* sendMessageAndHandleTools(
     const toolResponses: ChatCompletionMessageParam[] = [];
     for (const call of yieldedToolCalls) {
       if (!call.function?.name) continue;
+
+      const { data: args, error: parseError } = parseToolArguments(call.function.arguments || "");
+
+      if (parseError) {
+        const errorPayload = { 
+          status: "error",
+          error: "Malformed JSON in tool arguments", 
+          details: parseError,
+          suggestion: "Please fix the JSON syntax and try again."
+        };
+        
+        toolResponses.push({
+          role: "tool",
+          content: JSON.stringify(errorPayload),
+          tool_call_id: call.id,
+        });
+
+        if (contextSessionId) {
+          await contextService.recordMessage(contextSessionId, {
+            id: randomUUID(),
+            role: "tool",
+            content: JSON.stringify(errorPayload),
+            toolName: call.function.name,
+            toolCallId: call.id,
+            toolArgs: { raw: call.function.arguments },
+            metadata: { kind: "tool_error", type: "json_parse_error" },
+            correlationId: userMessageId
+          });
+        }
+        continue;
+      }
+
       try {
-        const args = parseToolArguments(call.function.arguments || "");
         const result = await toolExecutor(call.function.name, args);
         toolResponses.push({
           role: "tool",
@@ -363,12 +444,14 @@ export async function* sendMessageAndHandleTools(
 
         if (contextSessionId) {
           await contextService.recordMessage(contextSessionId, {
+            id: randomUUID(),
             role: "tool",
             content: JSON.stringify(result),
             toolName: call.function.name,
             toolCallId: call.id,
             toolArgs: args,
             metadata: { kind: "tool_result" },
+            correlationId: userMessageId
           });
         }
       } catch (err) {
@@ -381,12 +464,14 @@ export async function* sendMessageAndHandleTools(
 
         if (contextSessionId) {
           await contextService.recordMessage(contextSessionId, {
+            id: randomUUID(),
             role: "tool",
             content: JSON.stringify({ error: String(err) }),
             toolName: call.function.name,
             toolCallId: call.id,
-            toolArgs: parseToolArguments(call.function.arguments || ""),
+            toolArgs: args,
             metadata: { kind: "tool_error" },
+            correlationId: userMessageId
           });
         }
       }
@@ -400,6 +485,49 @@ export async function* sendMessageAndHandleTools(
 }
 
 // --- Test Runner Functions ---
+
+export const processMessageAsync = async (
+  contextSessionId: string,
+  message: string,
+  toolExecutor: (name: string, args: any) => Promise<any>,
+  systemInstruction: string,
+  userMessageId?: string
+) => {
+  try {
+    const chat = getChatSession(systemInstruction, contextSessionId);
+    const stream = sendMessageAndHandleTools(chat, message, toolExecutor, systemInstruction, contextSessionId, userMessageId);
+    
+    // Consume the stream to drive execution
+    for await (const _ of stream) {
+        // Execution and recording happen inside the generator
+    }
+  } catch (error: any) {
+    // Enhanced error logging for upstream failures
+    const errorDetails: Record<string, any> = { contextSessionId, message: error?.message || String(error) };
+    
+    if (error?.status) errorDetails.status = error.status;
+    if (error?.headers) errorDetails.headers = error.headers;
+    if (error?.response?.data) errorDetails.responseData = error.response.data;
+    
+    // Check for HTML response body if available in error properties (common in some libs)
+    if (typeof error?.error?.text === 'string') {
+        errorDetails.bodyPreview = error.error.text.slice(0, 500);
+    }
+
+    loggerService.error("Async Message Processing Failed", errorDetails);
+
+    // Record the error to the context so the user sees it
+    await contextService.recordMessage(contextSessionId, {
+        id: randomUUID(),
+        role: "system",
+        content: `Error processing message: ${error?.message || "Internal Error"}`,
+        metadata: { kind: "error", ...errorDetails }
+    });
+  } finally {
+      await contextService.clearActiveMessage(contextSessionId);
+      loggerService.info(`finished with message id ${userMessageId || 'unknown'}`);
+  }
+};
 
 export const runSignalZeroTest = async (
   prompt: string,

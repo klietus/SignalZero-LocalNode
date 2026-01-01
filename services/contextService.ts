@@ -1,6 +1,6 @@
 import { redisService } from './redisService.js';
 import { loggerService } from './loggerService.js';
-import { ContextMessage, ContextSession } from '../types.js';
+import { ContextMessage, ContextSession, ContextHistoryGroup } from '../types.js';
 
 const CONTEXT_INDEX_KEY = 'context:index';
 const sessionKey = (id: string) => `context:session:${id}`;
@@ -97,8 +97,64 @@ export const contextService = {
     return loadSession(id);
   },
 
-  async getHistory(id: string): Promise<ContextMessage[]> {
-    return loadHistory(id);
+  async getHistory(id: string, since?: string): Promise<ContextMessage[]> {
+    const history = await loadHistory(id);
+    const filtered = history.filter(m => m.role !== 'tool');
+    if (since) {
+        const sinceTime = new Date(since).getTime();
+        return filtered.filter(m => new Date(m.timestamp).getTime() >= sinceTime);
+    }
+    return filtered;
+  },
+
+  async getHistoryGrouped(id: string, since?: string): Promise<ContextHistoryGroup[]> {
+      const session = await loadSession(id);
+      const rawHistory = await loadHistory(id);
+      
+      let filtered = rawHistory;
+      if (since) {
+          const sinceTime = new Date(since).getTime();
+          filtered = rawHistory.filter(m => new Date(m.timestamp).getTime() >= sinceTime);
+      }
+      
+      const groups = new Map<string, ContextHistoryGroup>();
+      
+      for (const msg of filtered) {
+          // Exclude tool results from the client-facing grouped history
+          if (msg.role === 'tool') continue;
+
+          // Identify the correlation group
+          let corrId = msg.correlationId;
+          if (msg.role === 'user') {
+              corrId = msg.id;
+          }
+          
+          if (!corrId) continue;
+          
+          if (!groups.has(corrId)) {
+              groups.set(corrId, {
+                  correlationId: corrId,
+                  // Placeholder user message if not found in this slice (will be populated if found)
+                  userMessage: { id: corrId, role: 'user', content: '', timestamp: msg.timestamp } as ContextMessage,
+                  assistantMessages: [],
+                  status: 'complete'
+              });
+          }
+          
+          const group = groups.get(corrId)!;
+          
+          if (msg.role === 'user') {
+              group.userMessage = msg;
+          } else {
+              group.assistantMessages.push(msg);
+          }
+      }
+      
+      if (session?.activeMessageId && groups.has(session.activeMessageId)) {
+          groups.get(session.activeMessageId)!.status = 'processing';
+      }
+      
+      return Array.from(groups.values()).sort((a, b) => new Date(a.userMessage.timestamp).getTime() - new Date(b.userMessage.timestamp).getTime());
   },
 
   async recordMessage(sessionId: string, message: Omit<ContextMessage, 'timestamp'> & { timestamp?: string }): Promise<void> {
@@ -173,5 +229,24 @@ export const contextService = {
       return false;
     }
     return true;
+  },
+
+  async setActiveMessage(sessionId: string, messageId: string): Promise<void> {
+      const session = await loadSession(sessionId);
+      if (!session) return;
+      session.activeMessageId = messageId;
+      await persistSession(session);
+  },
+
+  async clearActiveMessage(sessionId: string): Promise<void> {
+      const session = await loadSession(sessionId);
+      if (!session) return;
+      session.activeMessageId = null;
+      await persistSession(session);
+  },
+
+  async hasActiveMessage(sessionId: string): Promise<boolean> {
+      const session = await loadSession(sessionId);
+      return !!session?.activeMessageId;
   },
 };

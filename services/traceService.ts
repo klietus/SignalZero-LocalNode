@@ -35,8 +35,12 @@ class TraceService {
     this.notifyListeners();
   }
 
-  getTraces(): TraceData[] {
-    return [...this.traces];
+  getTraces(since?: number): TraceData[] {
+    if (since === undefined) return [...this.traces];
+    return this.traces.filter(t => {
+        const ts = decodeTimestamp(t.created_at);
+        return ts !== null && ts > since;
+    });
   }
 
   clear() {

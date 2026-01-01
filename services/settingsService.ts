@@ -1,6 +1,11 @@
 import { UserProfile } from '../types.ts';
 import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
+
 dotenv.config();
+
+const SETTINGS_FILE = path.join(process.cwd(), 'settings.json');
 
 export interface VectorSettings {
   useExternal: boolean;
@@ -27,14 +32,47 @@ export interface InferenceSettings {
   model: string;
 }
 
+const savePersistedSettings = (settings: any) => {
+  try {
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
+  } catch (e) {
+    console.error('Failed to save settings file', e);
+  }
+};
+
+const loadPersistedSettings = () => {
+  if (fs.existsSync(SETTINGS_FILE)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
+      if (data.redis) {
+        if (data.redis.server) process.env.REDIS_SERVER = data.redis.server;
+        if (data.redis.port) process.env.REDIS_PORT = String(data.redis.port);
+        if (data.redis.password) process.env.REDIS_PASSWORD = data.redis.password;
+      }
+      if (data.chroma) {
+        if (data.chroma.url) process.env.CHROMA_URL = data.chroma.url;
+        if (data.chroma.collection) process.env.CHROMA_COLLECTION = data.chroma.collection;
+        if (data.chroma.useExternal !== undefined) process.env.USE_EXTERNAL_VECTOR_DB = String(data.chroma.useExternal);
+      }
+      if (data.inference) {
+        if (data.inference.endpoint) process.env.INFERENCE_ENDPOINT = data.inference.endpoint;
+        if (data.inference.model) process.env.INFERENCE_MODEL = data.inference.model;
+      }
+    } catch (e) {
+      console.error('Failed to load settings file', e);
+    }
+  }
+};
+
+// Load settings on initialization
+loadPersistedSettings();
+
 export const settingsService = {
   // --- Core Identity ---
   getApiKey: (): string => {
     return process.env.API_KEY || '';
   },
 
-  // No-op for server-side setters usually, or implement FS write if needed.
-  // For this implementation, we rely on env vars.
   setApiKey: (key: string) => {
     process.env.API_KEY = key;
   },
@@ -57,12 +95,10 @@ export const settingsService = {
   setTheme: (theme: 'light' | 'dark') => {},
 
   getSystemPrompt: (defaultPrompt: string): string => {
-    // Could load from file, but default is fine for now
     return defaultPrompt;
   },
 
   setSystemPrompt: (prompt: string) => {
-    // In a real backend, save to DB/File
   },
 
   clearSystemPrompt: () => {},
@@ -191,6 +227,9 @@ export const settingsService = {
         model: (inferenceInput.model as string | undefined) ?? currentInference.model,
       });
     }
+
+    // Save aggregated settings to file
+    savePersistedSettings(settingsService.getSystemSettings());
   },
 
   // --- Utilities ---

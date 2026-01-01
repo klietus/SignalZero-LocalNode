@@ -43,7 +43,8 @@ paths:
                 $ref: '#/components/schemas/SystemSettings'
   /chat:
     post:
-      summary: Send a message to the chat
+      summary: Send a message to the chat (Async)
+      description: Sends a message to the active context. Returns immediately (202 Accepted). The response will be processed in the background and appended to the context history.
       requestBody:
         required: true
         content:
@@ -53,45 +54,13 @@ paths:
               properties:
                 message:
                   type: string
-                newSession:
-                  type: boolean
-                  description: Set to true to force a new conversational context (closes any existing open conversation).
                 contextSessionId:
                   type: string
-                  description: Optional context session id to continue a specific context.
+                  description: Required context session id.
+              required: [message, contextSessionId]
       responses:
-        '200':
-          description: Successful response
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  role:
-                    type: string
-                  content:
-                    type: string
-                  toolCalls:
-                    type: array
-                    items:
-                      type: object
-                  contextSessionId:
-                    type: string
-                  contextStatus:
-                    type: string
-  /chat/reset:
-    post:
-      summary: Reset the chat session
-      responses:
-        '200':
-          description: Successful response
-          content:
-            application/json:
-              schema:
-                  type: object
-                  properties:
-                    status:
-                      type: string
+        '202':
+          description: Message accepted for processing
   /contexts:
     get:
       summary: List all context sessions
@@ -107,6 +76,42 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/ContextSession'
+    post:
+      summary: Create a new context session
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                type:
+                  type: string
+                  enum: [conversation, loop]
+                  default: conversation
+      responses:
+        '201':
+          description: Context created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContextSession'
+  /contexts/{id}/archive:
+    post:
+      summary: Archive a context session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Context archived
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContextSession'
   /contexts/{id}/history:
     get:
       summary: Get chat history for a context session
@@ -116,6 +121,13 @@ paths:
           required: true
           schema:
             type: string
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Only return messages newer than this timestamp.
       responses:
         '200':
           description: Successful response

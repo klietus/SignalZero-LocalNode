@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import fs from 'fs';
-import { getChatSession, resetChatSession, sendMessageAndHandleTools, runSignalZeroTest } from './services/inferenceService.js';
+import { getChatSession, resetChatSession, sendMessageAndHandleTools, runSignalZeroTest, processMessageAsync } from './services/inferenceService.js';
 import { createToolExecutor } from './services/toolsService.js';
 import { settingsService } from './services/settingsService.js';
 import { ACTIVATION_PROMPT } from './symbolic_system/activation_prompt.js';
@@ -40,10 +40,14 @@ const buildReadOnlyResponse = (error: any) => ({
 
 // Request Logging Middleware
 app.use((req, res, next) => {
-    loggerService.info(`Request: ${req.method} ${req.url}`, {
-        query: req.query,
-        body: req.method === 'POST' || req.method === 'PATCH' ? req.body : undefined
-    });
+    const isPolling = req.method === 'GET' && (req.url.startsWith('/api/contexts') || req.url.includes('/history') || req.url.startsWith('/api/traces'));
+    
+    if (!isPolling) {
+        loggerService.info(`Request: ${req.method} ${req.url}`, {
+            query: req.query,
+            body: req.method === 'POST' || req.method === 'PATCH' ? req.body : undefined
+        });
+    }
     next();
 });
 
@@ -121,69 +125,52 @@ systemPromptService.loadPrompt(ACTIVATION_PROMPT)
 
 // Chat Endpoint
 app.post('/api/chat', async (req, res) => {
-  const { message, newSession, contextSessionId } = req.body;
+  const { message, contextSessionId, messageId } = req.body;
 
   if (!message) {
      res.status(400).json({ error: 'Message is required' });
      return;
   }
 
-  try {
-    let contextSession;
-    let created = false;
+  if (!contextSessionId) {
+      res.status(400).json({ error: 'Context session ID is required' });
+      return;
+  }
 
-    if (contextSessionId) {
-        contextSession = await contextService.getSession(contextSessionId);
-        if (!contextSession) {
-            res.status(404).json({ error: 'Context session not found' });
-            return;
-        }
-        if (newSession === true) {
-            resetChatSession(contextSession.id);
-        }
-    } else {
-        const ensured = await contextService.ensureConversationSession(newSession === true, { source: 'openapi' });
-        contextSession = ensured.session;
-        created = ensured.created;
-        if (created || newSession === true) {
-            resetChatSession();
-        }
+  try {
+    const contextSession = await contextService.getSession(contextSessionId);
+    if (!contextSession) {
+        res.status(404).json({ error: 'Context session not found' });
+        return;
     }
 
-    const chat = getChatSession(activeSystemPrompt, contextSession.id);
+    if (contextSession.status === 'closed') {
+        res.status(400).json({ error: 'Context session is closed/archived' });
+        return;
+    }
+
+    if (await contextService.hasActiveMessage(contextSession.id)) {
+        res.status(409).json({ error: 'Context is busy processing another message' });
+        return;
+    }
+
+    // Lock the context
+    await contextService.setActiveMessage(contextSession.id, messageId || 'unknown');
+
     const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), contextSession.id);
     
-    // Use the streaming helper but collect the full response for the HTTP response
-    const stream = sendMessageAndHandleTools(chat, message, toolExecutor, activeSystemPrompt, contextSession.id);
-    
-    let fullResponseText = "";
-    let toolCalls: any[] = [];
+    // Fire and forget
+    processMessageAsync(contextSession.id, message, toolExecutor, activeSystemPrompt, messageId);
 
-    for await (const chunk of stream) {
-        if (chunk.text) fullResponseText += chunk.text;
-        if (chunk.toolCalls) toolCalls.push(...chunk.toolCalls);
-    }
-
-    res.json({
-        role: 'model',
-        content: fullResponseText,
-        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-        contextSessionId: contextSession.id,
-        contextStatus: contextSession.status
+    res.status(202).json({
+        status: 'accepted',
+        contextSessionId: contextSession.id
     });
 
   } catch (error) {
     loggerService.error("Chat Error", { error });
     res.status(500).json({ error: String(error) });
   }
-});
-
-// Reset Chat
-app.post('/api/chat/reset', (req, res) => {
-    resetChatSession();
-    traceService.clear();
-    contextService.closeConversationSessions();
-    res.json({ status: 'Chat session reset' });
 });
 
 // System Prompt
@@ -219,6 +206,31 @@ app.get('/api/contexts', async (req, res) => {
     }
 });
 
+app.post('/api/contexts', async (req, res) => {
+    try {
+        const type = req.body?.type || 'conversation';
+        const session = await contextService.createSession(type, { source: 'api' });
+        res.status(201).json(session);
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: 'Failed to create context' });
+    }
+});
+
+app.post('/api/contexts/:id/archive', async (req, res) => {
+    try {
+        const session = await contextService.closeSession(req.params.id);
+        if (!session) {
+            res.status(404).json({ error: 'Context not found' });
+            return;
+        }
+        res.json(session);
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: 'Failed to archive context' });
+    }
+});
+
 app.get('/api/contexts/:id/history', async (req, res) => {
     try {
         const session = await contextService.getSession(req.params.id);
@@ -227,7 +239,8 @@ app.get('/api/contexts/:id/history', async (req, res) => {
             return;
         }
 
-        const history = await contextService.getHistory(req.params.id);
+        const since = typeof req.query.since === 'string' ? req.query.since : undefined;
+        const history = await contextService.getHistoryGrouped(req.params.id, since);
         res.json({ session, history });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
@@ -700,7 +713,8 @@ app.post('/api/project/active', async (req, res) => {
 
 // Trace Endpoint
 app.get('/api/traces', (req, res) => {
-    res.json(traceService.getTraces());
+    const since = req.query.since ? parseInt(req.query.since as string, 10) : undefined;
+    res.json(traceService.getTraces(Number.isNaN(since) ? undefined : since));
 });
 
 // Loop Management
