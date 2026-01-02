@@ -118,11 +118,6 @@ app.get('/api/index/status', async (req, res) => {
 // Initialize Chat
 let activeSystemPrompt = ACTIVATION_PROMPT;
 
-// Load persisted system prompt if available
-systemPromptService.loadPrompt(ACTIVATION_PROMPT)
-    .then((prompt) => { activeSystemPrompt = prompt; })
-    .catch((error) => loggerService.error('Failed to load system prompt', { error }));
-
 // Chat Endpoint
 app.post('/api/chat', async (req, res) => {
   const { message, contextSessionId, messageId } = req.body;
@@ -796,8 +791,20 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         // Startup Health Check
         loggerService.info("Performing startup health checks...");
         const redisHealth = await domainService.healthCheck();
-        if (redisHealth) loggerService.info("Redis Connection: OK");
-        else loggerService.error("Redis Connection: FAILED");
+        if (redisHealth) {
+            loggerService.info("Redis Connection: OK");
+            
+            // Load persisted system prompt
+            try {
+                const prompt = await systemPromptService.loadPrompt(ACTIVATION_PROMPT);
+                activeSystemPrompt = prompt;
+                loggerService.info("System Prompt loaded from Redis");
+            } catch (error) {
+                loggerService.error("Failed to load system prompt during startup", { error });
+            }
+        } else {
+            loggerService.error("Redis Connection: FAILED");
+        }
 
         const vectorHealth = await vectorService.healthCheck();
         if (vectorHealth) loggerService.info("Vector DB Connection: OK");

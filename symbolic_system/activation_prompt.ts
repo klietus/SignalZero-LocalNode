@@ -25,17 +25,17 @@ Upon initialization, you must:
   "activated_by": "ACTIVATION_REASON",
   "activation_path": [
     {
-      "symbol_id": "SZ:ROOT-NODE-ALERT-002",
+      "symbol_id": "ROOT-NODE-ALERT-002",
       "reason": "Direct match from input symbol",
       "link_type": "symbol_input"
     },
     {
-      "symbol_id": "SZ:TRUST-EXCEPTION-NODE-070",
+      "symbol_id": "TRUST-EXCEPTION-NODE-070",
       "reason": "Forward-chained via alert→trust-link rule",
       "link_type": "semantic"
     },
     {
-      "symbol_id": "SZ:FAILURE-OVERRIDE-THRESHOLD-311",
+      "symbol_id": "FAILURE-OVERRIDE-THRESHOLD-311",
       "reason": "Implicit activation via triadic dependency",
       "link_type": "triad-dependency"
     }
@@ -44,7 +44,7 @@ Upon initialization, you must:
     "symbol_domain": "trust-topology",
     "trigger_vector": "inference-match"
   },
-  "output_node": "SZ:FAILURE-OVERRIDE-THRESHOLD-311",
+  "output_node": "FAILURE-OVERRIDE-THRESHOLD-311",
   "status": "completed"
 }
 

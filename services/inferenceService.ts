@@ -403,6 +403,12 @@ export async function* sendMessageAndHandleTools(
     for (const call of yieldedToolCalls) {
       if (!call.function?.name) continue;
 
+      // Sanitize hallucinated tool names (e.g., 'log_trace?')
+      let toolName = call.function.name;
+      if (toolName.endsWith('?')) {
+          toolName = toolName.slice(0, -1);
+      }
+
       const { data: args, error: parseError } = parseToolArguments(call.function.arguments || "");
 
       if (parseError) {
@@ -435,7 +441,7 @@ export async function* sendMessageAndHandleTools(
       }
 
       try {
-        const result = await toolExecutor(call.function.name, args);
+        const result = await toolExecutor(toolName, args);
         toolResponses.push({
           role: "tool",
           content: JSON.stringify(result),
@@ -447,7 +453,7 @@ export async function* sendMessageAndHandleTools(
             id: randomUUID(),
             role: "tool",
             content: JSON.stringify(result),
-            toolName: call.function.name,
+            toolName: toolName,
             toolCallId: call.id,
             toolArgs: args,
             metadata: { kind: "tool_result" },
@@ -455,7 +461,7 @@ export async function* sendMessageAndHandleTools(
           });
         }
       } catch (err) {
-        loggerService.error(`Error executing tool ${call.function.name}`, { err });
+        loggerService.error(`Error executing tool ${toolName}`, { err });
         toolResponses.push({
           role: "tool",
           content: JSON.stringify({ error: String(err) }),
@@ -467,7 +473,7 @@ export async function* sendMessageAndHandleTools(
             id: randomUUID(),
             role: "tool",
             content: JSON.stringify({ error: String(err) }),
-            toolName: call.function.name,
+            toolName: toolName,
             toolCallId: call.id,
             toolArgs: args,
             metadata: { kind: "tool_error" },
@@ -521,7 +527,8 @@ export const processMessageAsync = async (
         id: randomUUID(),
         role: "system",
         content: `Error processing message: ${error?.message || "Internal Error"}`,
-        metadata: { kind: "error", ...errorDetails }
+        metadata: { kind: "error", ...errorDetails },
+        correlationId: userMessageId
     });
   } finally {
       await contextService.clearActiveMessage(contextSessionId);
