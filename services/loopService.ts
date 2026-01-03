@@ -19,7 +19,7 @@ const ONE_WEEK_MS = 7 * 24 * ONE_HOUR_MS;
 class LoopService {
     private scheduler: NodeJS.Timeout | null = null;
     private sweeper: NodeJS.Timeout | null = null;
-    private executingLoops = new Set<string>();
+    private isAnyLoopExecuting = false;
 
     validateSchedule(schedule: string): Date {
         const interval = CronExpressionParser.parse(schedule);
@@ -151,11 +151,12 @@ class LoopService {
     }
 
     private async executeLoop(loop: LoopDefinition): Promise<void> {
-        if (this.executingLoops.has(loop.id)) {
+        if (this.isAnyLoopExecuting) {
+            loggerService.warn("Loop execution aborted: Global singleton lock active (another loop is running).", { loopId: loop.id });
             return;
         }
 
-        this.executingLoops.add(loop.id);
+        this.isAnyLoopExecuting = true;
         const executionId = `${loop.id}-${Date.now()}`;
         const startedAt = new Date().toISOString();
         const contextSession = await contextService.startLoopSession(loop.id, { executionId });
@@ -172,7 +173,8 @@ class LoopService {
 
         try {
             const systemInstruction = await this.buildSystemInstruction(loop.prompt);
-            const chat = createFreshChatSession(systemInstruction);
+            const { loopModel } = settingsService.getInferenceSettings();
+            const chat = createFreshChatSession(systemInstruction, contextSession.id, loopModel);
 
             const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), contextSession.id);
             const stream = sendMessageAndHandleTools(chat, loop.prompt, toolExecutor, systemInstruction, contextSession.id);
@@ -220,7 +222,7 @@ class LoopService {
 
             await this.persistExecution(executionLog, traces);
             loggerService.info('LoopService: Loop execution recorded', { loopId: loop.id, executionId, status });
-            this.executingLoops.delete(loop.id);
+            this.isAnyLoopExecuting = false;
             await contextService.closeLoopSession(contextSession.id);
         }
     }
@@ -257,8 +259,11 @@ class LoopService {
                 loggerService.info('LoopService: Triggering loop execution', { loopId: loop.id, nextRun });
                 await this.executeLoop(loop);
             }
-        } catch (error) {
-            loggerService.error('LoopService: Scheduler tick failed', { error });
+        } catch (error: any) {
+            loggerService.error('LoopService: Scheduler tick failed', { 
+                message: error?.message || String(error),
+                stack: error?.stack 
+            });
         }
     }
 
@@ -284,12 +289,16 @@ class LoopService {
 
                 loggerService.info('LoopService: Sweeper removed execution', { executionId });
             }
-        } catch (error) {
-            loggerService.error('LoopService: Sweeper tick failed', { error });
+        } catch (error: any) {
+            loggerService.error('LoopService: Sweeper tick failed', { 
+                message: error?.message || String(error),
+                stack: error?.stack 
+            });
         }
     }
 
     async startBackgroundThreads() {
+        this.isAnyLoopExecuting = false;
         if (!this.scheduler) {
             loggerService.info('LoopService: Starting scheduler thread');
             await this.schedulerTick();

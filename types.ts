@@ -80,22 +80,17 @@ export type LatticeClosure = 'loop' | 'branch' | 'collapse' | 'constellation' | 
 export interface SymbolLatticeDef {
     topology: LatticeTopology;
     closure: LatticeClosure;
-    members: string[]; // List of Symbol IDs in execution order
 }
 
 export interface SymbolPersonaDef {
-    recursion_level: string;
-    function: string; // Specific function description for the persona
-    fallback_behavior: string[];
-    linked_personas: string[];
-}
-
+// ...
 export interface SymbolDef {
   id: string;
   name: string;
   kind?: SymbolKind; // defaults to 'pattern' if undefined
   created_at: string;
   updated_at: string;
+  last_accessed_at?: string;
   triad: string;
   role: string;
   macro: string; // Used for patterns

@@ -810,6 +810,49 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         if (vectorHealth) loggerService.info("Vector DB Connection: OK");
         else loggerService.error("Vector DB Connection: FAILED");
 
+        // Run full registry migration/refactor (Lattice membership unification)
+        try {
+            loggerService.info("Running symbol registry migration check...");
+            const domains = await domainService.listDomains();
+            for (const d of domains) {
+                // getDomain internally calls migrateSymbols and saves if modified
+                await domainService.getDomain(d);
+            }
+            loggerService.info("Registry migration check complete.");
+        } catch (error) {
+            loggerService.error("Registry migration failed", { error });
+        }
+
+        // Context Recovery: Retry contexts that were active when service died
+        try {
+            loggerService.info("Checking for interrupted contexts requiring recovery...");
+            const contexts = await contextService.listSessions();
+            const pendingContexts = contexts.filter(c => c.activeMessageId && c.status === 'open');
+            
+            for (const ctx of pendingContexts) {
+                const history = await contextService.getUnfilteredHistory(ctx.id);
+                const lastUserMsg = [...history].reverse().find(m => m.role === 'user');
+                
+                if (lastUserMsg) {
+                    loggerService.info(`Recovering context ${ctx.id}. Retrying message ${ctx.activeMessageId}`);
+                    const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), ctx.id);
+                    // Use the original messageId from the lock to ensure idempotency/grouping on client
+                    processMessageAsync(ctx.id, lastUserMsg.content, toolExecutor, activeSystemPrompt, ctx.activeMessageId || undefined);
+                } else {
+                    // No user message found to retry, clear the stale lock
+                    loggerService.warn(`Context ${ctx.id} has activeMessageId but no user prompt in history. Clearing stale lock.`);
+                    await contextService.clearActiveMessage(ctx.id);
+                }
+            }
+            if (pendingContexts.length > 0) {
+                loggerService.info(`Context recovery initiated for ${pendingContexts.length} session(s).`);
+            } else {
+                loggerService.info("No contexts required recovery.");
+            }
+        } catch (error) {
+            loggerService.error("Context recovery failed", { error });
+        }
+
         await loopService.startBackgroundThreads();
     });
 }

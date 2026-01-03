@@ -12,8 +12,9 @@ import { domainService } from "./domainService.ts";
 import { embedText } from "./embeddingService.ts";
 import { buildSystemMetadataBlock } from "./timeService.ts";
 import { settingsService } from "./settingsService.ts";
-import { loggerService } from "./loggerService.ts";
-import { contextService } from "./contextService.js";
+import { loggerService } from './loggerService.ts';
+import { contextService } from './contextService.js';
+import { contextWindowService } from './contextWindowService.js';
 
 interface ChatSessionState {
   messages: ChatCompletionMessageParam[];
@@ -131,8 +132,11 @@ export const resetChatSession = (contextSessionId?: string) => {
   }
 };
 
-export const createFreshChatSession = (systemInstruction: string, contextSessionId?: string) => {
+export const createFreshChatSession = (systemInstruction: string, contextSessionId?: string, model?: string) => {
   const session = createChatSession(systemInstruction);
+  if (model) {
+      session.model = model;
+  }
   if (contextSessionId) {
     chatSessions.set(contextSessionId, session);
   }
@@ -267,11 +271,6 @@ export async function* sendMessageAndHandleTools(
     chat.systemInstruction = systemInstruction;
   }
 
-  const currentModel = getModel();
-  if (chat.model !== currentModel) {
-    chat.model = currentModel;
-  }
-
   let contextMetadata: Record<string, any> | undefined;
 
   if (contextSessionId) {
@@ -300,12 +299,6 @@ export async function* sendMessageAndHandleTools(
     }
   }
 
-  const userMessage: ChatCompletionMessageParam = {
-    role: "user",
-    content: buildMetadataWrappedContent(message, contextMetadata),
-  };
-  chat.messages.push(userMessage);
-
   if (contextSessionId) {
     await contextService.recordMessage(contextSessionId, {
       id: userMessageId || randomUUID(),
@@ -333,7 +326,12 @@ export async function* sendMessageAndHandleTools(
     let textAccumulated = "";
 
     while (retries < MAX_RETRIES) {
-        const assistantMessage = streamAssistantResponse(chat.messages, chat.model);
+        // Construct fresh context window using the ContextWindowService
+        const contextMessages = contextSessionId 
+            ? await contextWindowService.constructContextWindow(contextSessionId, systemInstruction || chat.systemInstruction)
+            : [{ role: 'system', content: systemInstruction || chat.systemInstruction }, { role: 'user', content: message }];
+
+        const assistantMessage = streamAssistantResponse(contextMessages, chat.model);
         textAccumulated = ""; 
         yieldedToolCalls = undefined;
         nextAssistant = null;
@@ -363,7 +361,7 @@ export async function* sendMessageAndHandleTools(
       break;
     }
 
-    // SANITIZE: Check for and fix malformed tool arguments before persisting or using in next turn
+    // SANITIZE: Check for and fix malformed tool arguments before persisting
     if (nextAssistant.tool_calls) {
         for (const call of nextAssistant.tool_calls) {
             const { error: parseError } = parseToolArguments(call.function.arguments || "");
@@ -372,13 +370,10 @@ export async function* sendMessageAndHandleTools(
                     callId: call.id, 
                     toolName: call.function.name 
                 });
-                // Replace with valid empty JSON to prevent upstream 500s
                 call.function.arguments = "{}";
             }
         }
     }
-
-    chat.messages.push(nextAssistant);
 
     if (contextSessionId) {
       await contextService.recordMessage(contextSessionId, {
@@ -403,7 +398,7 @@ export async function* sendMessageAndHandleTools(
     for (const call of yieldedToolCalls) {
       if (!call.function?.name) continue;
 
-      // Sanitize hallucinated tool names (e.g., 'log_trace?')
+      // Sanitize hallucinated tool names
       let toolName = call.function.name;
       if (toolName.endsWith('?')) {
           toolName = toolName.slice(0, -1);
@@ -430,7 +425,7 @@ export async function* sendMessageAndHandleTools(
             id: randomUUID(),
             role: "tool",
             content: JSON.stringify(errorPayload),
-            toolName: call.function.name,
+            toolName: toolName,
             toolCallId: call.id,
             toolArgs: { raw: call.function.arguments },
             metadata: { kind: "tool_error", type: "json_parse_error" },
@@ -483,7 +478,6 @@ export async function* sendMessageAndHandleTools(
       }
     }
 
-    chat.messages.push(...toolResponses);
     loops++;
   }
 

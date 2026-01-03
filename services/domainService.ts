@@ -49,6 +49,29 @@ const ensureWritableDomain = (domain: CachedDomain, domainId: string, symbolId?:
   }
 };
 
+export const migrateSymbols = async (domain: CachedDomain): Promise<boolean> => {
+    let modified = false;
+    const validKinds = ['pattern', 'persona', 'lattice'];
+
+    for (const symbol of domain.symbols) {
+        // Validation: Default invalid or missing kind to pattern
+        if (!symbol.kind || !validKinds.includes(symbol.kind)) {
+            symbol.kind = 'pattern';
+            modified = true;
+        }
+
+        if (symbol.kind === 'lattice' && symbol.lattice && (symbol.lattice as any).members) {
+            const members = (symbol.lattice as any).members as string[];
+            symbol.linked_patterns = Array.from(new Set([...(symbol.linked_patterns || []), ...members]));
+            delete (symbol.lattice as any).members;
+            modified = true;
+            // Reindex in vector store to reflect schema change
+            await vectorService.indexSymbol(symbol);
+        }
+    }
+    return modified;
+};
+
 const indexSymbolBucket = async (symbol: SymbolDef) => {
   const createdMs = decodeTimestamp(symbol.created_at);
   if (createdMs === null) return;
@@ -142,7 +165,13 @@ export const domainService = {
     const data = await redisService.request(['GET', `${KEYS.DOMAIN_PREFIX}${domainId}`]);
     if (!data) return null;
     try {
-      return parseDomain(data, domainId);
+      const domain = parseDomain(data, domainId);
+      const modified = await migrateSymbols(domain);
+      if (modified) {
+          domain.lastUpdated = Date.now();
+          await redisService.request(['SET', `${KEYS.DOMAIN_PREFIX}${domainId}`, JSON.stringify(domain)]);
+      }
+      return domain;
     } catch (e) {
       console.error(`[DomainService] Failed to parse domain ${domainId}`, e);
       return null;
@@ -302,6 +331,12 @@ export const domainService = {
       if (!hasQuery) {
           return prefilteredSymbols
               .filter((s) => bucketIds.size === 0 || bucketIds.has(s.id))
+              .sort((a, b) => {
+                  const getT = (s?: string) => s ? decodeTimestamp(s) || 0 : 0;
+                  const timeA = getT(a.last_accessed_at) || getT(a.updated_at) || getT(a.created_at);
+                  const timeB = getT(b.last_accessed_at) || getT(b.updated_at) || getT(b.created_at);
+                  return timeB - timeA;
+              })
               .slice(0, limit)
               .map((symbol) => ({
                   id: symbol.id,
@@ -314,7 +349,13 @@ export const domainService = {
 
       if (hydratedResults.length === 0 && rangeApplied && bucketIds.size > 0) {
           const bucketSymbols = prefilteredSymbols
-              .filter((s) => bucketIds.has(s.id));
+              .filter((s) => bucketIds.has(s.id))
+              .sort((a, b) => {
+                  const getT = (s?: string) => s ? decodeTimestamp(s) || 0 : 0;
+                  const timeA = getT(a.last_accessed_at) || getT(a.updated_at) || getT(a.created_at);
+                  const timeB = getT(b.last_accessed_at) || getT(b.updated_at) || getT(b.created_at);
+                  return timeB - timeA;
+              });
 
           return bucketSymbols.map((symbol) => ({
               id: symbol.id,
@@ -450,6 +491,12 @@ export const domainService = {
 
     ensureWritableDomain(domain, domainId, symbol.id);
 
+    // Default invalid kind to pattern
+    const validKinds = ['pattern', 'persona', 'lattice'];
+    if (!symbol.kind || !validKinds.includes(symbol.kind)) {
+        symbol.kind = 'pattern';
+    }
+
     const nowB64 = currentTimestampBase64();
     const existingIndex = domain.symbols.findIndex(s => s.id === symbol.id);
     const normalizedSymbol: SymbolDef = {
@@ -504,7 +551,14 @@ export const domainService = {
 
       const symbolMap = new Map(domain.symbols.map(s => [s.id, s]));
       const nowB64 = currentTimestampBase64();
+      const validKinds = ['pattern', 'persona', 'lattice'];
+
       for (const sym of symbols) {
+          // Default invalid kind to pattern
+          if (!sym.kind || !validKinds.includes(sym.kind)) {
+              sym.kind = 'pattern';
+          }
+
           const existing = symbolMap.get(sym.id);
           const normalized: SymbolDef = {
               ...sym,
@@ -579,7 +633,12 @@ export const domainService = {
           domain.symbols = domain.symbols.filter(s => !oldIdsToRemove.includes(s.id));
 
           // 3. Add New
+          const validKinds = ['pattern', 'persona', 'lattice'];
           domainUpdates.forEach(update => {
+              if (!update.symbol_data.kind || !validKinds.includes(update.symbol_data.kind)) {
+                  update.symbol_data.kind = 'pattern';
+              }
+
               const nowB64 = currentTimestampBase64();
               const normalized: SymbolDef = {
                   ...update.symbol_data,
@@ -649,17 +708,29 @@ export const domainService = {
    */
   findById: async (id: string): Promise<SymbolDef | null> => {
     const domains = await domainService.listDomains();
-    // Inefficient but functional for low-scale "Local Node"
-    // Fetch all domains (parallel)
-    const rawData = await Promise.all(domains.map(d => redisService.request(['GET', `${KEYS.DOMAIN_PREFIX}${d}`])));
     
-    for (let i = 0; i < rawData.length; i++) {
-        const data = rawData[i];
+    for (const domainId of domains) {
+        const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
+        const data = await redisService.request(['GET', key]);
         if (!data) continue;
-        const domain = parseDomain(data, domains[i]);
+
+        const domain = parseDomain(data, domainId);
         if (domain.enabled) {
-            const found = domain.symbols.find(s => s.id === id);
-            if (found) return found;
+            const index = domain.symbols.findIndex(s => s.id === id);
+            if (index !== -1) {
+                const symbol = domain.symbols[index];
+                
+                // Update Access Time
+                symbol.last_accessed_at = currentTimestampBase64();
+                domain.lastUpdated = Date.now();
+                
+                // Persist update (async, non-blocking for this read)
+                redisService.request(['SET', key, JSON.stringify(domain)]).catch(e => 
+                    console.error(`[DomainService] Failed to update access time for ${id}`, e)
+                );
+
+                return symbol;
+            }
         }
     }
     return null;

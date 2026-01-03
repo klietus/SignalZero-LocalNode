@@ -107,6 +107,10 @@ export const contextService = {
     return filtered;
   },
 
+  async getUnfilteredHistory(id: string): Promise<ContextMessage[]> {
+    return loadHistory(id);
+  },
+
   async getHistoryGrouped(id: string, since?: string): Promise<ContextHistoryGroup[]> {
       const session = await loadSession(id);
       const rawHistory = await loadHistory(id);
@@ -120,9 +124,6 @@ export const contextService = {
       const groups = new Map<string, ContextHistoryGroup>();
       
       for (const msg of filtered) {
-          // Exclude tool results from the client-facing grouped history
-          if (msg.role === 'tool') continue;
-
           // Identify the correlation group
           let corrId = msg.correlationId;
           if (msg.role === 'user') {
@@ -146,7 +147,12 @@ export const contextService = {
           if (msg.role === 'user') {
               group.userMessage = msg;
           } else {
-              group.assistantMessages.push(msg);
+              // Include non-user messages. Sanitize tool results to hide their content from the UI.
+              const cleanMsg = {
+                  ...msg,
+                  content: msg.role === 'tool' ? '' : msg.content
+              };
+              group.assistantMessages.push(cleanMsg);
           }
       }
       

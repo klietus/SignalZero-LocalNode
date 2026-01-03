@@ -29,8 +29,7 @@ const SYMBOL_DATA_SCHEMA = {
             description: "Configuration for lattice symbols (execution topology)",
             properties: {
                 topology: { type: 'string', description: "inductive, deductive, bidirectional, invariant, energy" },
-                closure: { type: 'string', description: "loop, branch, collapse, constellation, synthesis" },
-                members: { type: 'array', items: { type: 'string' }, description: "List of member symbol IDs" }
+                closure: { type: 'string', description: "loop, branch, collapse, constellation, synthesis" }
             }
         },
         persona: {
@@ -60,7 +59,7 @@ const SYMBOL_DATA_SCHEMA = {
         symbol_domain: { type: 'string' },
         symbol_tag: { type: 'string' },
         failure_mode: { type: 'string' },
-        linked_patterns: { type: 'array', items: { type: 'string' } }
+        linked_patterns: { type: 'array', items: { type: 'string' }, description:"valid persistent, existing ids for other symbols." }
     },
     required: ['id', 'kind', 'triad', 'macro', 'role', 'name', 'activation_conditions', 'facets', 'symbol_domain', 'failure_mode', 'linked_patterns']
 };
@@ -251,7 +250,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'compress_symbols',
-      description: 'Merge multiple existing symbols into a single new symbol (compression). This action stores the new symbol, updates all references in the domain to point to it, and then deletes the old symbols.',
+      description: 'Merge multiple existing symbols into a single new symbol (compression). This action stores the new symbol, updates all references in the domain to point to it, and then deletes the old symbols ids.',
       parameters: {
         type: 'object',
         properties: {
@@ -543,7 +542,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
         for (const queryConfig of queryList) {
             const { query, symbol_domains, symbol_tag, limit, fetch_all, time_gte, time_between, metadata_filter } = queryConfig;
             
-            const maxLimit = Math.min(limit || 50, 50);
+            const maxLimit = Math.min(limit || 10, 50);
             
             // Default to all domains if none specified
             let targetDomains: string[];
@@ -644,6 +643,12 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
               const { symbol_data, old_id } = entry || {};
               if (!symbol_data || typeof symbol_data !== 'object') return { error: "Each entry must include symbol_data" };
 
+              // Validate and default symbol kind
+              const validKinds = ['pattern', 'persona', 'lattice'];
+              if (!symbol_data.kind || !validKinds.includes(symbol_data.kind)) {
+                  symbol_data.kind = 'pattern';
+              }
+
               const domain = symbol_data.symbol_domain || 'root';
               domainsToCheck.add(domain);
 
@@ -734,14 +739,24 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
               return { error: "Invalid arguments for compression. Requires new_symbol object and old_ids array." };
           }
 
+          // Filter out old_ids that are actually linked in the new symbol.
+          // We preserve these symbols instead of deleting them.
+          const linkedPatterns = new_symbol.linked_patterns || [];
+          const finalOldIds = old_ids.filter(id => !linkedPatterns.includes(id));
+          const preservedCount = old_ids.length - finalOldIds.length;
+
           try {
-              const results = await domainService.compressSymbols(new_symbol, old_ids);
-              return {
+              const results = await domainService.compressSymbols(new_symbol, finalOldIds);
+              const response: any = {
                   status: "Compression complete.",
                   new_symbol_id: results.newId,
                   removed_symbols_count: results.removedIds.length,
                   removed_ids: results.removedIds
               };
+              if (preservedCount > 0) {
+                  response.message = `${preservedCount} symbol(s) were preserved because they were linked to the new symbol.`;
+              }
+              return response;
           } catch (e) {
               return { error: `Compression failed: ${String(e)}` };
           }
