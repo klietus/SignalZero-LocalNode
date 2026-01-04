@@ -117,19 +117,19 @@ export class ContextWindowService {
           invariants: d.invariants
       }));
       results.push(`[DOMAINS]${JSON.stringify(domains)}`);
-      loggerService.info(`Injected ${domains.length} domains`);
+      loggerService.debug(`Injected ${domains.length} domains`);
 
       // Query 2: Root Domain "core" symbols (50)
       const coreSymbolsResult = await domainService.search("core", 50, { domains: ['root','self','state']});
       const coreSymbols = coreSymbolsResult.map(r => r.symbol).filter(Boolean) as SymbolDef[];
       results.push(`[CORE]${this.formatSymbols(coreSymbols)}`);
-      loggerService.info(`Injected ${coreSymbols.length} core symbols: ${coreSymbols.map(s => s.id).join(', ')}`);
+      loggerService.debug(`Injected ${coreSymbols.length} core symbols: ${coreSymbols.map(s => s.id).join(', ')}`);
 
       // Query 3: Root and selfDomain "persona" kind (20)
       const rootSymbols = await domainService.getSymbols('root');
       const personas = rootSymbols.filter(s => s.kind === 'persona').slice(0, 20);
       results.push(`[PERSONAS]${this.formatSymbols(personas)}`);
-      loggerService.info(`Injected ${personas.length} personas: ${personas.map(s => s.id).join(', ')}`);
+      loggerService.debug(`Injected ${personas.length} personas: ${personas.map(s => s.id).join(', ')}`);
 
       let identityCount = 0;
       let preferenceCount = 0;
@@ -140,21 +140,21 @@ export class ContextWindowService {
           const identitySymbols = identitySymbolsResult.map(r => r.symbol).filter(Boolean) as SymbolDef[];
           identityCount = identitySymbols.length;
           results.push(`[IDENTITY]${this.formatSymbols(identitySymbols)}`);
-          loggerService.info(`Injected ${identityCount} identity symbols: ${identitySymbols.map(s => s.id).join(', ')}`);
+          loggerService.debug(`Injected ${identityCount} identity symbols: ${identitySymbols.map(s => s.id).join(', ')}`);
 
           // Query 5: "user" domain "preference" (50) - Only for User Conversations
           const preferenceSymbolsResult = await domainService.search("preference", 30, { domains: ['user'] });
           const preferenceSymbols = preferenceSymbolsResult.map(r => r.symbol).filter(Boolean) as SymbolDef[];
           preferenceCount = preferenceSymbols.length;
-          results.push(`[PREF]${this.formatSymbols(preferenceSymbols)}`);
-          loggerService.info(`Injected ${preferenceCount} preference symbols: ${preferenceSymbols.map(s => s.id).join(', ')}`);
+          results.push(`[PREFERENCES]${this.formatSymbols(preferenceSymbols)}`);
+          loggerService.debug(`Injected ${preferenceCount} preference symbols: ${preferenceSymbols.map(s => s.id).join(', ')}`);
       } else {
           // Query 4: "self" and "user" domains "identity" (50) - Only for User Conversations
           const identitySymbolsResult = await domainService.search("identity", 40, { domains: ['self'] });
           const identitySymbols = identitySymbolsResult.map(r => r.symbol).filter(Boolean) as SymbolDef[];
           identityCount = identitySymbols.length;
           results.push(`[IDENTITY]${this.formatSymbols(identitySymbols)}`);
-          loggerService.info(`Injected ${identityCount} identity symbols (Loop context): ${identitySymbols.map(s => s.id).join(', ')}`);
+          loggerService.debug(`Injected ${identityCount} identity symbols (Loop context): ${identitySymbols.map(s => s.id).join(', ')}`);
       }
 
       // Query 6: Recent State Domain Symbols (Last 5 by date time)
@@ -169,7 +169,7 @@ export class ContextWindowService {
           })
           .slice(0, 5);
       results.push(`[STATE]${this.formatSymbols(recentStateSymbols)}`);
-      loggerService.info(`Injected ${recentStateSymbols.length} recent state symbols: ${recentStateSymbols.map(s => s.id).join(', ')}`);
+      loggerService.debug(`Injected ${recentStateSymbols.length} recent state symbols: ${recentStateSymbols.map(s => s.id).join(', ')}`);
 
       const fullContext = results.join('');
       
@@ -203,7 +203,8 @@ export class ContextWindowService {
             role: s.role,
             macro: s.macro,
             domain: s.symbol_domain,
-            invariants: s.facets?.invariants || []
+            invariants: s.facets?.invariants || [],
+            linked_patterns: s.linked_patterns || []
         };
 
         if (s.kind === 'lattice' && s.lattice) {
