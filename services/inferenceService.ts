@@ -35,9 +35,6 @@ const getClient = () => {
 
 const getModel = () => settingsService.getInferenceSettings().model;
 
-const buildMetadataWrappedContent = (message: string, context?: Record<string, any>) =>
-  `[USER MESSAGE] ${message}\n\n[TURN METADATA] ${JSON.stringify(buildSystemMetadataBlock(context))}`;
-
 const extractTextDelta = (delta: ChatCompletionChunk["choices"][number]["delta"]) => {
   if (!delta?.content) return "";
   if (typeof delta.content === "string") return delta.content;
@@ -218,7 +215,7 @@ const streamAssistantResponse = async function* (
     messages,
     tools: toolDeclarations,
     stream: true,
-    temperature: 0.3,
+    temperature: 0.4,
   });
 
   let textAccumulator = "";
@@ -309,6 +306,7 @@ export async function* sendMessageAndHandleTools(
   }
 
   let loops = 0;
+  let totalTextAccumulatedAcrossLoops = "";
   while (loops < MAX_TOOL_LOOPS) {
     if (contextSessionId) {
         const session = await contextService.getSession(contextSessionId);
@@ -323,7 +321,7 @@ export async function* sendMessageAndHandleTools(
     let retries = 0;
     let yieldedToolCalls: ChatCompletionMessageToolCall[] | undefined;
     let nextAssistant: ChatCompletionMessageParam | null = null;
-    let textAccumulated = "";
+    let textAccumulatedInTurn = "";
 
     while (retries < MAX_RETRIES) {
         // Construct fresh context window using the ContextWindowService
@@ -332,14 +330,20 @@ export async function* sendMessageAndHandleTools(
             : [{ role: 'system', content: systemInstruction || chat.systemInstruction }, { role: 'user', content: message }];
 
         const assistantMessage = streamAssistantResponse(contextMessages, chat.model);
-        textAccumulated = ""; 
+        textAccumulatedInTurn = ""; 
         yieldedToolCalls = undefined;
         nextAssistant = null;
 
+        let isFirstTextChunkInTurn = true;
         for await (const chunk of assistantMessage) {
             if (chunk.text) {
-                textAccumulated += chunk.text;
-                yield { text: chunk.text };
+                let textToYield = chunk.text;
+                if (isFirstTextChunkInTurn && totalTextAccumulatedAcrossLoops.length > 0) {
+                    textToYield = "\n\n" + textToYield;
+                }
+                textAccumulatedInTurn += textToYield;
+                yield { text: textToYield };
+                isFirstTextChunkInTurn = false;
             }
             if (chunk.toolCalls) {
                 yieldedToolCalls = chunk.toolCalls;
@@ -348,7 +352,7 @@ export async function* sendMessageAndHandleTools(
             if (chunk.assistantMessage) nextAssistant = chunk.assistantMessage;
         }
 
-        if (textAccumulated.trim() || (yieldedToolCalls && yieldedToolCalls.length > 0)) {
+        if (textAccumulatedInTurn.trim() || (yieldedToolCalls && yieldedToolCalls.length > 0)) {
             break;
         }
 
@@ -360,6 +364,8 @@ export async function* sendMessageAndHandleTools(
       yield { text: "Error: No assistant message returned." };
       break;
     }
+
+    totalTextAccumulatedAcrossLoops += textAccumulatedInTurn;
 
     // SANITIZE: Check for and fix malformed tool arguments before persisting
     if (nextAssistant.tool_calls) {
@@ -379,7 +385,7 @@ export async function* sendMessageAndHandleTools(
       await contextService.recordMessage(contextSessionId, {
         id: randomUUID(),
         role: "assistant",
-        content: typeof nextAssistant.content === "string" ? nextAssistant.content : JSON.stringify(nextAssistant.content),
+        content: textAccumulatedInTurn,
         toolCalls: nextAssistant.tool_calls?.map((call) => ({
           id: call.id,
           name: call.function?.name,

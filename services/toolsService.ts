@@ -258,7 +258,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
           old_ids: {
             type: 'array',
             items: { type: 'string' },
-            description: 'List of old symbol IDs to remove after merging.'
+            description: 'List of old symbol IDs to remove after merging. MUTUALLY EXCLUSIVE WITH "linked_patterns" array.'
           }
         },
         required: ['new_symbol', 'old_ids']

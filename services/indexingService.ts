@@ -44,8 +44,18 @@ async function reindexSymbols(includeDisabled: boolean = false): Promise<Reindex
 
         for (const symbol of symbols) {
             const success = await vectorService.indexSymbol(symbol);
-            if (success) indexedCount++;
-            else failedIds.push(symbol.id);
+            if (success) {
+                indexedCount++;
+            } else {
+                failedIds.push(symbol.id);
+                loggerService.warn(`Indexing failed for symbol ${symbol.id}, removing from Redis domain ${symbol.symbol_domain}.`);
+                try {
+                    // Remove from primary store since it's unindexable/corrupt for vector search
+                    await domainService.deleteSymbol(symbol.symbol_domain, symbol.id, false);
+                } catch (delErr) {
+                    loggerService.error(`Failed to remove failed symbol ${symbol.id} from Redis`, { error: delErr });
+                }
+            }
             queueState.pending = Math.max(queueState.pending - 1, 0);
         }
 

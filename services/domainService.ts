@@ -82,10 +82,19 @@ const matchesValue = (symbolValue: unknown, filterValue: unknown): boolean => {
   const filterValues = Array.isArray(filterValue) ? filterValue : [filterValue];
 
   return filterValues.some((fv) => {
+      const fvStr = String(fv).trim();
       if (Array.isArray(symbolValue)) {
-          return symbolValue.map(String).includes(String(fv));
+          return symbolValue.map(s => String(s).trim()).includes(fvStr);
       }
-      return symbolValue !== undefined && symbolValue !== null && String(symbolValue) === String(fv);
+      
+      if (typeof symbolValue === 'string') {
+          // Handle comma-separated tag strings or similar
+          const parts = symbolValue.split(',').map(s => s.trim());
+          if (parts.includes(fvStr)) return true;
+      }
+
+      const normalizedSymbolValue = typeof symbolValue === 'string' ? symbolValue.trim() : String(symbolValue).trim();
+      return symbolValue !== undefined && symbolValue !== null && normalizedSymbolValue === fvStr;
   });
 };
 
@@ -305,7 +314,13 @@ export const domainService = {
           .flatMap((d) => d.symbols)
           .filter((s) => matchesMetadataFilter(s, filters?.metadata_filter));
 
-      const results = shouldSkipSemantic ? [] : await vectorService.search(query!, limit, filters?.metadata_filter);
+      // Build a filter for the vector store that includes domain restrictions
+      const vectorMetadataFilter: Record<string, unknown> = { ...(filters?.metadata_filter || {}) };
+      if (domains && domains.length > 0) {
+          vectorMetadataFilter.symbol_domain = domains.length === 1 ? domains[0] : domains;
+      }
+
+      const results = shouldSkipSemantic ? [] : await vectorService.search(query!, limit, vectorMetadataFilter);
 
       const hydratedResults = results
         .filter(r => bucketIds.size === 0 || bucketIds.has(r.id))
@@ -520,7 +535,7 @@ export const domainService = {
     await indexSymbolBucket(normalizedSymbol);
     
     // Index Vector
-    await vectorService.indexSymbol(symbol);
+    await vectorService.indexSymbol(normalizedSymbol);
   },
 
   /**
@@ -572,7 +587,7 @@ export const domainService = {
       domain.lastUpdated = Date.now();
 
       await redisService.request(['SET', key, JSON.stringify(domain)]);
-      await vectorService.indexBatch(symbols);
+      await vectorService.indexBatch(domain.symbols);
   },
 
   /**
@@ -634,7 +649,7 @@ export const domainService = {
 
           // 3. Add New
           const validKinds = ['pattern', 'persona', 'lattice'];
-          domainUpdates.forEach(update => {
+          for (const update of domainUpdates) {
               if (!update.symbol_data.kind || !validKinds.includes(update.symbol_data.kind)) {
                   update.symbol_data.kind = 'pattern';
               }
@@ -647,9 +662,9 @@ export const domainService = {
               };
               domain.symbols.push(normalized);
               updateCount++;
-              vectorService.indexSymbol(normalized);
-              indexSymbolBucket(normalized);
-          });
+              await vectorService.indexSymbol(normalized);
+              await indexSymbolBucket(normalized);
+          }
 
           domain.lastUpdated = Date.now();
           await redisService.request(['SET', key, JSON.stringify(domain)]);

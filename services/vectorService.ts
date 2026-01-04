@@ -114,9 +114,11 @@ export const vectorService = {
             Symbol: ${symbol.name} (${symbol.id})
             Triad: ${symbol.triad}
             Domain: ${symbol.symbol_domain}
+            Tag: ${symbol.symbol_tag || 'N/A'}
             Kind: ${symbol.kind || 'pattern'}
             Role: ${symbol.role}
             Macro: ${symbol.macro || ''}
+            Activation Conditions: ${(symbol.activation_conditions || []).join(', ')}
             Invariants: ${(symbol.facets?.invariants || []).join(', ')}
             Description: ${JSON.stringify(symbol.facets || {})}
             Lattice: ${symbol.kind === 'lattice' ? JSON.stringify(symbol.lattice) : 'N/A'}
