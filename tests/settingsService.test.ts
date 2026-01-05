@@ -132,6 +132,7 @@ describe('SettingsService', () => {
         process.env.USE_EXTERNAL_VECTOR_DB = 'false';
         process.env.INFERENCE_ENDPOINT = 'http://localhost:1234/v1';
         process.env.INFERENCE_MODEL = 'Meta-Llama-3-70B-Instruct';
+        process.env.INFERENCE_API_KEY = '';
 
         const systemSettings = settingsService.getSystemSettings();
 
@@ -148,23 +149,25 @@ describe('SettingsService', () => {
             },
             inference: {
                 endpoint: 'http://localhost:1234/v1',
-                model: 'Meta-Llama-3-70B-Instruct'
+                model: 'Meta-Llama-3-70B-Instruct',
+                provider: 'local',
+                apiKey: '',
+                loopModel: 'Meta-Llama-3-70B-Instruct'
             }
         });
     });
 
     it('should set system settings and merge partial updates', () => {
+        process.env.INFERENCE_API_KEY = '';
         settingsService.setSystemSettings({
             redis: {
-                redisServer: 'initial-host',
-                redisPort: 6379,
-                redisPassword: 'initial',
-                redisUrl: 'redis://initial-host:6379',
-                redisToken: 'token'
+                server: 'initial-host',
+                port: 6379,
+                password: 'initial'
             },
             chroma: {
-                chromaUrl: 'http://initial-chroma',
-                collectionName: 'initial-collection',
+                url: 'http://initial-chroma',
+                collection: 'initial-collection',
                 useExternal: true
             },
             inference: {
@@ -174,8 +177,8 @@ describe('SettingsService', () => {
         });
 
         settingsService.setSystemSettings({
-            redis: { redisPassword: 'updated-pw' },
-            chroma: { collectionName: 'updated-collection' },
+            redis: { password: 'updated-pw' },
+            chroma: { collection: 'updated-collection' },
             inference: { model: 'Meta-Llama-3-70B-Instruct' }
         });
 
@@ -192,7 +195,10 @@ describe('SettingsService', () => {
             },
             inference: {
                 endpoint: 'http://localhost:1234/v1',
-                model: 'Meta-Llama-3-70B-Instruct'
+                model: 'Meta-Llama-3-70B-Instruct',
+                provider: 'local',
+                apiKey: '',
+                loopModel: 'Meta-Llama-3-70B-Instruct'
             }
         });
     });

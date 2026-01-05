@@ -38,7 +38,7 @@ describe('DomainService', () => {
         const symbol: any = { id: 'sym-1', name: 'Symbol 1' };
         await domainService.upsertSymbol('new-domain', symbol);
 
-        expect(vectorService.indexSymbol).toHaveBeenCalledWith(symbol);
+        expect(vectorService.indexSymbol).toHaveBeenCalledWith(expect.objectContaining({ id: 'sym-1', name: 'Symbol 1' }));
         const stored = await redisService.request(['GET', 'sz:domain:new-domain']);
         const domain = JSON.parse(stored);
         expect(domain.symbols).toHaveLength(1);

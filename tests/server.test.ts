@@ -19,7 +19,12 @@ vi.mock('../services/contextService', () => ({
         closeConversationSessions: vi.fn(),
         listSessions: vi.fn().mockResolvedValue([]),
         getSession: vi.fn(),
-        getHistory: vi.fn()
+        getHistory: vi.fn(),
+        getHistoryGrouped: vi.fn().mockResolvedValue([]),
+        hasActiveMessage: vi.fn().mockResolvedValue(false),
+        setActiveMessage: vi.fn(),
+        clearActiveMessage: vi.fn(),
+        recordMessage: vi.fn()
     }
 }));
 vi.mock('../services/inferenceService', () => ({
@@ -28,7 +33,8 @@ vi.mock('../services/inferenceService', () => ({
     sendMessageAndHandleTools: vi.fn().mockImplementation(async function* () {
         yield { text: 'Response' };
     }),
-    runSignalZeroTest: vi.fn()
+    runSignalZeroTest: vi.fn(),
+    processMessageAsync: vi.fn()
 }));
 vi.mock('../services/toolsService', () => ({
     createToolExecutor: vi.fn()
@@ -47,12 +53,16 @@ describe('Server API Endpoints', () => {
     });
 
     it('POST /api/chat should handle message', async () => {
+        vi.mocked(contextService.getSession).mockResolvedValue({ id: 'ctx-1', status: 'open' } as any);
+        vi.mocked(contextService.hasActiveMessage).mockResolvedValue(false);
+        vi.mocked(contextService.setActiveMessage).mockResolvedValue(undefined);
+
         const res = await request(app)
             .post('/api/chat')
-            .send({ message: 'Hello' });
+            .send({ message: 'Hello', contextSessionId: 'ctx-1' });
         
-        expect(res.status).toBe(200);
-        expect(res.body.content).toBe('Response');
+        expect(res.status).toBe(202);
+        // expect(res.body.content).toBe('Response'); // 202 doesn't return content
     });
 
     it('POST /api/chat should reuse provided context session', async () => {
@@ -62,7 +72,7 @@ describe('Server API Endpoints', () => {
             .post('/api/chat')
             .send({ message: 'Hello', contextSessionId: 'ctx-99' });
 
-        expect(res.status).toBe(200);
+        expect(res.status).toBe(202);
         expect(contextService.getSession).toHaveBeenCalledWith('ctx-99');
         expect(res.body.contextSessionId).toBe('ctx-99');
     });
@@ -88,7 +98,12 @@ describe('Server API Endpoints', () => {
 
     it('GET /api/contexts/:id/history should return history', async () => {
         vi.mocked(contextService.getSession).mockResolvedValue({ id: 'ctx-1', status: 'open' } as any);
-        vi.mocked(contextService.getHistory).mockResolvedValue([{ role: 'user', content: 'hi', timestamp: new Date().toISOString() }]);
+        vi.mocked(contextService.getHistoryGrouped).mockResolvedValue([{
+            correlationId: 'msg-1',
+            userMessage: { id: 'msg-1', role: 'user', content: 'hi', timestamp: new Date().toISOString() },
+            assistantMessages: [],
+            status: 'complete'
+        }]);
 
         const res = await request(app).get('/api/contexts/ctx-1/history');
         expect(res.status).toBe(200);

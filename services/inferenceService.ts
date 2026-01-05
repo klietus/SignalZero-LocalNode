@@ -22,14 +22,22 @@ interface ChatSessionState {
   model: string;
 }
 
-const MAX_TOOL_LOOPS = 20;
+const MAX_TOOL_LOOPS = 50;
 
 const getClient = () => {
-  const { endpoint } = settingsService.getInferenceSettings();
-  const apiKey = settingsService.getApiKey() || "lm-studio";
+  const { endpoint, provider, apiKey } = settingsService.getInferenceSettings();
+  
+  if (provider === 'openai') {
+      return new OpenAI({
+        baseURL: 'https://api.openai.com/v1',
+        apiKey: apiKey,
+      });
+  }
+
+  const localApiKey = settingsService.getApiKey() || "lm-studio";
   return new OpenAI({
     baseURL: endpoint,
-    apiKey,
+    apiKey: localApiKey,
   });
 };
 
@@ -39,7 +47,7 @@ const extractTextDelta = (delta: ChatCompletionChunk["choices"][number]["delta"]
   if (!delta?.content) return "";
   if (typeof delta.content === "string") return delta.content;
   if (Array.isArray(delta.content)) {
-    return delta.content
+    return (delta.content as any[])
       .map((item: any) => {
         if (typeof item === "string") return item;
         if (item?.text) return item.text;
@@ -52,7 +60,7 @@ const extractTextDelta = (delta: ChatCompletionChunk["choices"][number]["delta"]
 
 const mergeToolCallDelta = (
   collected: Map<number, ChatCompletionMessageToolCall>,
-  toolCalls?: ChatCompletionMessageToolCall[]
+  toolCalls?: any[]
 ) => {
   if (!toolCalls) return collected;
   for (const call of toolCalls) {
@@ -76,7 +84,7 @@ const mergeToolCallDelta = (
       },
       type: "function",
       index,
-    });
+    } as any);
   }
   return collected;
 };
@@ -194,8 +202,7 @@ export const generateGapSynthesis = async (
   const client = getClient();
   const result = await client.chat.completions.create({
     model: getModel(),
-    messages: [{ role: "user", content: prompt }],
-    temperature: 0.7,
+    messages: [{ role: "user", content: prompt }]
   });
 
   return result.choices[0]?.message?.content ?? "";
@@ -214,8 +221,7 @@ const streamAssistantResponse = async function* (
     model,
     messages,
     tools: toolDeclarations,
-    stream: true,
-    temperature: 0.4,
+    stream: true
   });
 
   let textAccumulator = "";
@@ -329,7 +335,7 @@ export async function* sendMessageAndHandleTools(
             ? await contextWindowService.constructContextWindow(contextSessionId, systemInstruction || chat.systemInstruction)
             : [{ role: 'system', content: systemInstruction || chat.systemInstruction }, { role: 'user', content: message }];
 
-        const assistantMessage = streamAssistantResponse(contextMessages, chat.model);
+        const assistantMessage = streamAssistantResponse(contextMessages as ChatCompletionMessageParam[], chat.model);
         textAccumulatedInTurn = ""; 
         yieldedToolCalls = undefined;
         nextAssistant = null;
@@ -368,8 +374,8 @@ export async function* sendMessageAndHandleTools(
     totalTextAccumulatedAcrossLoops += textAccumulatedInTurn;
 
     // SANITIZE: Check for and fix malformed tool arguments before persisting
-    if (nextAssistant.tool_calls) {
-        for (const call of nextAssistant.tool_calls) {
+    if ((nextAssistant as any).tool_calls) {
+        for (const call of (nextAssistant as any).tool_calls) {
             const { error: parseError } = parseToolArguments(call.function.arguments || "");
             if (parseError) {
                 loggerService.warn("Detected malformed JSON in tool call. Sanitizing for history.", { 
@@ -386,7 +392,7 @@ export async function* sendMessageAndHandleTools(
         id: randomUUID(),
         role: "assistant",
         content: textAccumulatedInTurn,
-        toolCalls: nextAssistant.tool_calls?.map((call) => ({
+        toolCalls: (nextAssistant as any).tool_calls?.map((call: any) => ({
           id: call.id,
           name: call.function?.name,
           arguments: call.function?.arguments,
@@ -605,8 +611,7 @@ export const runBaselineTest = async (prompt: string): Promise<string> => {
     const client = getClient();
     const completion = await client.chat.completions.create({
       model: getModel(),
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.4,
+      messages: [{ role: "user", content: prompt }]
     });
 
     return completion.choices[0]?.message?.content || "";
@@ -661,7 +666,6 @@ export const evaluateComparison = async (
     const result = await client.chat.completions.create({
       model: getModel(),
       messages: [{ role: "user", content: evalPrompt }],
-      temperature: 0,
       response_format: { type: "json_object" },
     });
 

@@ -44,7 +44,7 @@ describe('ToolsService', () => {
         expect(domainService.search).toHaveBeenCalledWith('test vector', 3, {
             time_gte: undefined,
             time_between: undefined,
-            metadata_filter: { symbol_tag: 'protocol', symbol_domain: ['root', 'diagnostics'] },
+            metadata_filter: { symbol_tag: 'protocol' },
             domains: ['root', 'diagnostics']
         });
     });

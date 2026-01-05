@@ -103,7 +103,6 @@ Return JSON with the field "invariants" as a non-empty array of concise invarian
         const response = await client.chat.completions.create({
             model: settingsService.getInferenceSettings().model,
             messages: [{ role: 'user', content: prompt }],
-            temperature: 0,
             response_format: { type: 'json_object' }
         });
 

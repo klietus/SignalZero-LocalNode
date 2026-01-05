@@ -1,4 +1,4 @@
-import { ChromaClient, type Collection, type EmbeddingFunction } from 'chromadb';
+import { ChromaClient, type Collection, type EmbeddingFunction, type Where } from 'chromadb';
 import { embedTexts, resetEmbeddingCache } from './embeddingService.ts';
 import { SymbolDef, VectorSearchResult } from '../types.ts';
 import { settingsService } from './settingsService.ts';
@@ -194,7 +194,7 @@ export const vectorService = {
                 queryTexts: [query],
                 nResults: nResults,
                 include: ["metadatas", "documents", "distances"],
-                where: buildWhereClause(metadataFilter)
+                where: buildWhereClause(metadataFilter) as Where
             });
 
             const ids = data.ids?.[0] || [];

@@ -415,8 +415,8 @@ export const domainService = {
             if (s.linked_patterns) {
                 s.linked_patterns = s.linked_patterns.filter(id => !idsToDelete.has(id));
             }
-            if (s.kind === 'lattice' && s.lattice?.members) {
-                s.lattice.members = s.lattice.members.filter(id => !idsToDelete.has(id));
+            if (s.kind === 'lattice' && s.linked_patterns) {
+                s.linked_patterns = s.linked_patterns.filter(id => !idsToDelete.has(id));
             }
             if (s.kind === 'persona' && s.persona?.linked_personas) {
                 s.persona.linked_personas = s.persona.linked_personas.filter(id => !idsToDelete.has(id));
@@ -445,8 +445,8 @@ export const domainService = {
               s.linked_patterns = s.linked_patterns.map(id => id === oldId ? newId : id);
               modified = true;
           }
-          if (s.kind === 'lattice' && s.lattice?.members?.includes(oldId)) {
-              s.lattice.members = s.lattice.members.map(id => id === oldId ? newId : id);
+          if (s.kind === 'lattice' && s.linked_patterns?.includes(oldId)) {
+              s.linked_patterns = s.linked_patterns.map(id => id === oldId ? newId : id);
               modified = true;
           }
           if (s.kind === 'persona' && s.persona?.linked_personas?.includes(oldId)) {
@@ -506,6 +506,23 @@ export const domainService = {
 
     ensureWritableDomain(domain, domainId, symbol.id);
 
+    // Validation: Check if linked patterns exist
+    if (symbol.linked_patterns && symbol.linked_patterns.length > 0) {
+        const missingLinks: string[] = [];
+        for (const linkId of symbol.linked_patterns) {
+            // Self-reference is allowed (or will be created)
+            if (linkId === symbol.id) continue;
+
+            const exists = await domainService.findById(linkId);
+            if (!exists) {
+                missingLinks.push(linkId);
+            }
+        }
+        if (missingLinks.length > 0) {
+            throw new Error(`Validation Failed: Linked patterns not found: ${missingLinks.join(', ')}`);
+        }
+    }
+
     // Default invalid kind to pattern
     const validKinds = ['pattern', 'persona', 'lattice'];
     if (!symbol.kind || !validKinds.includes(symbol.kind)) {
@@ -563,6 +580,35 @@ export const domainService = {
       }
 
       ensureWritableDomain(domain, domainId, symbols[0]?.id);
+
+      // Validation: Check linked patterns integrity
+      const upsertIds = new Set(symbols.map(s => s.id));
+      // Optimization: Load all existing IDs once
+      const allExistingSymbols = await domainService.getAllSymbols(true);
+      const validIds = new Set(allExistingSymbols.map(s => s.id));
+
+      const missingLinksBySymbol: Record<string, string[]> = {};
+
+      for (const sym of symbols) {
+          if (sym.linked_patterns && sym.linked_patterns.length > 0) {
+              for (const linkId of sym.linked_patterns) {
+                  // Allow self-reference, reference to symbol in this batch, or existing symbol
+                  if (linkId === sym.id || upsertIds.has(linkId) || validIds.has(linkId)) {
+                      continue;
+                  }
+                  
+                  if (!missingLinksBySymbol[sym.id]) missingLinksBySymbol[sym.id] = [];
+                  missingLinksBySymbol[sym.id].push(linkId);
+              }
+          }
+      }
+
+      if (Object.keys(missingLinksBySymbol).length > 0) {
+          const details = Object.entries(missingLinksBySymbol)
+              .map(([id, links]) => `${id} -> [${links.join(', ')}]`)
+              .join('; ');
+          throw new Error(`Validation Failed: Missing linked patterns for symbols: ${details}`);
+      }
 
       const symbolMap = new Map(domain.symbols.map(s => [s.id, s]));
       const nowB64 = currentTimestampBase64();
@@ -631,8 +677,8 @@ export const domainService = {
                       if (s.linked_patterns?.includes(update.old_id)) {
                           s.linked_patterns = s.linked_patterns.map(id => id === update.old_id ? update.symbol_data.id : id);
                       }
-                      if (s.kind === 'lattice' && s.lattice?.members?.includes(update.old_id)) {
-                          s.lattice.members = s.lattice.members.map(id => id === update.old_id ? update.symbol_data.id : id);
+                      if (s.kind === 'lattice' && s.linked_patterns?.includes(update.old_id)) {
+                          s.linked_patterns = s.linked_patterns.map(id => id === update.old_id ? update.symbol_data.id : id);
                       }
                       if (s.kind === 'persona' && s.persona?.linked_personas?.includes(update.old_id)) {
                           s.persona.linked_personas = s.persona.linked_personas.map(id => id === update.old_id ? update.symbol_data.id : id);
@@ -678,6 +724,30 @@ export const domainService = {
    */
   compressSymbols: async (newSymbol: SymbolDef, oldIds: string[]) => {
       const domainId = newSymbol.symbol_domain || 'root';
+
+      // Validation: Check if linked patterns exist
+      if (newSymbol.linked_patterns && newSymbol.linked_patterns.length > 0) {
+          const missingLinks: string[] = [];
+          for (const linkId of newSymbol.linked_patterns) {
+              // We skip checking IDs that are in oldIds because they are about to be deleted/merged? 
+              // Or should we check them?
+              // If we are compressing A and B into C, and C links to A, A will be gone.
+              // But C is replacing A.
+              // Usually linked_patterns point to OTHER symbols.
+              // If C links to A, and A is in oldIds, that link will be broken/self-referential after rename?
+              // But rename happens later.
+              // Let's stick to simple existence check. If it's in oldIds, it exists NOW.
+              const exists = await domainService.findById(linkId);
+              if (!exists) {
+                  missingLinks.push(linkId);
+              }
+          }
+          
+          if (missingLinks.length > 0) {
+              throw new Error(`Validation Failed: Linked patterns not found: ${missingLinks.join(', ')}`);
+          }
+      }
+
       await domainService.upsertSymbol(domainId, newSymbol);
       
       for (const oldId of oldIds) {

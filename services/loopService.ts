@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs/promises';
 import path from 'path';
@@ -179,6 +180,7 @@ class LoopService {
             const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), contextSession.id);
             const stream = sendMessageAndHandleTools(chat, loop.prompt, toolExecutor, systemInstruction, contextSession.id);
             await contextService.recordMessage(contextSession.id, {
+                id: randomUUID(),
                 role: "system",
                 content: loop.prompt,
                 metadata: { kind: "loop_prompt", loopId: loop.id, executionId }

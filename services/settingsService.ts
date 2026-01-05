@@ -22,12 +22,22 @@ export interface RedisSettings {
 }
 
 export interface SystemSettings {
-  redis?: Partial<RedisSettings>;
-  chroma?: Partial<VectorSettings>;
+  redis?: {
+    server?: string;
+    port?: number;
+    password?: string;
+  };
+  chroma?: {
+    url?: string;
+    collection?: string;
+    useExternal?: boolean;
+  };
   inference?: Partial<InferenceSettings>;
 }
 
 export interface InferenceSettings {
+  provider: 'local' | 'openai';
+  apiKey: string;
   endpoint: string;
   model: string;
   loopModel: string;
@@ -56,6 +66,8 @@ const loadPersistedSettings = () => {
         if (data.chroma.useExternal !== undefined) process.env.USE_EXTERNAL_VECTOR_DB = String(data.chroma.useExternal);
       }
       if (data.inference) {
+        if (data.inference.provider) process.env.INFERENCE_PROVIDER = data.inference.provider;
+        if (data.inference.apiKey) process.env.INFERENCE_API_KEY = data.inference.apiKey;
         if (data.inference.endpoint) process.env.INFERENCE_ENDPOINT = data.inference.endpoint;
         if (data.inference.model) process.env.INFERENCE_MODEL = data.inference.model;
         if (data.inference.loopModel) process.env.INFERENCE_LOOP_MODEL = data.inference.loopModel;
@@ -164,6 +176,8 @@ export const settingsService = {
   // --- Inference Settings ---
   getInferenceSettings: (): InferenceSettings => {
     return {
+      provider: (process.env.INFERENCE_PROVIDER as 'local' | 'openai') || 'local',
+      apiKey: process.env.INFERENCE_API_KEY || '',
       endpoint: process.env.INFERENCE_ENDPOINT || 'http://localhost:1234/v1',
       model: process.env.INFERENCE_MODEL || 'lmstudio-community/Meta-Llama-3-70B-Instruct',
       loopModel: process.env.INFERENCE_LOOP_MODEL || process.env.INFERENCE_MODEL || 'lmstudio-community/Meta-Llama-3-70B-Instruct'
@@ -171,6 +185,8 @@ export const settingsService = {
   },
 
   setInferenceSettings: (settings: InferenceSettings) => {
+    process.env.INFERENCE_PROVIDER = settings.provider;
+    process.env.INFERENCE_API_KEY = settings.apiKey;
     process.env.INFERENCE_ENDPOINT = settings.endpoint;
     process.env.INFERENCE_MODEL = settings.model;
     process.env.INFERENCE_LOOP_MODEL = settings.loopModel;
@@ -194,6 +210,8 @@ export const settingsService = {
         useExternal: vectorSettings.useExternal,
       },
       inference: {
+        provider: inferenceSettings.provider,
+        apiKey: inferenceSettings.apiKey,
         endpoint: inferenceSettings.endpoint,
         model: inferenceSettings.model,
         loopModel: inferenceSettings.loopModel,
@@ -202,11 +220,34 @@ export const settingsService = {
   },
 
   setSystemSettings: (settings: SystemSettings) => {
-// ...
+    if (settings.redis) {
+        const currentRedis = settingsService.getRedisSettings();
+        const redisInput = settings.redis as Record<string, unknown>;
+        settingsService.setRedisSettings({
+          redisUrl: currentRedis.redisUrl,
+          redisToken: currentRedis.redisToken,
+          redisServer: (redisInput.server as string | undefined) ?? currentRedis.redisServer,
+          redisPort: (redisInput.port as number | undefined) ?? currentRedis.redisPort,
+          redisPassword: (redisInput.password as string | undefined) ?? currentRedis.redisPassword,
+        });
+    }
+
+    if (settings.chroma) {
+        const currentVector = settingsService.getVectorSettings();
+        const chromaInput = settings.chroma as Record<string, unknown>;
+        settingsService.setVectorSettings({
+          useExternal: (chromaInput.useExternal as boolean | undefined) ?? currentVector.useExternal,
+          chromaUrl: (chromaInput.url as string | undefined) ?? currentVector.chromaUrl,
+          collectionName: (chromaInput.collection as string | undefined) ?? currentVector.collectionName,
+        });
+    }
+
     if (settings.inference) {
       const currentInference = settingsService.getInferenceSettings();
       const inferenceInput = settings.inference as Record<string, unknown>;
       settingsService.setInferenceSettings({
+        provider: (inferenceInput.provider as 'local' | 'openai' | undefined) ?? currentInference.provider,
+        apiKey: (inferenceInput.apiKey as string | undefined) ?? currentInference.apiKey,
         endpoint: (inferenceInput.endpoint as string | undefined) ?? currentInference.endpoint,
         model: (inferenceInput.model as string | undefined) ?? currentInference.model,
         loopModel: (inferenceInput.loopModel as string | undefined) ?? (inferenceInput.model as string | undefined) ?? currentInference.loopModel,

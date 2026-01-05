@@ -53,24 +53,98 @@ export class ContextWindowService {
     const historyMessages: ChatCompletionMessageParam[] = [];
     let currentTokens = 0;
 
-    // Process from newest to oldest
+    // Group into rounds (reverse chronological)
+    const rounds: ContextMessage[][] = [];
+    let currentRound: ContextMessage[] = [];
+
     for (let i = rawHistory.length - 1; i >= 0; i--) {
         const msg = rawHistory[i];
-        const chatMsg = this.mapToOpenAIMessage(msg);
-        
-        // Estimate tokens for this message
-        const msgTokens = this.estimateTokens(JSON.stringify(chatMsg));
-        
-        if (currentTokens + msgTokens > this.TOKEN_LIMIT) {
+        currentRound.unshift(msg);
+        if (msg.role === 'user') {
+            rounds.push(currentRound);
+            currentRound = [];
+        }
+    }
+    if (currentRound.length > 0) {
+        rounds.push(currentRound);
+    }
+
+    // Process rounds
+    for (let index = 0; index < rounds.length; index++) {
+        if (index >= 10) {
+            loggerService.info(`Context window round limit reached for ${contextSessionId}. Included ${index} rounds.`);
+            break;
+        }
+
+        let round = rounds[index];
+
+        // Sanitize older rounds (index > 0) to remove tool errors
+        if (index > 0) {
+            round = this.sanitizeRound(round);
+        }
+
+        if (round.length === 0) continue;
+
+        const roundMessages = round.map(msg => this.mapToOpenAIMessage(msg));
+        const roundTokens = roundMessages.reduce((sum, msg) => sum + this.estimateTokens(JSON.stringify(msg)), 0);
+
+        if (currentTokens + roundTokens > this.TOKEN_LIMIT) {
             loggerService.info(`Context window limit reached for ${contextSessionId}. Included ${historyMessages.length} messages.`);
             break;
         }
 
-        historyMessages.unshift(chatMsg); // Prepend to maintain chronological order
-        currentTokens += msgTokens;
+        // Prepend round messages to history (maintaining order within round)
+        historyMessages.unshift(...roundMessages);
+        currentTokens += roundTokens;
     }
     historyMessages.unshift({ role: 'user', content: `[DYNAMIC_CONTENT]` });
     return [...messages, ...historyMessages];
+  }
+
+  private sanitizeRound(round: ContextMessage[]): ContextMessage[] {
+      const errorToolCallIds = new Set<string>();
+
+      // 1. Identify tool errors
+      for (const msg of round) {
+          if (msg.role === 'tool') {
+              // Check metadata or content for error indicators
+              const isError = msg.metadata?.kind === 'tool_error' || 
+                              msg.metadata?.kind === 'tool_result_error' ||
+                              (typeof msg.content === 'string' && msg.content.includes('"error":')); // heuristic for simple JSON error
+              
+              if (isError && msg.toolCallId) {
+                  errorToolCallIds.add(msg.toolCallId);
+              }
+          }
+      }
+
+      if (errorToolCallIds.size === 0) return round;
+
+      // 2. Filter messages
+      return round.filter(msg => {
+          // Remove tool output messages associated with errors
+          if (msg.role === 'tool' && msg.toolCallId && errorToolCallIds.has(msg.toolCallId)) {
+              return false;
+          }
+          return true;
+      }).map(msg => {
+          // Remove tool calls from assistant messages if they resulted in error
+          if ((msg.role === 'assistant' || msg.role === 'model') && msg.toolCalls) {
+              const validToolCalls = msg.toolCalls.filter(tc => tc.id && !errorToolCallIds.has(tc.id));
+              if (validToolCalls.length !== msg.toolCalls.length) {
+                  return { ...msg, toolCalls: validToolCalls };
+              }
+          }
+          return msg;
+      }).filter(msg => {
+          // Remove assistant messages that have become empty
+          if ((msg.role === 'assistant' || msg.role === 'model')) {
+              const hasContent = msg.content && msg.content.trim().length > 0;
+              const hasTools = msg.toolCalls && msg.toolCalls.length > 0;
+              return hasContent || hasTools;
+          }
+          return true;
+      });
   }
 
   private mapToOpenAIMessage(msg: ContextMessage): ChatCompletionMessageParam {

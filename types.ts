@@ -27,7 +27,7 @@ export interface AppState {
 }
 
 export interface ToolConfig {
-  declarations: FunctionDeclaration[];
+  declarations: any[];
   executor: (name: string, args: any) => Promise<any>;
 }
 
@@ -83,7 +83,12 @@ export interface SymbolLatticeDef {
 }
 
 export interface SymbolPersonaDef {
-// ...
+    recursion_level: string;
+    function: string;
+    fallback_behavior: string[];
+    linked_personas: string[];
+}
+
 export interface SymbolDef {
   id: string;
   name: string;
