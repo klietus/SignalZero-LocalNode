@@ -41,6 +41,7 @@ export interface InferenceSettings {
   endpoint: string;
   model: string;
   loopModel: string;
+  visionModel: string;
 }
 
 const savePersistedSettings = (settings: any) => {
@@ -71,6 +72,7 @@ const loadPersistedSettings = () => {
         if (data.inference.endpoint) process.env.INFERENCE_ENDPOINT = data.inference.endpoint;
         if (data.inference.model) process.env.INFERENCE_MODEL = data.inference.model;
         if (data.inference.loopModel) process.env.INFERENCE_LOOP_MODEL = data.inference.loopModel;
+        if (data.inference.visionModel) process.env.INFERENCE_VISION_MODEL = data.inference.visionModel;
       }
     } catch (e) {
       console.error('Failed to load settings file', e);
@@ -180,7 +182,8 @@ export const settingsService = {
       apiKey: process.env.INFERENCE_API_KEY || '',
       endpoint: process.env.INFERENCE_ENDPOINT || 'http://localhost:1234/v1',
       model: process.env.INFERENCE_MODEL || 'lmstudio-community/Meta-Llama-3-70B-Instruct',
-      loopModel: process.env.INFERENCE_LOOP_MODEL || process.env.INFERENCE_MODEL || 'lmstudio-community/Meta-Llama-3-70B-Instruct'
+      loopModel: process.env.INFERENCE_LOOP_MODEL || process.env.INFERENCE_MODEL || 'lmstudio-community/Meta-Llama-3-70B-Instruct',
+      visionModel: process.env.INFERENCE_VISION_MODEL || 'gpt-4o-mini'
     };
   },
 
@@ -190,6 +193,7 @@ export const settingsService = {
     process.env.INFERENCE_ENDPOINT = settings.endpoint;
     process.env.INFERENCE_MODEL = settings.model;
     process.env.INFERENCE_LOOP_MODEL = settings.loopModel;
+    process.env.INFERENCE_VISION_MODEL = settings.visionModel;
   },
 
   // --- Aggregated Settings ---
@@ -215,6 +219,7 @@ export const settingsService = {
         endpoint: inferenceSettings.endpoint,
         model: inferenceSettings.model,
         loopModel: inferenceSettings.loopModel,
+        visionModel: inferenceSettings.visionModel,
       },
     };
   },
@@ -251,6 +256,7 @@ export const settingsService = {
         endpoint: (inferenceInput.endpoint as string | undefined) ?? currentInference.endpoint,
         model: (inferenceInput.model as string | undefined) ?? currentInference.model,
         loopModel: (inferenceInput.loopModel as string | undefined) ?? (inferenceInput.model as string | undefined) ?? currentInference.loopModel,
+        visionModel: (inferenceInput.visionModel as string | undefined) ?? currentInference.visionModel,
       });
     }
 

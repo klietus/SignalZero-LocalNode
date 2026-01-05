@@ -133,6 +133,7 @@ describe('SettingsService', () => {
         process.env.INFERENCE_ENDPOINT = 'http://localhost:1234/v1';
         process.env.INFERENCE_MODEL = 'Meta-Llama-3-70B-Instruct';
         process.env.INFERENCE_API_KEY = '';
+        delete process.env.INFERENCE_LOOP_MODEL;
 
         const systemSettings = settingsService.getSystemSettings();
 

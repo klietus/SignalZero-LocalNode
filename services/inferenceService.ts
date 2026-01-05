@@ -15,6 +15,7 @@ import { settingsService } from "./settingsService.ts";
 import { loggerService } from './loggerService.ts';
 import { contextService } from './contextService.js';
 import { contextWindowService } from './contextWindowService.js';
+import { redisService } from './redisService.js';
 
 interface ChatSessionState {
   messages: ChatCompletionMessageParam[];
@@ -256,6 +257,51 @@ const streamAssistantResponse = async function* (
   yield { assistantMessage };
 };
 
+const resolveAttachments = async (message: string): Promise<{ resolvedContent: string; attachments: any[] }> => {
+    const attachmentRegex = /<attachments>([\s\S]*?)<\/attachments>/;
+    const match = message.match(attachmentRegex);
+    
+    if (!match) return { resolvedContent: message, attachments: [] };
+
+    try {
+        const jsonStr = match[1];
+        const attachments = JSON.parse(jsonStr);
+        
+        if (!Array.isArray(attachments)) return { resolvedContent: message, attachments: [] };
+
+        let resolvedContentStr = "\n\n--- Attachments ---\n";
+
+        for (const att of attachments) {
+            if (att.id) {
+                const stored = await redisService.request(['GET', `attachment:${att.id}`]);
+                if (stored) {
+                    try {
+                        const parsedDoc = JSON.parse(stored);
+                        resolvedContentStr += `\n[File: ${att.filename || 'unknown'} (${parsedDoc.type})]\n${parsedDoc.content}\n`;
+                        
+                        if (parsedDoc.structured_data?.analysis_model) {
+                             resolvedContentStr += `(Analysis by ${parsedDoc.structured_data.analysis_model})\n`;
+                        }
+                    } catch (e) {
+                        resolvedContentStr += `\n[Error reading attachment ${att.id}]\n`;
+                    }
+                } else {
+                    resolvedContentStr += `\n[Attachment ${att.id} not found or expired]\n`;
+                }
+            }
+        }
+        
+        return {
+            resolvedContent: message.replace(match[0], resolvedContentStr),
+            attachments
+        };
+
+    } catch (e) {
+        loggerService.warn("Failed to parse attachment block", { error: e });
+        return { resolvedContent: message, attachments: [] };
+    }
+};
+
 // Helper to handle the stream and potential function calls recursively
 export async function* sendMessageAndHandleTools(
   chat: ChatSessionState,
@@ -269,6 +315,9 @@ export async function* sendMessageAndHandleTools(
   void,
   unknown
 > {
+  // Resolve any attachments (images, docs) referenced in the message
+  const { resolvedContent, attachments } = await resolveAttachments(message);
+
   if (systemInstruction && chat.systemInstruction !== systemInstruction) {
     chat.messages = [{ role: "system", content: systemInstruction }];
     chat.systemInstruction = systemInstruction;
@@ -306,8 +355,11 @@ export async function* sendMessageAndHandleTools(
     await contextService.recordMessage(contextSessionId, {
       id: userMessageId || randomUUID(),
       role: "user",
-      content: message,
-      metadata: { kind: "user_prompt" },
+      content: resolvedContent, // Save the resolved content so history makes sense
+      metadata: { 
+          kind: "user_prompt",
+          ...(attachments.length > 0 ? { attachments } : {})
+      },
     });
   }
 
@@ -315,6 +367,13 @@ export async function* sendMessageAndHandleTools(
   let totalTextAccumulatedAcrossLoops = "";
   while (loops < MAX_TOOL_LOOPS) {
     if (contextSessionId) {
+        const isCancelled = await contextService.isCancelled(contextSessionId);
+        if (isCancelled) {
+            loggerService.info("Inference cancelled by user.", { contextSessionId });
+            yield { text: "\n\n[System] Inference cancelled by user request." };
+            return;
+        }
+
         const session = await contextService.getSession(contextSessionId);
         if (!session || session.status === 'closed') {
             loggerService.info("Context closed during inference, aborting.", { contextSessionId });
@@ -333,7 +392,7 @@ export async function* sendMessageAndHandleTools(
         // Construct fresh context window using the ContextWindowService
         const contextMessages = contextSessionId 
             ? await contextWindowService.constructContextWindow(contextSessionId, systemInstruction || chat.systemInstruction)
-            : [{ role: 'system', content: systemInstruction || chat.systemInstruction }, { role: 'user', content: message }];
+            : [{ role: 'system', content: systemInstruction || chat.systemInstruction }, { role: 'user', content: resolvedContent }];
 
         const assistantMessage = streamAssistantResponse(contextMessages as ChatCompletionMessageParam[], chat.model);
         textAccumulatedInTurn = ""; 
@@ -537,6 +596,7 @@ export const processMessageAsync = async (
         correlationId: userMessageId
     });
   } finally {
+      await contextService.clearCancellation(contextSessionId);
       await contextService.clearActiveMessage(contextSessionId);
       loggerService.info(`finished with message id ${userMessageId || 'unknown'}`);
   }

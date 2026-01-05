@@ -12,6 +12,7 @@ import { EXECUTION_ZSET_KEY, LOOP_INDEX_KEY, getExecutionKey, getLoopKey, getTra
 import { redisService } from "./redisService.js";
 import { secretManagerService } from "./secretManagerService.ts";
 import { contextService } from "./contextService.js";
+import { documentMeaningService } from "./documentMeaningService.js";
 
 // Shared Symbol Data Schema Properties for reuse in tools
 const SYMBOL_DATA_SCHEMA = {
@@ -956,13 +957,24 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                   headers: requestHeaders
               });
 
-              const text = await response.text();
+              if (!response.ok) {
+                  return { error: `HTTP ${response.status} ${response.statusText}` };
+              }
+
+              const buffer = await response.arrayBuffer();
+              const contentType = response.headers.get('content-type') || '';
+              
+              // Use DocumentMeaningService to normalize content
+              const parsed = await documentMeaningService.parse(Buffer.from(buffer), contentType, url);
+
               return {
                   url,
                   status: response.status,
-                  content_type: response.headers.get('content-type'),
-                  content: text,
-                  content_length: text.length
+                  content_type: contentType,
+                  document_type: parsed.type,
+                  metadata: parsed.metadata,
+                  content: parsed.content,
+                  structured_data: parsed.structured_data
               };
           } catch (error) {
               return { error: `Failed to fetch URL: ${String(error)}` };

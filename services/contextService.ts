@@ -227,6 +227,27 @@ export const contextService = {
     return this.closeSession(id);
   },
 
+  async requestCancellation(sessionId: string): Promise<void> {
+      const session = await loadSession(sessionId);
+      if (!session) return;
+      session.metadata = { ...session.metadata, cancellationRequested: true };
+      await persistSession(session);
+  },
+
+  async clearCancellation(sessionId: string): Promise<void> {
+      const session = await loadSession(sessionId);
+      if (!session) return;
+      if (session.metadata?.cancellationRequested) {
+          delete session.metadata.cancellationRequested;
+          await persistSession(session);
+      }
+  },
+
+  async isCancelled(sessionId: string): Promise<boolean> {
+      const session = await loadSession(sessionId);
+      return !!session?.metadata?.cancellationRequested;
+  },
+
   async isWriteAllowed(sessionId: string | undefined, toolName: string): Promise<boolean> {
     if (!sessionId) return true;
     const session = await loadSession(sessionId);

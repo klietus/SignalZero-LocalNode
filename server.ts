@@ -2,6 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import fs from 'fs';
+import multer from 'multer';
+import { randomUUID } from 'crypto';
 import { getChatSession, resetChatSession, sendMessageAndHandleTools, runSignalZeroTest, processMessageAsync } from './services/inferenceService.js';
 import { createToolExecutor } from './services/toolsService.js';
 import { settingsService } from './services/settingsService.js';
@@ -16,6 +18,8 @@ import { systemPromptService } from './services/systemPromptService.js';
 import { fileURLToPath } from 'url';
 import { loopService } from './services/loopService.js';
 import { contextService } from './services/contextService.js';
+import { documentMeaningService } from './services/documentMeaningService.js';
+import { redisService } from './services/redisService.js';
 
 import { vectorService } from './services/vectorService.js';
 import { indexingService } from './services/indexingService.js';
@@ -27,6 +31,12 @@ const app = express();
 app.use(cors());
 // @ts-ignore
 app.use(express.json({ limit: '50mb' }));
+
+// Configure Multer for file uploads
+const upload = multer({ 
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+});
 
 const isReadOnlyError = (error: unknown): error is ReadOnlyDomainError => {
     return error instanceof ReadOnlyDomainError || (typeof error === 'object' && error !== null && (error as any).name === 'ReadOnlyDomainError');
@@ -52,6 +62,39 @@ app.use((req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3001;
+
+// Upload Endpoint
+app.post('/api/upload', upload.single('file'), async (req, res) => {
+    if (!req.file) {
+        res.status(400).json({ error: 'No file uploaded' });
+        return;
+    }
+
+    try {
+        const { buffer, mimetype, originalname } = req.file;
+        const parsed = await documentMeaningService.parse(buffer, mimetype, originalname);
+        
+        const attachmentId = randomUUID();
+        // Save to Redis with 24h TTL
+        await redisService.request(['SET', `attachment:${attachmentId}`, JSON.stringify(parsed), 'EX', '86400']);
+
+        loggerService.info(`File uploaded, parsed and cached: ${originalname}`, { 
+            attachmentId,
+            type: parsed.type, 
+            metadata: parsed.metadata 
+        });
+
+        res.json({
+            status: 'success',
+            attachmentId,
+            filename: originalname,
+            document: parsed // Returning full doc for backward compatibility/immediate UI preview if needed
+        });
+    } catch (e) {
+        loggerService.error(`File upload failed`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
 
 // Health Check Endpoint
 app.get('/api/health', async (req, res) => {
@@ -168,6 +211,23 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
+// Stop Chat Endpoint
+app.post('/api/chat/stop', async (req, res) => {
+    const { contextSessionId } = req.body;
+    if (!contextSessionId) {
+        res.status(400).json({ error: 'Context session ID is required' });
+        return;
+    }
+    try {
+        await contextService.requestCancellation(contextSessionId);
+        loggerService.info("Cancellation requested for session", { contextSessionId });
+        res.json({ status: 'cancellation_requested' });
+    } catch (e) {
+        loggerService.error("Failed to stop chat", { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
 // System Prompt
 app.get('/api/system/prompt', (req, res) => {
     res.json({ prompt: activeSystemPrompt });
@@ -250,6 +310,22 @@ app.get('/api/domains', async (req, res) => {
     try {
         const domains = await domainService.getMetadata();
         res.json(domains);
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+// Create domain
+app.post('/api/domains', async (req, res) => {
+    const { id, name, description, invariants } = req.body;
+    if (!id) {
+        res.status(400).json({ error: 'id is required' });
+        return;
+    }
+    try {
+        await domainService.createDomain(id, { name, description, invariants });
+        res.json({ status: 'success', id });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
