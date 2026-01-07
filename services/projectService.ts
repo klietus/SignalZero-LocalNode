@@ -151,13 +151,26 @@ export const projectService = {
                                 
                                 if (json.items && Array.isArray(json.items)) {
                                     const id = json.domain || "imported";
-                                    await domainService.bulkUpsert(id, json.items);
-                                    await domainService.updateDomainMetadata(id, {
-                                        name: json.name,
-                                        description: json.description,
-                                        invariants: json.invariants,
-                                        readOnly: json.readOnly
-                                    });
+                                    
+                                    // Strictly create domain before upserting symbols
+                                    const exists = await domainService.hasDomain(id);
+                                    if (!exists) {
+                                        await domainService.createDomain(id, {
+                                            name: json.name,
+                                            description: json.description,
+                                            invariants: json.invariants,
+                                            readOnly: json.readOnly
+                                        });
+                                    } else {
+                                        await domainService.updateDomainMetadata(id, {
+                                            name: json.name,
+                                            description: json.description,
+                                            invariants: json.invariants,
+                                            readOnly: json.readOnly
+                                        });
+                                    }
+
+                                    await domainService.bulkUpsert(id, json.items, { bypassValidation: true });
                                     
                                     domainStats.push({
                                         id: id,

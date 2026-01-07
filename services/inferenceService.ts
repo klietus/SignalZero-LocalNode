@@ -365,6 +365,12 @@ export async function* sendMessageAndHandleTools(
 
   let loops = 0;
   let totalTextAccumulatedAcrossLoops = "";
+  let hasLoggedTrace = false;
+  let hasSearchedSymbols = false;
+  let auditRetries = 0;
+  const MAX_AUDIT_RETRIES = 3; // Increased to accommodate potential double correction
+  const transientMessages: ChatCompletionMessageParam[] = [];
+
   while (loops < MAX_TOOL_LOOPS) {
     if (contextSessionId) {
         const isCancelled = await contextService.isCancelled(contextSessionId);
@@ -390,9 +396,13 @@ export async function* sendMessageAndHandleTools(
 
     while (retries < MAX_RETRIES) {
         // Construct fresh context window using the ContextWindowService
-        const contextMessages = contextSessionId 
+        let contextMessages = contextSessionId 
             ? await contextWindowService.constructContextWindow(contextSessionId, systemInstruction || chat.systemInstruction)
             : [{ role: 'system', content: systemInstruction || chat.systemInstruction }, { role: 'user', content: resolvedContent }];
+
+        if (transientMessages.length > 0) {
+            contextMessages = [...contextMessages, ...transientMessages];
+        }
 
         const assistantMessage = streamAssistantResponse(contextMessages as ChatCompletionMessageParam[], chat.model);
         textAccumulatedInTurn = ""; 
@@ -446,6 +456,47 @@ export async function* sendMessageAndHandleTools(
         }
     }
 
+    // --- AUDIT INTERCEPTOR ---
+    let auditTriggered = false;
+    if (contextSessionId && (!yieldedToolCalls || yieldedToolCalls.length === 0) && textAccumulatedInTurn.trim().length > 0) {
+        let auditMessage = "";
+
+        // Check 1: Missing Symbol Search
+        if (!hasSearchedSymbols) {
+            auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You attempted to respond without querying the symbol store. You must execute `find_symbols` with the current topic and synonyms to ground your response in the active context.\n";
+            auditTriggered = true;
+        }
+
+        // Check 2: Missing Trace (Only if search passed, or append to it)
+        if (!hasLoggedTrace) {
+            auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You generated a narrative response but failed to log a symbolic trace. You must call `log_trace` to bind this narrative to the symbol store.  This trace must be comprehensive and contain all symbols used in the response.\n";
+            auditTriggered = true;
+        }
+
+        if (auditTriggered) {
+            if (auditRetries < MAX_AUDIT_RETRIES) {
+                loggerService.warn("System Audit Failure: Model missing required tool calls. Forcing retry.", { contextSessionId, auditRetries, hasSearchedSymbols, hasLoggedTrace });
+                
+                const finalAuditMessage = auditMessage + "Retry immediately by calling the required tools.";
+
+                // DO NOT SAVE TO CONTEXT SERVICE - Push to transient messages for the next iteration
+                transientMessages.push(nextAssistant!);
+                transientMessages.push({
+                    role: "user",
+                    content: `[SYSTEM AUDIT] ${finalAuditMessage}`
+                });
+
+                yield { text: "\n\n> *[System Audit: Enforcing Symbolic Integrity - Retrying]*\n\n" };
+
+                auditRetries++;
+                loops++;
+                continue; 
+            } else {
+                loggerService.error("System Audit: Max retries reached. Proceeding despite violations.", { contextSessionId });
+            }
+        }
+    }
+
     if (contextSessionId) {
       await contextService.recordMessage(contextSessionId, {
         id: randomUUID(),
@@ -461,6 +512,10 @@ export async function* sendMessageAndHandleTools(
       });
     }
 
+    // Success or unrecoverable audit: clear transient messages
+    transientMessages.length = 0;
+
+    // Check if tools were called
     if (!yieldedToolCalls || yieldedToolCalls.length === 0) {
       break;
     }
@@ -473,6 +528,13 @@ export async function* sendMessageAndHandleTools(
       let toolName = call.function.name;
       if (toolName.endsWith('?')) {
           toolName = toolName.slice(0, -1);
+      }
+
+      if (toolName === 'log_trace') {
+          hasLoggedTrace = true;
+      }
+      if (toolName === 'find_symbols' || toolName === 'load_symbols') {
+          hasSearchedSymbols = true;
       }
 
       const { data: args, error: parseError } = parseToolArguments(call.function.arguments || "");

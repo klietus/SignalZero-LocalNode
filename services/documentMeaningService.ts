@@ -1,4 +1,5 @@
-import * as cheerio from 'cheerio';
+import { JSDOM } from 'jsdom';
+import { Readability } from '@mozilla/readability';
 import Parser from 'rss-parser';
 import pdf from 'pdf-parse';
 import OpenAI from "openai";
@@ -127,33 +128,26 @@ class DocumentMeaningService {
     }
 
     private parseHtml(content: string): NormalizedDocument {
-        const $ = cheerio.load(content);
+        const dom = new JSDOM(content);
+        const doc = dom.window.document;
         
-        // Extract images before removal
+        // Extract images
         const images: { url: string; title: string }[] = [];
-        $('img').each((_, el) => {
-            const src = $(el).attr('src');
-            const alt = $(el).attr('alt') || $(el).attr('title') || '';
+        const imgElements = doc.querySelectorAll('img');
+        imgElements.forEach((el) => {
+            const src = el.getAttribute('src');
+            const alt = el.getAttribute('alt') || el.getAttribute('title') || '';
             if (src) {
                 images.push({ url: src, title: alt.trim() });
             }
         });
 
-        // Remove scripts, styles, etc.
-        $('script').remove();
-        $('style').remove();
-        $('noscript').remove();
-        $('iframe').remove();
-        $('nav').remove();
-        $('footer').remove();
-        $('header').remove();
+        const reader = new Readability(doc);
+        const article = reader.parse();
 
-        const title = $('title').text().trim();
-        const description = $('meta[name="description"]').attr('content') || 
-                            $('meta[property="og:description"]').attr('content');
-        
-        // Extract main content
-        const mainText = $('body').text().replace(/\s+/g, ' ').trim();
+        const title = article?.title || doc.title || '';
+        const description = article?.excerpt || '';
+        const mainText = article?.textContent ? article.textContent.replace(/\s+/g, ' ').trim() : '';
 
         // Append images to content if they exist
         let enrichedContent = mainText;
@@ -167,11 +161,18 @@ class DocumentMeaningService {
             metadata: {
                 title,
                 description,
-                image_count: images.length
+                image_count: images.length,
+                byline: article?.byline,
+                siteName: article?.siteName,
+                lang: article?.lang
             },
             content: enrichedContent,
             structured_data: {
-                images
+                images,
+                readability: article ? {
+                    length: article.length,
+                    excerpt: article.excerpt
+                } : undefined
             }
         };
     }

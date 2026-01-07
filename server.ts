@@ -535,14 +535,18 @@ app.post('/api/domains/:id/symbols/bulk', async (req, res) => {
         return;
     }
     try {
-        await domainService.bulkUpsert(req.params.id, symbols);
+        // API bulk loads default to bypassing validation to allow cross-domain/external links
+        await domainService.bulkUpsert(req.params.id, symbols, { bypassValidation: true });
         res.json({ status: 'success', count: symbols.length });
-    } catch (e) {
-        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+    } catch (e: any) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e?.message || e });
         if (isReadOnlyError(e)) {
             res.status(400).json(buildReadOnlyResponse(e));
         } else {
-            res.status(500).json({ error: String(e) });
+            res.status(500).json({ 
+                error: e?.message || String(e),
+                details: typeof e === 'object' ? JSON.stringify(e, Object.getOwnPropertyNames(e)) : undefined
+            });
         }
     }
 });

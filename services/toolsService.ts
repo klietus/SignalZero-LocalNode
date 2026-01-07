@@ -448,6 +448,10 @@ export const toolDeclarations: ChatCompletionTool[] = [
           query: {
             type: 'string',
             description: 'The search query to look up on Google Custom Search.'
+          },
+          image_search: {
+            type: 'boolean',
+            description: 'If true, performs an image search instead of a web search.'
           }
         },
         required: ['query']
@@ -543,7 +547,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
         for (const queryConfig of queryList) {
             const { query, symbol_domains, symbol_tag, limit, fetch_all, time_gte, time_between, metadata_filter } = queryConfig;
             
-            const maxLimit = Math.min(limit || 10, 50);
+            const maxLimit = fetch_all ? 1000 : Math.min(limit || 10, 50);
             
             // Default to all domains if none specified
             let targetDomains: string[];
@@ -603,11 +607,27 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
             executionLog.push({ query: query || 'structured_filter', count: queryResultCount });
         }
 
+        const sanitizedSymbols = Array.from(aggregatedSymbols.values()).map((item: any) => {
+            // Normalize: If item is a search result wrapper with .symbol, extract it. Otherwise use item.
+            const s = item.symbol ? { ...item.symbol } : { ...item };
+            
+            // Explicitly remove score if present on the symbol object or wrapper copy
+            if ('score' in s) delete s.score;
+            if ('created_at' in s) delete s.created_at;
+            if ('last_accessed_at' in s) delete s.last_accessed_at;
+
+            // Remove irrelevant attributes based on kind
+            if (s.kind !== 'persona') delete s.persona;
+            if (s.kind !== 'lattice') delete s.lattice;
+            
+            return s;
+        });
+
         loggerService.info(`find_symbols returning ${aggregatedSymbols.size} unique symbols across ${queryList.length} queries.`);
 
         return {
             count: aggregatedSymbols.size,
-            symbols: Array.from(aggregatedSymbols.values()),
+            symbols: sanitizedSymbols,
             execution_log: executionLog
         };
       }
@@ -634,6 +654,10 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
 
       case 'upsert_symbols': {
           const { symbols } = args;
+          // IMPORTANT: bypass_validation is intentionally removed from the AI tool interface to enforce integrity.
+          // It defaults to false here.
+          const bypass_validation = false;
+
           if (!symbols || !Array.isArray(symbols) || symbols.length === 0) return { error: "Invalid symbols array" };
 
           const upsertByDomain: Record<string, SymbolDef[]> = {};
@@ -644,16 +668,52 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
               const { symbol_data, old_id } = entry || {};
               if (!symbol_data || typeof symbol_data !== 'object') return { error: "Each entry must include symbol_data" };
 
-              // Validate and default symbol kind
-              const validKinds = ['pattern', 'persona', 'lattice'];
-              if (!symbol_data.kind || !validKinds.includes(symbol_data.kind)) {
-                  symbol_data.kind = 'pattern';
+              const s = symbol_data;
+
+              // Only perform strict schema validation if NOT bypassing
+              if (!bypass_validation) {
+                  const missingFields = [];
+                  if (!s.id) missingFields.push('id');
+                  if (!s.name) missingFields.push('name');
+                  if (!s.triad) missingFields.push('triad');
+                  if (!s.macro) missingFields.push('macro');
+                  if (!s.role) missingFields.push('role');
+                  if (!s.symbol_domain) missingFields.push('symbol_domain');
+                  if (!s.failure_mode) missingFields.push('failure_mode');
+                  if (!Array.isArray(s.activation_conditions)) missingFields.push('activation_conditions');
+                  if (!Array.isArray(s.linked_patterns)) missingFields.push('linked_patterns');
+                  if (!s.facets) missingFields.push('facets');
+                  
+                  if (missingFields.length > 0) {
+                      return { error: `Symbol validation failed for ID '${s.id || 'unknown'}': Missing required fields: ${missingFields.join(', ')}` };
+                  }
+
+                  // Validate nested facets
+                  const f = s.facets;
+                  const missingFacets = [];
+                  if (!f.function) missingFacets.push('function');
+                  if (!f.topology) missingFacets.push('topology');
+                  if (!f.commit) missingFacets.push('commit');
+                  if (!f.temporal) missingFacets.push('temporal');
+                  if (!Array.isArray(f.gate)) missingFacets.push('gate');
+                  if (!Array.isArray(f.substrate)) missingFacets.push('substrate');
+                  if (!Array.isArray(f.invariants)) missingFacets.push('invariants');
+
+                  if (missingFacets.length > 0) {
+                      return { error: `Symbol validation failed for ID '${s.id}': Missing required facets properties: ${missingFacets.join(', ')}` };
+                  }
               }
 
-              const domain = symbol_data.symbol_domain || 'root';
+              // Validate and default symbol kind
+              const validKinds = ['pattern', 'persona', 'lattice'];
+              if (!s.kind || !validKinds.includes(s.kind)) {
+                  s.kind = 'pattern';
+              }
+
+              const domain = s.symbol_domain || 'root';
               domainsToCheck.add(domain);
 
-              if (old_id && old_id !== symbol_data.id) {
+              if (old_id && old_id !== s.id) {
                   refactors.push({ old_id, symbol_data });
                   continue;
               }
@@ -676,11 +736,13 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
               const upserted: { domain: string, count: number }[] = [];
               for (const [domain, domainSymbols] of Object.entries(upsertByDomain)) {
                   if (domainSymbols.length === 0) continue;
-                  await domainService.bulkUpsert(domain, domainSymbols);
+                  await domainService.bulkUpsert(domain, domainSymbols, { bypassValidation: bypass_validation });
                   upserted.push({ domain, count: domainSymbols.length });
               }
 
               if (refactors.length > 0) {
+                  // processRefactorOperation doesn't currently take options, but it uses bulk upsert logic internally?
+                  // No, it has its own logic. Let's check it.
                   await domainService.processRefactorOperation(refactors);
               }
 
@@ -689,8 +751,9 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                   upserted,
                   refactor_count: refactors.length,
               };
-          } catch (e) {
-              return { error: `Upsert failed: ${String(e)}` };
+          } catch (e: any) {
+              loggerService.error("Upsert symbols failed", { error: e.message || String(e), stack: e.stack });
+              return { error: `Upsert failed: ${e.message || String(e)}` };
           }
       }
 
@@ -729,13 +792,17 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                   missing_ids: missingIds.length > 0 ? missingIds : undefined,
                   cascade_performed: cascade
               };
-          } catch (e) {
-              return { error: `Delete failed: ${String(e)}` };
+          } catch (e: any) {
+              loggerService.error("Delete symbols failed", { error: e.message || String(e), stack: e.stack });
+              return { error: `Delete failed: ${e.message || String(e)}` };
           }
       }
 
       case 'compress_symbols': {
           const { new_symbol, old_ids } = args;
+          // IMPORTANT: bypass_validation is intentionally removed from the AI tool interface.
+          const bypass_validation = false;
+
           if (!new_symbol || !old_ids || !Array.isArray(old_ids)) {
               return { error: "Invalid arguments for compression. Requires new_symbol object and old_ids array." };
           }
@@ -747,7 +814,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           const preservedCount = old_ids.length - finalOldIds.length;
 
           try {
-              const results = await domainService.compressSymbols(new_symbol, finalOldIds);
+              const results = await domainService.compressSymbols(new_symbol, finalOldIds, { bypassValidation: bypass_validation });
               const response: any = {
                   status: "Compression complete.",
                   new_symbol_id: results.newId,
@@ -758,8 +825,9 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                   response.message = `${preservedCount} symbol(s) were preserved because they were linked to the new symbol.`;
               }
               return response;
-          } catch (e) {
-              return { error: `Compression failed: ${String(e)}` };
+          } catch (e: any) {
+              loggerService.error("Compress symbols failed", { error: e.message || String(e), stack: e.stack });
+              return { error: `Compression failed: ${e.message || String(e)}` };
           }
       }
 
@@ -795,8 +863,9 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                   inferred_from: result.inferred_from,
                   reasoning: result.reasoning,
               };
-          } catch (e) {
-              return { error: `Failed to create domain: ${String(e)}` };
+          } catch (e: any) {
+              loggerService.error("Create domain failed", { error: e.message || String(e), stack: e.stack });
+              return { error: `Failed to create domain: ${e.message || String(e)}` };
           }
       }
 
@@ -976,13 +1045,14 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                   content: parsed.content,
                   structured_data: parsed.structured_data
               };
-          } catch (error) {
-              return { error: `Failed to fetch URL: ${String(error)}` };
+          } catch (error: any) {
+              loggerService.error("Web fetch failed", { url, error: error.message || String(error) });
+              return { error: `Failed to fetch URL: ${error.message || String(error)}` };
           }
       }
 
       case 'web_search': {
-          const { query } = args;
+          const { query, image_search } = args;
           if (!query || typeof query !== 'string') {
               return { error: "Missing or invalid 'query' argument." };
           }
@@ -1004,6 +1074,10 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
               searchUrl.searchParams.set('cx', searchEngineId);
               searchUrl.searchParams.set('q', query);
               searchUrl.searchParams.set('num', '5');
+              
+              if (image_search) {
+                  searchUrl.searchParams.set('searchType', 'image');
+              }
 
               const response = await fetch(searchUrl.toString(), {
                   headers: {

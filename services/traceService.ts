@@ -1,6 +1,6 @@
 
 import { TraceData } from '../types.ts';
-import { currentTimestampBase64, decodeTimestamp, getDayBucketKey } from './timeService.ts';
+import { currentTimestamp, decodeTimestamp, getDayBucketKey } from './timeService.ts';
 import { redisService } from './redisService.ts';
 
 type TraceListener = (traces: TraceData[]) => void;
@@ -10,7 +10,7 @@ class TraceService {
   private listeners: TraceListener[] = [];
 
   addTrace(trace: Partial<TraceData>) {
-    const nowB64 = currentTimestampBase64();
+    const nowB64 = currentTimestamp();
     const existingIndex = trace.id ? this.traces.findIndex(t => t.id === trace.id) : -1;
 
     const normalizedId = trace.id || `TR-${Date.now()}-${Math.floor(Math.random() * 1000)}`;

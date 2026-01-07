@@ -6,10 +6,16 @@ const startOfDayUtc = (ms: number) => {
   return date.getTime();
 };
 
-export const encodeTimestamp = (ms: number): string => Buffer.from(String(ms)).toString('base64');
+export const encodeTimestamp = (ms: number): string => new Date(ms).toISOString();
 
 export const decodeTimestamp = (value?: string | null): number | null => {
   if (!value) return null;
+  // Try ISO first
+  const date = new Date(value);
+  if (!isNaN(date.getTime())) {
+      return date.getTime();
+  }
+  // Fallback to Legacy Base64
   try {
     const decoded = Buffer.from(value, 'base64').toString('utf-8');
     const num = Number(decoded);
@@ -19,7 +25,9 @@ export const decodeTimestamp = (value?: string | null): number | null => {
   }
 };
 
-export const currentTimestampBase64 = (): string => encodeTimestamp(Date.now());
+export const currentTimestamp = (): string => encodeTimestamp(Date.now());
+// Deprecated alias for compatibility during refactor
+export const currentTimestampBase64 = currentTimestamp;
 
 export const getDayBucketKey = (type: 'symbols' | 'traces', ms: number): string => {
   const start = startOfDayUtc(ms);

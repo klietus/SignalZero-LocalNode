@@ -14,10 +14,11 @@ export class ContextWindowService {
 
   /**
    * Constructs the full context window for an LLM request.
-   * Includes:
+   * Optimized for Prompt Caching:
    * 1. System Prompt
-   * 2. Injected Symbols (based on predefined queries)
-   * 3. Sliding window of last history turns up to 100,000 tokens
+   * 2. Stable Symbolic Context (Domains, Core, Personas) -> Cache Anchor
+   * 3. Sliding History Window
+   * 4. Dynamic Symbolic Context (Identity, Preferences, State) -> Volatile
    */
   async constructContextWindow(
     contextSessionId: string,
@@ -32,20 +33,11 @@ export class ContextWindowService {
     // 1. System Prompt
     messages.push({ role: 'system', content: systemPrompt });
 
-    // 2. Knowledge Injection (Symbols & Metadata)
-    const symbolicContext = await this.buildSymbolicContext(type);
-    
-    // Generate fresh system metadata
-    const systemMetadata = buildSystemMetadataBlock({
-        id: session?.id,
-        type: session?.type,
-        lifecycle: session?.status === 'closed' ? 'zombie' : 'live',
-        readonly: session?.metadata?.readOnly === true
-    });
-
+    // 2. Stable Symbolic Context (Cache Anchor)
+    const stableContext = await this.buildStableContext();
     messages.push({
       role: 'system',
-      content: `[STATIC_CONTENT]\n[KNOWLEDGE]${symbolicContext}`
+      content: `[STATIC_KNOWLEDGE]\n${stableContext}`
     });
 
     // 3. Sliding History Window (Token based)
@@ -78,9 +70,9 @@ export class ContextWindowService {
 
         let round = rounds[index];
 
-        // Sanitize older rounds (index > 0) to remove tool errors
+        // Strip tools from older rounds (index > 0)
         if (index > 0) {
-            round = this.sanitizeRound(round);
+            round = this.stripTools(round);
         }
 
         if (round.length === 0) continue;
@@ -98,46 +90,82 @@ export class ContextWindowService {
         currentTokens += roundTokens;
     }
     historyMessages.unshift({ role: 'user', content: `[DYNAMIC_CONTENT]` });
-    return [...messages, ...historyMessages];
+    messages.push(...historyMessages);
+
+    // 4. Dynamic Symbolic Context (Volatile)
+    const dynamicContext = await this.buildDynamicContext(type);
+    
+    // Generate fresh system metadata
+    const systemMetadata = buildSystemMetadataBlock({
+        id: session?.id,
+        type: session?.type,
+        lifecycle: session?.status === 'closed' ? 'zombie' : 'live',
+        readonly: session?.metadata?.readOnly === true
+    });
+    
+    const systemMetadataStr = JSON.stringify(systemMetadata, null, 2);
+
+    messages.push({
+      role: 'system',
+      content: `[DYNAMIC_STATE]\n${systemMetadataStr}\n${dynamicContext}`
+    });
+
+    // Append system metadata again at the end for recency bias
+    messages.push({
+      role: 'system',
+      content: `[SYSTEM_METADATA]\n${systemMetadataStr}`
+    });
+
+    const totalTokens = messages.reduce((sum, m) => sum + this.estimateTokens(JSON.stringify(m)), 0);
+    loggerService.info(`Constructed Context Window for ${contextSessionId}`, {
+        type,
+        historyRounds: rounds.length,
+        historyMessages: historyMessages.length,
+        historyTokens: currentTokens,
+        totalMessages: messages.length,
+        totalTokens
+    });
+
+    return messages;
   }
 
-  private sanitizeRound(round: ContextMessage[]): ContextMessage[] {
-      const errorToolCallIds = new Set<string>();
-
-      // 1. Identify tool errors
-      for (const msg of round) {
+  private stripTools(round: ContextMessage[]): ContextMessage[] {
+      return round.map(msg => {
+          // 1. Collapse tool response messages but MAINTAIN STRUCTURE
+          // We must keep role='tool' and the toolCallId so the LLM API knows the call was resolved.
           if (msg.role === 'tool') {
-              // Check metadata or content for error indicators
-              const isError = msg.metadata?.kind === 'tool_error' || 
-                              msg.metadata?.kind === 'tool_result_error' ||
-                              (typeof msg.content === 'string' && msg.content.includes('"error":')); // heuristic for simple JSON error
-              
-              if (isError && msg.toolCallId) {
-                  errorToolCallIds.add(msg.toolCallId);
-              }
-          }
-      }
+              let collapsedContent = `[System: Tool output collapsed]`;
 
-      if (errorToolCallIds.size === 0) return round;
-
-      // 2. Filter messages
-      return round.filter(msg => {
-          // Remove tool output messages associated with errors
-          if (msg.role === 'tool' && msg.toolCallId && errorToolCallIds.has(msg.toolCallId)) {
-              return false;
-          }
-          return true;
-      }).map(msg => {
-          // Remove tool calls from assistant messages if they resulted in error
-          if ((msg.role === 'assistant' || msg.role === 'model') && msg.toolCalls) {
-              const validToolCalls = msg.toolCalls.filter(tc => tc.id && !errorToolCallIds.has(tc.id));
-              if (validToolCalls.length !== msg.toolCalls.length) {
-                  return { ...msg, toolCalls: validToolCalls };
+              // Enhanced retention for symbol loading tools
+              if (msg.toolName === 'find_symbols' || msg.toolName === 'load_symbols') {
+                  try {
+                      const result = JSON.parse(msg.content || '{}');
+                      if (result && Array.isArray(result.symbols)) {
+                          const symbolList = result.symbols as SymbolDef[];
+                          if (symbolList.length > 0) {
+                              const reduced = this.formatSymbols(symbolList); // Reuse existing formatter
+                              collapsedContent = `[System: Retained Symbol Context]\n${reduced}`;
+                          } else {
+                              collapsedContent = `[System: No symbols found]`;
+                          }
+                      }
+                  } catch (e) {
+                      // Fallback if parsing fails
+                  }
               }
+
+              return {
+                  ...msg,
+                  content: collapsedContent,
+              } as ContextMessage;
           }
+
+          // 2. Retain tool calls in assistant messages (do not strip)
+          // The previous logic stripped them; now we keep them so the model sees what it asked for.
+          // We only filter out empty messages if they truly have no content AND no tool calls.
           return msg;
       }).filter(msg => {
-          // Remove assistant messages that have become empty
+          // 3. Remove assistant messages that have become empty (no content AND no tool calls)
           if ((msg.role === 'assistant' || msg.role === 'model')) {
               const hasContent = msg.content && msg.content.trim().length > 0;
               const hasTools = msg.toolCalls && msg.toolCalls.length > 0;
@@ -175,127 +203,191 @@ export class ContextWindowService {
       return enc.encode(text).length;
   }
 
-  /**
-   * Fetches symbols based on the required queries and formats them for injection.
-   */
-  private async buildSymbolicContext(type: 'conversation' | 'loop' = 'conversation'): Promise<string> {
-    try {
-      const results: string[] = [];
-
-      // Query 1: List Domains
-      const meta = await domainService.getMetadata();
-      const domains = meta.map(d => ({
-          id: d.id,
-          name: d.name,
-          description: d.description,
-          invariants: d.invariants
-      }));
-      results.push(`[DOMAINS]${JSON.stringify(domains)}`);
-      loggerService.debug(`Injected ${domains.length} domains`);
-
-      // Query 2: Root Domain "core" symbols (50)
-      const coreSymbolsResult = await domainService.search("core", 50, { domains: ['root','self','state']});
-      const coreSymbols = coreSymbolsResult.map(r => r.symbol).filter(Boolean) as SymbolDef[];
-      results.push(`[CORE]${this.formatSymbols(coreSymbols)}`);
-      loggerService.debug(`Injected ${coreSymbols.length} core symbols: ${coreSymbols.map(s => s.id).join(', ')}`);
-
-      // Query 3: Root and selfDomain "persona" kind (20)
-      const rootSymbols = await domainService.getSymbols('root');
-      const personas = rootSymbols.filter(s => s.kind === 'persona').slice(0, 20);
-      results.push(`[PERSONAS]${this.formatSymbols(personas)}`);
-      loggerService.debug(`Injected ${personas.length} personas: ${personas.map(s => s.id).join(', ')}`);
-
-      let identityCount = 0;
-      let preferenceCount = 0;
-
-      if (type !== 'loop') {
-          // Query 4: "self" and "user" domains "identity" (50) - Only for User Conversations
-          const identitySymbolsResult = await domainService.search("identity", 40, { domains: ['self', 'user'] });
-          const identitySymbols = identitySymbolsResult.map(r => r.symbol).filter(Boolean) as SymbolDef[];
-          identityCount = identitySymbols.length;
-          results.push(`[IDENTITY]${this.formatSymbols(identitySymbols)}`);
-          loggerService.debug(`Injected ${identityCount} identity symbols: ${identitySymbols.map(s => s.id).join(', ')}`);
-
-          // Query 5: "user" domain "preference" (50) - Only for User Conversations
-          const preferenceSymbolsResult = await domainService.search("preference", 30, { domains: ['user'] });
-          const preferenceSymbols = preferenceSymbolsResult.map(r => r.symbol).filter(Boolean) as SymbolDef[];
-          preferenceCount = preferenceSymbols.length;
-          results.push(`[PREFERENCES]${this.formatSymbols(preferenceSymbols)}`);
-          loggerService.debug(`Injected ${preferenceCount} preference symbols: ${preferenceSymbols.map(s => s.id).join(', ')}`);
-      } else {
-          // Query 4: "self" and "user" domains "identity" (50) - Only for User Conversations
-          const identitySymbolsResult = await domainService.search("identity", 40, { domains: ['self'] });
-          const identitySymbols = identitySymbolsResult.map(r => r.symbol).filter(Boolean) as SymbolDef[];
-          identityCount = identitySymbols.length;
-          results.push(`[IDENTITY]${this.formatSymbols(identitySymbols)}`);
-          loggerService.debug(`Injected ${identityCount} identity symbols (Loop context): ${identitySymbols.map(s => s.id).join(', ')}`);
-      }
-
-      // Query 6: Recent State Domain Symbols (Last 5 by date time)
-      const stateSymbols = await domainService.getSymbols('state');
-      const recentStateSymbols = stateSymbols
-          .sort((a, b) => {
-              const getT = (s?: string) => {
-                  if (!s) return 0;
-                  try { return Number(Buffer.from(s, 'base64').toString()); } catch { return 0; }
-              };
-              return getT(b.created_at) - getT(a.created_at);
-          })
-          .slice(0, 5);
-      results.push(`[STATE]${this.formatSymbols(recentStateSymbols)}`);
-      loggerService.debug(`Injected ${recentStateSymbols.length} recent state symbols: ${recentStateSymbols.map(s => s.id).join(', ')}`);
-
-      const fullContext = results.join('');
-      
-      loggerService.info("Constructed Symbolic Context for Injection", {
-          type,
-          domains: domains.length,
-          coreSymbols: coreSymbols.length,
-          personas: personas.length,
-          identitySymbols: identityCount,
-          preferenceSymbols: preferenceCount,
-          stateSymbols: recentStateSymbols.length,
-          totalLength: fullContext.length
-      });
-
-      return fullContext;
-    } catch (error) {
-      loggerService.error("Failed to build symbolic context", { error });
-      return "Error loading symbolic context.";
-    }
-  }
-
   private formatSymbols(symbols: SymbolDef[]): string {
     if (symbols.length === 0) return "None found.";
-    // Format symbols as a JSON list for clean injection
-    return symbols.map(s => {
-        const payload: any = {
-            id: s.id,
-            name: s.name,
-            kind: s.kind || 'pattern',
-            triad: s.triad,
-            role: s.role,
-            macro: s.macro,
-            domain: s.symbol_domain,
-            invariants: s.facets?.invariants || [],
-            linked_patterns: s.linked_patterns || []
-        };
+    
+    // De-duplicate by ID
+    const uniqueMap = new Map<string, SymbolDef>();
+    symbols.forEach(s => uniqueMap.set(s.id, s));
+    const uniqueSymbols = Array.from(uniqueMap.values());
 
-        if (s.kind === 'lattice' && s.lattice) {
-            payload.lattice = { topology: s.lattice.topology, closure: s.lattice.closure };
-            payload.members = s.linked_patterns || [];
-        } else if (s.kind === 'persona' && s.persona) {
-            payload.persona = { 
-                recursion_level: s.persona.recursion_level, 
-                function: s.persona.function, 
-                fallback_behavior: s.persona.fallback_behavior 
-            };
+    // Sort by ID to ensure deterministic output for cache stability
+    uniqueSymbols.sort((a, b) => a.id.localeCompare(b.id));
+
+    const TOPOLOGY_MAP: Record<string, string> = {
+        'inductive': '♻️', 
+        'deductive': '⬇️',
+        'bidirectional': '⇄',
+        'invariant': '🔒',
+        'energy': '⚡'
+    };
+    
+    const CLOSURE_MAP: Record<string, string> = {
+        'loop': '➰',
+        'branch': '🌿',
+        'collapse': '💥',
+        'constellation': '✨',
+        'synthesis': '⚗️'
+    };
+
+    const KIND_MAP: Record<string, string> = {
+        'pattern': '🧩',
+        'persona': '👤'
+    };
+
+    // Format symbols using DSL: | ID | Name | Triad | Kind |
+    // This reduces token usage significantly compared to JSON.
+    return uniqueSymbols.map(s => {
+        let triadDisplay = "";
+        let kindDisplay = KIND_MAP[s.kind || 'pattern'] || (s.kind || 'pattern');
+
+        if (s.kind === 'lattice') {
+            const topKey = s.lattice?.topology || 'inductive';
+            const top = TOPOLOGY_MAP[topKey] || topKey;
+            
+            const cloKey = s.lattice?.closure || 'loop';
+            const clo = CLOSURE_MAP[cloKey] || cloKey;
+            
+            kindDisplay = `${top} ${clo}`;
+
+             // Triad as array of linked triads
+             if (s.linked_patterns && s.linked_patterns.length > 0) {
+                 const linkedTriads = s.linked_patterns
+                    .map(id => uniqueMap.get(id)?.triad)
+                    .filter(t => t); // Filter out undefined (missing symbols)
+                 
+                 if (linkedTriads.length > 0) {
+                    triadDisplay = `[${linkedTriads.join(', ')}]`;
+                 } else {
+                     triadDisplay = s.triad || "[]";
+                 }
+             } else {
+                 triadDisplay = s.triad || "[]";
+             }
         } else {
-            payload.linked_patterns = s.linked_patterns || [];
+            let triadArr: string[] = [];
+            if (Array.isArray(s.triad)) {
+                triadArr = s.triad;
+            } else if (typeof s.triad === 'string') {
+                // Handle string triad (e.g. "A, B, C")
+                triadArr = (s.triad as string).split(',').map(t => t.trim());
+            }
+            triadDisplay = `[${triadArr.slice(0, 3).join(', ')}]`;
         }
+        
+        return `| ${s.id} | ${triadDisplay} | ${kindDisplay} |`;
+    }).join('\n');
+  }
 
-        return JSON.stringify(payload);
-    }).join('');
+  /**
+   * Fetches stable symbols (Domains, Core, Personas) that rarely change.
+   */
+  private async buildStableContext(): Promise<string> {
+      try {
+          const results: string[] = [];
+          
+          // Query 1: List Domains
+          const meta = await domainService.getMetadata();
+          // Compact domain list
+          const domains = meta.map(d => `| ${d.id} | ${d.name} | 🌐 |`);
+          results.push(`[DOMAINS]\n${domains.join('\n')}`);
+
+          // Query 2: Recursive Core Injection
+          // Start with SELF-RECURSIVE-CORE and expand 3 levels deep
+          const coreSet = new Map<string, SymbolDef>();
+          await this.recursiveSymbolLoad('SELF-RECURSIVE-CORE', 3, coreSet);
+          
+          const coreSymbols = Array.from(coreSet.values());
+          results.push(`\n[SELF]\n${this.formatSymbols(coreSymbols)}`);
+
+          // Query 3: Root Domain
+          const rootSet = new Map<string, SymbolDef>();
+          await this.recursiveSymbolLoad('ROOT-SYNTHETIC-CORE', 3, rootSet);
+          
+          const rootSymbols = Array.from(rootSet.values());
+          results.push(`\n[ROOT]\n${this.formatSymbols(rootSymbols)}`);
+          
+
+          const fullContext = results.join('');
+          loggerService.info(`Built Stable Context`, { 
+              domains: domains.length, 
+              coreSymbols: coreSymbols.length, 
+              root: rootSymbols.length, 
+              chars: fullContext.length 
+          });
+          return fullContext;
+      } catch (error: any) {
+          loggerService.error("Failed to build stable context", { message: error.message, stack: error.stack });
+          return "Error loading stable context.";
+      }
+  }
+
+  private async recursiveSymbolLoad(startId: string, depth: number, collected: Map<string, SymbolDef>) {
+      if (depth < 0) return;
+      if (collected.has(startId)) return; // Already visited
+
+      const symbol = await domainService.findById(startId);
+      if (!symbol) return;
+
+      collected.set(symbol.id, symbol);
+
+      if (depth > 0 && symbol.linked_patterns && symbol.linked_patterns.length > 0) {
+          // Parallel fetch for next layer
+          await Promise.all(symbol.linked_patterns.map(linkId => 
+              this.recursiveSymbolLoad(linkId, depth - 1, collected)
+          ));
+      }
+  }
+
+  /**
+   * Fetches dynamic symbols (Identity, Preferences, Recent State) that change frequently.
+   */
+  private async buildDynamicContext(type: 'conversation' | 'loop' = 'conversation'): Promise<string> {
+      try {
+          const results: string[] = [];
+          let identityCount = 0;
+          let preferenceCount = 0;
+          
+          if (type !== 'loop') {
+              // Query 4: "self" and "user" domains "identity" (40)
+              const identitySymbolsResult = await domainService.search("identity", 40, { domains: ['user'] });
+              const identitySymbols = identitySymbolsResult.map(r => r.symbol).filter(Boolean) as SymbolDef[];
+              identityCount = identitySymbols.length;
+              results.push(`[IDENTITY]\n${this.formatSymbols(identitySymbols)}`);
+
+              // Query 5: "user" domain "preference" (30)
+              const preferenceSymbolsResult = await domainService.search("preference", 30, { domains: ['user'] });
+              const preferenceSymbols = preferenceSymbolsResult.map(r => r.symbol).filter(Boolean) as SymbolDef[];
+              preferenceCount = preferenceSymbols.length;
+              results.push(`\n[PREFERENCES]\n${this.formatSymbols(preferenceSymbols)}`);
+          }
+
+          // Query 6: Recent State Domain Symbols (Last 5 by date time)
+          const stateSymbols = await domainService.getSymbols('state');
+          const recentStateSymbols = stateSymbols
+              .sort((a, b) => {
+                  const getT = (s?: string) => {
+                      if (!s) return 0;
+                      try { return Number(Buffer.from(s, 'base64').toString()); } catch { return 0; }
+                  };
+                  return getT(b.created_at) - getT(a.created_at);
+              })
+              .slice(0, 5);
+          results.push(`\n[STATE]\n${this.formatSymbols(recentStateSymbols)}`);
+
+          const fullContext = results.join('');
+          loggerService.info(`Built Dynamic Context`, { 
+              type,
+              identitySymbols: identityCount, 
+              preferenceSymbols: preferenceCount, 
+              stateSymbols: recentStateSymbols.length, 
+              chars: fullContext.length 
+          });
+          return fullContext;
+      } catch (error: any) {
+          loggerService.error("Failed to build dynamic context", { message: error.message, stack: error.stack });
+          return "Error loading dynamic context.";
+      }
   }
 }
 
