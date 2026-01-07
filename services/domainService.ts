@@ -2,7 +2,7 @@
 import { SymbolDef, VectorSearchResult } from '../types.ts';
 import { vectorService } from './vectorService.ts';
 import { redisService } from './redisService.ts';
-import { currentTimestampBase64, decodeTimestamp, getBucketKeysFromTimestamps, getDayBucketKey } from './timeService.ts';
+import { currentTimestamp, decodeTimestamp, getBucketKeysFromTimestamps, getDayBucketKey } from './timeService.ts';
 
 // Redis Keys Configuration
 const KEYS = {
@@ -479,26 +479,14 @@ export const domainService = {
   /**
    * Saves or updates a symbol.
    */
-  upsertSymbol: async (domainId: string, symbol: SymbolDef) => {
+  upsertSymbol: async (domainId: string, symbol: SymbolDef, options: { bypassValidation?: boolean } = {}) => {
     const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
     const data = await redisService.request(['GET', key]);
     
     let domain: CachedDomain;
 
     if (!data) {
-        // Create new
-        domain = {
-            id: domainId,
-            name: domainId,
-            enabled: true,
-            lastUpdated: Date.now(),
-            symbols: [],
-            description: "",
-            invariants: [],
-            readOnly: false
-        };
-        // Add to Set
-        await redisService.request(['SADD', KEYS.DOMAINS_SET, domainId]);
+        throw new Error(`Domain '${domainId}' not found. You must create the domain first.`);
     } else {
         domain = parseDomain(data, domainId);
         if (!domain.id) domain.id = domainId; // migration safety
@@ -507,7 +495,7 @@ export const domainService = {
     ensureWritableDomain(domain, domainId, symbol.id);
 
     // Validation: Check if linked patterns exist
-    if (symbol.linked_patterns && symbol.linked_patterns.length > 0) {
+    if (!options.bypassValidation && symbol.linked_patterns && symbol.linked_patterns.length > 0) {
         const missingLinks: string[] = [];
         for (const linkId of symbol.linked_patterns) {
             // Self-reference is allowed (or will be created)
@@ -529,19 +517,20 @@ export const domainService = {
         symbol.kind = 'pattern';
     }
 
-    const nowB64 = currentTimestampBase64();
-    const existingIndex = domain.symbols.findIndex(s => s.id === symbol.id);
+    const nowB64 = currentTimestamp();
+    
+    // Deduplicate: Remove any existing symbols with the same ID (fixes historical duplicates)
+    const previousSymbol = domain.symbols.find(s => s.id === symbol.id);
+    domain.symbols = domain.symbols.filter(s => s.id !== symbol.id);
+
     const normalizedSymbol: SymbolDef = {
         ...symbol,
-        created_at: existingIndex >= 0 ? domain.symbols[existingIndex].created_at : nowB64,
+        created_at: previousSymbol?.created_at || nowB64,
         updated_at: nowB64,
     };
 
-    if (existingIndex >= 0) {
-        domain.symbols[existingIndex] = normalizedSymbol;
-    } else {
-        domain.symbols.push(normalizedSymbol);
-    }
+    // Add normalized symbol (effectively replacing/updating)
+    domain.symbols.push(normalizedSymbol);
 
     domain.lastUpdated = Date.now();
     
@@ -558,60 +547,52 @@ export const domainService = {
   /**
    * Bulk upsert.
    */
-  bulkUpsert: async (domainId: string, symbols: SymbolDef[]) => {
+  bulkUpsert: async (domainId: string, symbols: SymbolDef[], options: { bypassValidation?: boolean } = {}) => {
       const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
       const data = await redisService.request(['GET', key]);
       
       let domain: CachedDomain;
       if (!data) {
-          domain = {
-              id: domainId,
-              name: domainId,
-              enabled: true,
-              lastUpdated: Date.now(),
-              symbols: [],
-              description: "",
-              invariants: [],
-              readOnly: false
-          };
-          await redisService.request(['SADD', KEYS.DOMAINS_SET, domainId]);
+          throw new Error(`Domain '${domainId}' not found. You must create the domain first.`);
       } else {
           domain = parseDomain(data, domainId);
       }
 
       ensureWritableDomain(domain, domainId, symbols[0]?.id);
 
-      // Validation: Check linked patterns integrity
-      const upsertIds = new Set(symbols.map(s => s.id));
-      // Optimization: Load all existing IDs once
-      const allExistingSymbols = await domainService.getAllSymbols(true);
-      const validIds = new Set(allExistingSymbols.map(s => s.id));
+      if (!options.bypassValidation) {
+          // Validation: Check linked patterns integrity
+          const upsertIds = new Set(symbols.map(s => s.id));
+          // Optimization: Load all existing IDs once
+          const allExistingSymbols = await domainService.getAllSymbols(true);
+          const validIds = new Set(allExistingSymbols.map(s => s.id));
 
-      const missingLinksBySymbol: Record<string, string[]> = {};
+          const missingLinksBySymbol: Record<string, string[]> = {};
 
-      for (const sym of symbols) {
-          if (sym.linked_patterns && sym.linked_patterns.length > 0) {
-              for (const linkId of sym.linked_patterns) {
-                  // Allow self-reference, reference to symbol in this batch, or existing symbol
-                  if (linkId === sym.id || upsertIds.has(linkId) || validIds.has(linkId)) {
-                      continue;
+          for (const sym of symbols) {
+              if (sym.linked_patterns && sym.linked_patterns.length > 0) {
+                  for (const linkId of sym.linked_patterns) {
+                      // Allow self-reference, reference to symbol in this batch, or existing symbol
+                      if (linkId === sym.id || upsertIds.has(linkId) || validIds.has(linkId)) {
+                          continue;
+                      }
+                      
+                      if (!missingLinksBySymbol[sym.id]) missingLinksBySymbol[sym.id] = [];
+                      missingLinksBySymbol[sym.id].push(linkId);
                   }
-                  
-                  if (!missingLinksBySymbol[sym.id]) missingLinksBySymbol[sym.id] = [];
-                  missingLinksBySymbol[sym.id].push(linkId);
               }
+          }
+
+          if (Object.keys(missingLinksBySymbol).length > 0) {
+              const details = Object.entries(missingLinksBySymbol)
+                  .map(([id, links]) => `${id} -> [${links.join(', ')}]`)
+                  .join('; ');
+              throw new Error(`Validation Failed: Missing linked patterns for symbols: ${details}`);
           }
       }
 
-      if (Object.keys(missingLinksBySymbol).length > 0) {
-          const details = Object.entries(missingLinksBySymbol)
-              .map(([id, links]) => `${id} -> [${links.join(', ')}]`)
-              .join('; ');
-          throw new Error(`Validation Failed: Missing linked patterns for symbols: ${details}`);
-      }
-
       const symbolMap = new Map(domain.symbols.map(s => [s.id, s]));
-      const nowB64 = currentTimestampBase64();
+      const nowB64 = currentTimestamp();
       const validKinds = ['pattern', 'persona', 'lattice'];
 
       for (const sym of symbols) {
@@ -700,7 +681,7 @@ export const domainService = {
                   update.symbol_data.kind = 'pattern';
               }
 
-              const nowB64 = currentTimestampBase64();
+              const nowB64 = currentTimestamp();
               const normalized: SymbolDef = {
                   ...update.symbol_data,
                   created_at: existingCreatedAt.get(update.old_id) || nowB64,
@@ -722,11 +703,11 @@ export const domainService = {
   /**
    * Compress symbols.
    */
-  compressSymbols: async (newSymbol: SymbolDef, oldIds: string[]) => {
+  compressSymbols: async (newSymbol: SymbolDef, oldIds: string[], options: { bypassValidation?: boolean } = {}) => {
       const domainId = newSymbol.symbol_domain || 'root';
 
       // Validation: Check if linked patterns exist
-      if (newSymbol.linked_patterns && newSymbol.linked_patterns.length > 0) {
+      if (!options.bypassValidation && newSymbol.linked_patterns && newSymbol.linked_patterns.length > 0) {
           const missingLinks: string[] = [];
           for (const linkId of newSymbol.linked_patterns) {
               // We skip checking IDs that are in oldIds because they are about to be deleted/merged? 
@@ -748,7 +729,7 @@ export const domainService = {
           }
       }
 
-      await domainService.upsertSymbol(domainId, newSymbol);
+      await domainService.upsertSymbol(domainId, newSymbol, { bypassValidation: options.bypassValidation });
       
       for (const oldId of oldIds) {
           if (oldId === newSymbol.id) continue;
@@ -806,7 +787,7 @@ export const domainService = {
                 const symbol = domain.symbols[index];
                 
                 // Update Access Time
-                symbol.last_accessed_at = currentTimestampBase64();
+                symbol.last_accessed_at = currentTimestamp();
                 domain.lastUpdated = Date.now();
                 
                 // Persist update (async, non-blocking for this read)
