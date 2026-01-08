@@ -3,6 +3,7 @@ import { Readability } from '@mozilla/readability';
 import Parser from 'rss-parser';
 import pdf from 'pdf-parse';
 import OpenAI from "openai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { loggerService } from './loggerService.js';
 import { settingsService } from './settingsService.js';
 
@@ -198,10 +199,33 @@ class DocumentMeaningService {
     private async extractImageMeaning(buffer: Buffer, contentType: string, url?: string): Promise<NormalizedDocument> {
         const settings = settingsService.getInferenceSettings();
         const apiKey = settings.apiKey;
-        const visionModel = settings.visionModel || 'gpt-4o-mini';
+        
+        // Ensure we have a sensible vision model default per provider if none set or if using OpenAI default on Gemini
+        let visionModel = settings.visionModel;
+        if (settings.provider === 'gemini') {
+            if (!visionModel || visionModel === 'gpt-4o-mini') {
+                visionModel = 'gemini-1.5-flash';
+            }
+        } else if (settings.provider === 'openai') {
+            if (!visionModel || visionModel.includes('gemini')) {
+                visionModel = 'gpt-4o-mini';
+            }
+        } else {
+            // Local / Other
+            visionModel = visionModel || 'gpt-4o-mini';
+        }
+
+        loggerService.info(`DocumentMeaningService: Starting vision analysis`, { 
+            provider: settings.provider, 
+            model: visionModel, 
+            hasApiKey: !!apiKey,
+            contentType,
+            bufferSize: buffer.length
+        });
         
         // If no API key or using local provider without vision support (simplification), fall back
-        if (!apiKey && settings.provider === 'openai') {
+        if (!apiKey && (settings.provider === 'openai' || settings.provider === 'gemini')) {
+             loggerService.warn(`DocumentMeaningService: Missing API key for provider ${settings.provider}`);
              return {
                 type: 'image',
                 metadata: { url, error: "No API Key configured for vision model" },
@@ -210,50 +234,87 @@ class DocumentMeaningService {
         }
 
         try {
-            let client: OpenAI;
-            if (settings.provider === 'openai') {
-                client = new OpenAI({ apiKey });
+            let description = "No description generated.";
+
+            if (settings.provider === 'gemini') {
+                const client = new GoogleGenerativeAI(apiKey);
+                const model = client.getGenerativeModel({ model: visionModel });
+                
+                const imagePart = {
+                    inlineData: {
+                        data: buffer.toString('base64'),
+                        mimeType: contentType || 'image/jpeg'
+                    }
+                };
+
+                const result = await model.generateContent([
+                    "Analyze this image. Describe the setting, identify key objects, and explain the relationships between them. Output a clear, structured description.",
+                    imagePart
+                ]);
+                description = result.response.text();
+
             } else {
-                 client = new OpenAI({ 
-                     baseURL: settings.endpoint, 
-                     apiKey: apiKey || 'lm-studio' 
-                 });
+                // OpenAI / Local (OpenAI-compatible) logic
+                let client: OpenAI;
+                if (settings.provider === 'openai') {
+                    client = new OpenAI({ apiKey });
+                } else {
+                     client = new OpenAI({ 
+                         baseURL: settings.endpoint, 
+                         apiKey: apiKey || 'lm-studio' 
+                     });
+                }
+    
+                const base64Image = buffer.toString('base64');
+                const dataUrl = `data:${contentType || 'image/jpeg'};base64,${base64Image}`;
+    
+                const isO1 = visionModel.startsWith('o1') || visionModel.startsWith('o3') || visionModel.startsWith('gpt-5');
+                
+                const response = await client.chat.completions.create({
+                    model: visionModel,
+                    messages: [
+                        {
+                            role: "user",
+                            content: [
+                                { type: "text", text: "Analyze this image. Describe the setting, identify key objects, and explain the relationships between them. Output a clear, structured description." },
+                                {
+                                    type: "image_url",
+                                    image_url: {
+                                        url: dataUrl
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    ...(isO1 ? { max_completion_tokens: 2048 } : { max_tokens: 2048 })
+                } as any);
+                description = response.choices[0]?.message?.content || "No description generated.";
             }
 
-            const base64Image = buffer.toString('base64');
-            const dataUrl = `data:${contentType || 'image/jpeg'};base64,${base64Image}`;
-
-            const response = await client.chat.completions.create({
+            const cleanDescription = this.stripThinking(description);
+            loggerService.info(`DocumentMeaningService: Vision analysis complete`, { 
                 model: visionModel,
-                messages: [
-                    {
-                        role: "user",
-                        content: [
-                            { type: "text", text: "Analyze this image. Describe the setting, identify key objects, and explain the relationships between them. Output a clear, structured description." },
-                            {
-                                type: "image_url",
-                                image_url: {
-                                    url: dataUrl
-                                }
-                            }
-                        ]
-                    }
-                ],
-                max_tokens: 10000
+                metadata: { url, model: visionModel },
+                descriptionLength: cleanDescription.length
             });
-
-            const rawContent = response.choices[0]?.message?.content || "No description generated.";
-            const description = this.stripThinking(rawContent);
             
-            return {
+            const result: NormalizedDocument = {
                 type: 'image',
                 metadata: { url, model: visionModel },
-                content: description,
+                content: cleanDescription,
                 structured_data: {
                     analysis_model: visionModel,
-                    raw_response: description
+                    raw_response: cleanDescription
                 }
             };
+
+            loggerService.info(`DocumentMeaningService: Returning image document`, { 
+                type: result.type,
+                metadata: result.metadata,
+                analysisResult: result.content
+            });
+
+            return result;
 
         } catch (error) {
             loggerService.error('DocumentMeaningService: Vision analysis failed', { error });

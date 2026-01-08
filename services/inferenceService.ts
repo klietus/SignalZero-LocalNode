@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 import { randomUUID } from "crypto";
 import type {
   ChatCompletionChunk,
@@ -23,6 +24,10 @@ interface ChatSessionState {
   model: string;
 }
 
+// Extend Part type to include thought for Gemini 3
+// We cast to 'any' when pushing to parts array to bypass strict type check for now
+// as the library types might lag behind the API.
+
 const MAX_TOOL_LOOPS = 50;
 
 const getClient = () => {
@@ -40,6 +45,49 @@ const getClient = () => {
     baseURL: endpoint,
     apiKey: localApiKey,
   });
+};
+
+const getGeminiClient = () => {
+  const { apiKey } = settingsService.getInferenceSettings();
+  return new GoogleGenerativeAI(apiKey);
+};
+
+const cleanGeminiSchema = (schema: any): any => {
+  if (!schema || typeof schema !== 'object') return schema;
+  
+  if (Array.isArray(schema)) {
+      return schema.map(cleanGeminiSchema);
+  }
+
+  const { additionalProperties, ...rest } = schema;
+  const cleaned = { ...rest };
+
+  if (cleaned.properties) {
+      cleaned.properties = {};
+      for (const [key, val] of Object.entries(schema.properties)) {
+          cleaned.properties[key] = cleanGeminiSchema(val);
+      }
+  }
+
+  if (cleaned.items) {
+      cleaned.items = cleanGeminiSchema(cleaned.items);
+  }
+
+  return cleaned;
+};
+
+const toGeminiTools = (tools: any[]) => {
+  return [{
+    functionDeclarations: tools.map((t) => ({
+      name: t.function.name,
+      description: t.function.description,
+      parameters: cleanGeminiSchema({
+        type: SchemaType.OBJECT,
+        properties: t.function.parameters.properties,
+        required: t.function.parameters.required,
+      }),
+    }))
+  }];
 };
 
 const getModel = () => settingsService.getInferenceSettings().model;
@@ -200,6 +248,14 @@ export const generateGapSynthesis = async (
         Return valid JSON object(s) wrapped in <sz_symbol></sz_symbol> tags. You may return multiple symbols if the gap requires a structure.
         `;
 
+  const settings = settingsService.getInferenceSettings();
+  if (settings.provider === 'gemini') {
+      const client = getGeminiClient();
+      const model = client.getGenerativeModel({ model: settings.model });
+      const result = await model.generateContent(prompt);
+      return result.response.text();
+  }
+
   const client = getClient();
   const result = await client.chat.completions.create({
     model: getModel(),
@@ -217,6 +273,205 @@ const streamAssistantResponse = async function* (
   toolCalls?: ChatCompletionMessageToolCall[];
   assistantMessage?: ChatCompletionMessageParam;
 }> {
+  const settings = settingsService.getInferenceSettings();
+  
+  if (settings.provider === 'gemini') {
+    const client = getGeminiClient();
+    const geminiModel = client.getGenerativeModel({
+        model: model,
+        tools: toGeminiTools(toolDeclarations)
+    });
+    
+    const systemMessage = messages.find(m => m.role === 'system');
+    
+    // Map OpenAI messages to Gemini Content format
+    // Note: Gemini strict history: User -> Model -> User ...
+    // OpenAI allows System -> User -> Assistant -> Tool -> Tool -> Assistant...
+    const history: any[] = [];
+    let lastRole = '';
+    const downgradedToolCallIds = new Set<string>();
+
+    for (const m of messages) {
+        if (m.role === 'system') continue; // Handled separately
+
+        if (m.role === 'user') {
+            history.push({ role: 'user', parts: [{ text: typeof m.content === 'string' ? m.content : '' }] });
+            lastRole = 'user';
+        } else if (m.role === 'assistant') {
+             const parts: any[] = [];
+             if (m.content) parts.push({ text: m.content });
+             
+             const isGemini3 = model.includes('gemini-3');
+
+             if (m.tool_calls) {
+                 m.tool_calls.forEach(tc => {
+                     let useFunctionCall = true;
+                     const storedSignature = (tc as any).thought_signature;
+
+                     if (isGemini3) {
+                         if (!storedSignature) {
+                             // Downgrade strategy: If signature is missing for Gemini 3, 
+                             // we cannot send a functionCall part without triggering an error.
+                             // We convert this to a text representation.
+                             useFunctionCall = false;
+                             downgradedToolCallIds.add(tc.id);
+                         }
+                     }
+
+                     if (useFunctionCall) {
+                         const part: any = {
+                             functionCall: {
+                                 name: tc.function.name,
+                                 args: JSON.parse(tc.function.arguments)
+                             }
+                         };
+                         
+                         if (isGemini3 && storedSignature) {
+                             part.thought_signature = storedSignature;
+                         }
+                         parts.push(part);
+                     } else {
+                         // Text representation of the tool call
+                         parts.push({ 
+                             text: `[System Log: Model executed tool '${tc.function.name}' with arguments: ${tc.function.arguments}]` 
+                         });
+                     }
+                 });
+             }
+             history.push({ role: 'model', parts });
+             lastRole = 'model';
+        } else if (m.role === 'tool') {
+             // ... (existing tool name lookup logic) ...
+             
+             let toolName = "unknown_tool";
+             const assistantMsg = messages.find(msg => 
+                 msg.role === 'assistant' && 
+                 msg.tool_calls?.some(tc => tc.id === m.tool_call_id)
+             );
+             if (assistantMsg && assistantMsg.role === 'assistant' && assistantMsg.tool_calls) {
+                 const tc = assistantMsg.tool_calls.find(c => c.id === m.tool_call_id);
+                 if (tc) toolName = tc.function.name;
+             }
+
+             if (downgradedToolCallIds.has(m.tool_call_id)) {
+                 // If the call was downgraded to text, the response must also be text (User role)
+                 history.push({
+                     role: 'user',
+                     parts: [{
+                         text: `[System Log: Tool '${toolName}' returned result: ${m.content}]`
+                     }]
+                 });
+                 lastRole = 'user';
+             } else {
+                 history.push({
+                     role: 'function',
+                     parts: [{
+                         functionResponse: {
+                             name: toolName,
+                             response: { result: m.content } 
+                         }
+                     }]
+                 });
+                 lastRole = 'function';
+             }
+        }
+    }
+
+    // Prepare the last message for `sendMessageStream`
+    // If the last message in `messages` was a user prompt, pop it.
+    // If it was a tool response, pop it? No, `sendMessage` sends the *new* content.
+    // If we are continuously chatting, we start chat with history, and send the new message.
+    
+    // Logic:
+    // 1. If `messages` ends with USER, that is the new message. History is everything before.
+    // 2. If `messages` ends with TOOL, that is the new message (results). History is everything before.
+    
+    let messageToSend = history.pop();
+    // Verify valid turn structure for Gemini (User or Function)
+    if (!messageToSend) return;
+
+    // Gemini StartChat
+    const chatSession = geminiModel.startChat({
+        history: history,
+        systemInstruction: systemMessage?.content ? { role: 'system', parts: [{ text: systemMessage.content as string }] } : undefined
+    });
+    
+    // Send
+    const result = await chatSession.sendMessageStream(messageToSend.parts);
+    
+    let textAccumulator = "";
+    const collectedToolCalls: ChatCompletionMessageToolCall[] = [];
+
+    for await (const chunk of result.stream) {
+          const text = chunk.text(); 
+          if (text) {
+              textAccumulator += text;
+              yield { text };
+          }
+          
+          // Access raw candidates to find thought/signature not exposed in helper
+          const candidate = chunk.candidates?.[0];
+          const parts = candidate?.content?.parts;
+          
+          if (parts) {
+              parts.forEach((p: any) => {
+                  if (p.functionCall) {
+                      // We need to map this back to the collectedToolCalls.
+                      // Since 'functionCalls()' helper aggregates, we need to be careful.
+                      // But actually, we can just capture the signature here.
+                      // The helper might not give us the signature.
+                      // Let's rely on manual parsing of parts if helper fails.
+                  }
+              });
+          }
+
+          const calls = chunk.functionCalls();
+          if (calls) {
+              calls.forEach((call: any, index: number) => {
+                   const callId = 'gemini-' + randomUUID();
+                   
+                   // Try to find the matching part in the raw chunk to get the signature
+                   // This is heuristic because order *should* match.
+                   let signature: string | undefined;
+                   if (parts) {
+                        const matchingPart = parts.find((p: any) => p.functionCall && p.functionCall.name === call.name);
+                        if (matchingPart && (matchingPart as any).thought_signature) {
+                            signature = (matchingPart as any).thought_signature;
+                        }
+                   }
+
+                   const toolCallObj: any = {
+                       id: callId, 
+                       type: 'function',
+                       function: {
+                           name: call.name,
+                           arguments: JSON.stringify(call.args)
+                       }
+                   };
+                   
+                   if (signature) {
+                       toolCallObj.thought_signature = signature;
+                   }
+
+                   collectedToolCalls.push(toolCallObj);
+              });
+          }
+    }
+
+    if (collectedToolCalls.length > 0) {
+        yield { toolCalls: collectedToolCalls };
+    }
+
+    const assistantMessage: ChatCompletionMessageParam = {
+      role: "assistant",
+      content: textAccumulator,
+      ...(collectedToolCalls.length > 0 ? { tool_calls: collectedToolCalls } : {}),
+    };
+
+    yield { assistantMessage };
+    return;
+  }
+
   const client = getClient();
   const stream = await client.chat.completions.create({
     model,
@@ -398,7 +653,7 @@ export async function* sendMessageAndHandleTools(
         // Construct fresh context window using the ContextWindowService
         let contextMessages = contextSessionId 
             ? await contextWindowService.constructContextWindow(contextSessionId, systemInstruction || chat.systemInstruction)
-            : [{ role: 'system', content: systemInstruction || chat.systemInstruction }, { role: 'user', content: resolvedContent }];
+            : [{ role: 'system', content: systemInstruction || chat.systemInstruction }, { role: 'user', content: resolvedContent }] as ChatCompletionMessageParam[];
 
         if (transientMessages.length > 0) {
             contextMessages = [...contextMessages, ...transientMessages];
@@ -506,6 +761,7 @@ export async function* sendMessageAndHandleTools(
           id: call.id,
           name: call.function?.name,
           arguments: call.function?.arguments,
+          thought_signature: call.thought_signature
         })),
         metadata: { kind: "assistant_response" },
         correlationId: userMessageId
@@ -730,6 +986,14 @@ export const runSignalZeroTest = async (
 
 export const runBaselineTest = async (prompt: string): Promise<string> => {
   try {
+    const settings = settingsService.getInferenceSettings();
+    if (settings.provider === 'gemini') {
+        const client = getGeminiClient();
+        const model = client.getGenerativeModel({ model: settings.model });
+        const result = await model.generateContent(prompt);
+        return result.response.text();
+    }
+
     const client = getClient();
     const completion = await client.chat.completions.create({
       model: getModel(),
@@ -784,16 +1048,6 @@ export const evaluateComparison = async (
         }
         `;
 
-    const client = getClient();
-    const result = await client.chat.completions.create({
-      model: getModel(),
-      messages: [{ role: "user", content: evalPrompt }],
-      response_format: { type: "json_object" },
-    });
-
-    const messageText = result.choices[0]?.message?.content || "{}";
-    const json = JSON.parse(messageText);
-
     const defaultScore = {
       alignment_score: 0,
       drift_detected: false,
@@ -801,6 +1055,26 @@ export const evaluateComparison = async (
       reasoning_depth: 0,
       auditability_score: 0,
     };
+
+    const settings = settingsService.getInferenceSettings();
+    let messageText = "{}";
+
+    if (settings.provider === 'gemini') {
+        const client = getGeminiClient();
+        const model = client.getGenerativeModel({ model: settings.model, generationConfig: { responseMimeType: "application/json" } });
+        const result = await model.generateContent(evalPrompt);
+        messageText = result.response.text();
+    } else {
+        const client = getClient();
+        const result = await client.chat.completions.create({
+          model: getModel(),
+          messages: [{ role: "user", content: evalPrompt }],
+          response_format: { type: "json_object" },
+        });
+        messageText = result.choices[0]?.message?.content || "{}";
+    }
+
+    const json = JSON.parse(messageText);
 
     return {
       sz: json.sz || defaultScore,
