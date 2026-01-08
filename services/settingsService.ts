@@ -35,8 +35,7 @@ export interface SystemSettings {
   inference?: Partial<InferenceSettings>;
 }
 
-export interface InferenceSettings {
-  provider: 'local' | 'openai';
+export interface InferenceConfiguration {
   apiKey: string;
   endpoint: string;
   model: string;
@@ -44,9 +43,30 @@ export interface InferenceSettings {
   visionModel: string;
 }
 
+export interface InferenceSettings {
+  provider: 'local' | 'openai' | 'gemini';
+  apiKey: string;
+  endpoint: string;
+  model: string;
+  loopModel: string;
+  visionModel: string;
+  savedConfigs?: Record<string, InferenceConfiguration>;
+}
+
+// In-memory store for saved configs, loaded from file
+let _savedInferenceConfigs: Record<string, InferenceConfiguration> = {};
+
 const savePersistedSettings = (settings: any) => {
   try {
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
+    // Merge current savedConfigs into the object being saved
+    const payload = {
+      ...settings,
+      inference: {
+        ...settings.inference,
+        savedConfigs: _savedInferenceConfigs
+      }
+    };
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(payload, null, 2));
   } catch (e) {
     console.error('Failed to save settings file', e);
   }
@@ -73,6 +93,10 @@ const loadPersistedSettings = () => {
         if (data.inference.model) process.env.INFERENCE_MODEL = data.inference.model;
         if (data.inference.loopModel) process.env.INFERENCE_LOOP_MODEL = data.inference.loopModel;
         if (data.inference.visionModel) process.env.INFERENCE_VISION_MODEL = data.inference.visionModel;
+        
+        if (data.inference.savedConfigs) {
+           _savedInferenceConfigs = data.inference.savedConfigs;
+        }
       }
     } catch (e) {
       console.error('Failed to load settings file', e);
@@ -178,12 +202,13 @@ export const settingsService = {
   // --- Inference Settings ---
   getInferenceSettings: (): InferenceSettings => {
     return {
-      provider: (process.env.INFERENCE_PROVIDER as 'local' | 'openai') || 'local',
+      provider: (process.env.INFERENCE_PROVIDER as 'local' | 'openai' | 'gemini') || 'local',
       apiKey: process.env.INFERENCE_API_KEY || '',
       endpoint: process.env.INFERENCE_ENDPOINT || 'http://localhost:1234/v1',
       model: process.env.INFERENCE_MODEL || 'lmstudio-community/Meta-Llama-3-70B-Instruct',
       loopModel: process.env.INFERENCE_LOOP_MODEL || process.env.INFERENCE_MODEL || 'lmstudio-community/Meta-Llama-3-70B-Instruct',
-      visionModel: process.env.INFERENCE_VISION_MODEL || 'gpt-4o-mini'
+      visionModel: process.env.INFERENCE_VISION_MODEL || 'gpt-4o-mini',
+      savedConfigs: _savedInferenceConfigs
     };
   },
 
@@ -194,6 +219,22 @@ export const settingsService = {
     process.env.INFERENCE_MODEL = settings.model;
     process.env.INFERENCE_LOOP_MODEL = settings.loopModel;
     process.env.INFERENCE_VISION_MODEL = settings.visionModel;
+    
+    // Update the saved config for this provider
+    if (settings.provider) {
+        _savedInferenceConfigs[settings.provider] = {
+            apiKey: settings.apiKey,
+            endpoint: settings.endpoint,
+            model: settings.model,
+            loopModel: settings.loopModel,
+            visionModel: settings.visionModel
+        };
+    }
+    
+    // If incoming settings has a bulk update for savedConfigs (e.g. from UI import), respect it
+    if (settings.savedConfigs) {
+        _savedInferenceConfigs = { ..._savedInferenceConfigs, ...settings.savedConfigs };
+    }
   },
 
   // --- Aggregated Settings ---
@@ -251,7 +292,7 @@ export const settingsService = {
       const currentInference = settingsService.getInferenceSettings();
       const inferenceInput = settings.inference as Record<string, unknown>;
       settingsService.setInferenceSettings({
-        provider: (inferenceInput.provider as 'local' | 'openai' | undefined) ?? currentInference.provider,
+        provider: (inferenceInput.provider as 'local' | 'openai' | 'gemini' | undefined) ?? currentInference.provider,
         apiKey: (inferenceInput.apiKey as string | undefined) ?? currentInference.apiKey,
         endpoint: (inferenceInput.endpoint as string | undefined) ?? currentInference.endpoint,
         model: (inferenceInput.model as string | undefined) ?? currentInference.model,

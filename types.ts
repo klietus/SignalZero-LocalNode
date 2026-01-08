@@ -243,6 +243,7 @@ export interface ContextMessage {
       id?: string;
       name?: string;
       arguments?: any;
+      thought_signature?: string;
   }[];
   metadata?: Record<string, any>;
   correlationId?: string;

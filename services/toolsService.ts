@@ -543,10 +543,13 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
 
         const aggregatedSymbols = new Map<string, any>();
         const executionLog: any[] = [];
+        let anyFetchAll = false;
 
         for (const queryConfig of queryList) {
             const { query, symbol_domains, symbol_tag, limit, fetch_all, time_gte, time_between, metadata_filter } = queryConfig;
             
+            if (fetch_all) anyFetchAll = true;
+
             const maxLimit = fetch_all ? 1000 : Math.min(limit || 10, 50);
             
             // Default to all domains if none specified
@@ -607,7 +610,16 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
             executionLog.push({ query: query || 'structured_filter', count: queryResultCount });
         }
 
-        const sanitizedSymbols = Array.from(aggregatedSymbols.values()).map((item: any) => {
+        let resultList = Array.from(aggregatedSymbols.values());
+
+        // Apply global limit if no query requested fetch_all
+        const GLOBAL_SYMBOL_LIMIT = 50;
+        if (!anyFetchAll && resultList.length > GLOBAL_SYMBOL_LIMIT) {
+            loggerService.warn(`find_symbols: Truncating results from ${resultList.length} to ${GLOBAL_SYMBOL_LIMIT} (global limit). Use 'fetch_all' to bypass.`);
+            resultList = resultList.slice(0, GLOBAL_SYMBOL_LIMIT);
+        }
+
+        const sanitizedSymbols = resultList.map((item: any) => {
             // Normalize: If item is a search result wrapper with .symbol, extract it. Otherwise use item.
             const s = item.symbol ? { ...item.symbol } : { ...item };
             
@@ -623,10 +635,10 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
             return s;
         });
 
-        loggerService.info(`find_symbols returning ${aggregatedSymbols.size} unique symbols across ${queryList.length} queries.`);
+        loggerService.info(`find_symbols returning ${sanitizedSymbols.length} unique symbols across ${queryList.length} queries.`);
 
         return {
-            count: aggregatedSymbols.size,
+            count: sanitizedSymbols.length,
             symbols: sanitizedSymbols,
             execution_log: executionLog
         };
