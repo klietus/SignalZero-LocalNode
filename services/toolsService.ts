@@ -51,7 +51,19 @@ const SYMBOL_DATA_SCHEMA = {
                 topology: { type: 'string' },
                 commit: { type: 'string' },
                 gate: { type: 'array', items: { type: 'string' } },
-                substrate: { type: 'array', items: { type: 'string' } },
+                substrate: { 
+                    type: 'array', 
+                    items: { 
+                        type: 'string',
+                        enum: [
+                            'text', 'code', 'image', 'audio', 'video', 'data', 'event', 'signal', 
+                            'state', 'process', 'concept', 'relation',
+                            'cognitive', 'symbolic', 'temporal', 'social', 'biological', 
+                            'physical', 'digital', 'virtual', 'abstract', 'meta'
+                        ]
+                    },
+                    description: "Physical or logical medium where the symbol manifests. Must be one of the allowed values."
+                },
                 temporal: { type: 'string' },
                 invariants: { type: 'array', items: { type: 'string' } }
             },
@@ -175,7 +187,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
                 symbol_domains: { type: 'array', items: { type: 'string' }, description: 'Filter by multiple domains. Defaults to all domains if omitted.' },
                 symbol_tag: { type: 'string', description: 'Filter by symbol tag. Only applied if provided.' },
                 metadata_filter: { type: 'object', additionalProperties: true, description: 'Direct metadata key-value filters. Only applied if provided.' },
-                limit: { type: 'integer', description: 'Maximum symbols to return for this specific query (default 50, max 50).' },
+                limit: { type: 'integer', description: 'Maximum symbols to return for this specific query (default 10, max 20).' },
                 time_gte: { type: 'string', description: "Filter by creation time >= timestamp. Only applied if provided." },
                 time_between: { type: 'array', items: { type: 'string' }, description: "Filter by creation time range [start, end]. Only applied if provided." },
                 fetch_all: { type: 'boolean', description: "Fetch all matching symbols for this query (bypass limit)." }
@@ -670,7 +682,14 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           // It defaults to false here.
           const bypass_validation = false;
 
-          if (!symbols || !Array.isArray(symbols) || symbols.length === 0) return { error: "Invalid symbols array" };
+          loggerService.info(`upsert_symbols called with ${symbols?.length || 0} symbols`, { 
+              symbolIds: Array.isArray(symbols) ? symbols.map((s: any) => s.symbol_data?.id) : [] 
+          });
+
+          if (!symbols || !Array.isArray(symbols) || symbols.length === 0) {
+              loggerService.warn("upsert_symbols failed: Invalid symbols array");
+              return { error: "Invalid symbols array" };
+          }
 
           const upsertByDomain: Record<string, SymbolDef[]> = {};
           const refactors: { old_id: string, symbol_data: SymbolDef }[] = [];
@@ -678,7 +697,10 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
 
           for (const entry of symbols) {
               const { symbol_data, old_id } = entry || {};
-              if (!symbol_data || typeof symbol_data !== 'object') return { error: "Each entry must include symbol_data" };
+              if (!symbol_data || typeof symbol_data !== 'object') {
+                  loggerService.warn("upsert_symbols failed: Missing symbol_data in entry", { entry });
+                  return { error: "Each entry must include symbol_data" };
+              }
 
               const s = symbol_data;
 
@@ -697,7 +719,9 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                   if (!s.facets) missingFields.push('facets');
                   
                   if (missingFields.length > 0) {
-                      return { error: `Symbol validation failed for ID '${s.id || 'unknown'}': Missing required fields: ${missingFields.join(', ')}` };
+                      const errorMsg = `Symbol validation failed for ID '${s.id || 'unknown'}': Missing required fields: ${missingFields.join(', ')}`;
+                      loggerService.warn(`upsert_symbols validation error: ${errorMsg}`);
+                      return { error: errorMsg };
                   }
 
                   // Validate nested facets
@@ -712,7 +736,9 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                   if (!Array.isArray(f.invariants)) missingFacets.push('invariants');
 
                   if (missingFacets.length > 0) {
-                      return { error: `Symbol validation failed for ID '${s.id}': Missing required facets properties: ${missingFacets.join(', ')}` };
+                      const errorMsg = `Symbol validation failed for ID '${s.id}': Missing required facets properties: ${missingFacets.join(', ')}`;
+                      loggerService.warn(`upsert_symbols validation error: ${errorMsg}`);
+                      return { error: errorMsg };
                   }
               }
 
@@ -741,22 +767,26 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           }));
 
           if (missingDomains.length > 0) {
-              return { error: `Domains not found: ${missingDomains.join(', ')}` , missing_domains: missingDomains, code: 404 };
+              const errorMsg = `Domains not found: ${missingDomains.join(', ')}`;
+              loggerService.warn(`upsert_symbols failed: ${errorMsg}`);
+              return { error: errorMsg , missing_domains: missingDomains, code: 404 };
           }
 
           try {
               const upserted: { domain: string, count: number }[] = [];
               for (const [domain, domainSymbols] of Object.entries(upsertByDomain)) {
                   if (domainSymbols.length === 0) continue;
+                  loggerService.info(`upsert_symbols processing batch for domain ${domain}`, { count: domainSymbols.length });
                   await domainService.bulkUpsert(domain, domainSymbols, { bypassValidation: bypass_validation });
                   upserted.push({ domain, count: domainSymbols.length });
               }
 
               if (refactors.length > 0) {
-                  // processRefactorOperation doesn't currently take options, but it uses bulk upsert logic internally?
-                  // No, it has its own logic. Let's check it.
+                  loggerService.info(`upsert_symbols processing refactors`, { count: refactors.length });
                   await domainService.processRefactorOperation(refactors);
               }
+
+              loggerService.info("upsert_symbols completed successfully", { upserted, refactors: refactors.length });
 
               return {
                   status: "Upsert completed.",
@@ -1085,7 +1115,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
               searchUrl.searchParams.set('key', apiKey);
               searchUrl.searchParams.set('cx', searchEngineId);
               searchUrl.searchParams.set('q', query);
-              searchUrl.searchParams.set('num', '5');
+              searchUrl.searchParams.set('num', '10');
               
               if (image_search) {
                   searchUrl.searchParams.set('searchType', 'image');

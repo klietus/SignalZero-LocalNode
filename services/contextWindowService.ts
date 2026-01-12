@@ -275,7 +275,7 @@ export class ContextWindowService {
             triadDisplay = `[${triadArr.slice(0, 3).join(', ')}]`;
         }
         
-        return `| ${s.id} | ${triadDisplay} | ${kindDisplay} |`;
+        return `| ${s.id} | ${s.name} | ${triadDisplay} | ${kindDisplay} |`;
     }).join('\n');
   }
 
@@ -288,8 +288,8 @@ export class ContextWindowService {
           
           // Query 1: List Domains
           const meta = await domainService.getMetadata();
-          // Compact domain list
-          const domains = meta.map(d => `| ${d.id} | ${d.name} | 🌐 |`);
+          // Compact domain list with invariants
+          const domains = meta.map(d => `| ${d.id} | ${d.name} | ${d.invariants?.join('; ') || ''} |`);
           results.push(`[DOMAINS]\n${domains.join('\n')}`);
 
           // Query 2: Recursive Core Injection
