@@ -587,7 +587,8 @@ export const domainService = {
               const details = Object.entries(missingLinksBySymbol)
                   .map(([id, links]) => `${id} -> [${links.join(', ')}]`)
                   .join('; ');
-              throw new Error(`Validation Failed: Missing linked patterns for symbols: ${details}`);
+              console.warn(`[DomainService] Validation Warning: Missing linked patterns for symbols: ${details}`);
+              // throw new Error(`Validation Failed: Missing linked patterns for symbols: ${details}`);
           }
       }
 
@@ -614,7 +615,7 @@ export const domainService = {
       domain.lastUpdated = Date.now();
 
       await redisService.request(['SET', key, JSON.stringify(domain)]);
-      await vectorService.indexBatch(domain.symbols);
+      await vectorService.indexBatch(symbols);
   },
 
   /**

@@ -265,7 +265,32 @@ export const generateGapSynthesis = async (
   return result.choices[0]?.message?.content ?? "";
 };
 
+
+// Wrap the stream processing to catch and log errors
 const streamAssistantResponse = async function* (
+  messages: ChatCompletionMessageParam[],
+  model: string
+): AsyncGenerator<{
+  text?: string;
+  toolCalls?: ChatCompletionMessageToolCall[];
+  assistantMessage?: ChatCompletionMessageParam;
+}> {
+    try {
+        for await (const chunk of _streamAssistantResponseInternal(messages, model)) {
+            yield chunk;
+        }
+    } catch (error: any) {
+        loggerService.error("AI Provider Error (Stream)", { 
+            model, 
+            error: error.message || String(error),
+            type: error.constructor.name,
+            stack: error.stack
+        });
+        throw error; // Re-throw to be handled by caller
+    }
+};
+
+const _streamAssistantResponseInternal = async function* (
   messages: ChatCompletionMessageParam[],
   model: string
 ): AsyncGenerator<{
@@ -283,16 +308,12 @@ const streamAssistantResponse = async function* (
     });
     
     const systemMessage = messages.find(m => m.role === 'system');
-    
-    // Map OpenAI messages to Gemini Content format
-    // Note: Gemini strict history: User -> Model -> User ...
-    // OpenAI allows System -> User -> Assistant -> Tool -> Tool -> Assistant...
     const history: any[] = [];
     let lastRole = '';
     const downgradedToolCallIds = new Set<string>();
 
     for (const m of messages) {
-        if (m.role === 'system') continue; // Handled separately
+        if (m.role === 'system') continue;
 
         if (m.role === 'user') {
             history.push({ role: 'user', parts: [{ text: typeof m.content === 'string' ? m.content : '' }] });
@@ -310,9 +331,6 @@ const streamAssistantResponse = async function* (
 
                      if (isGemini3) {
                          if (!storedSignature) {
-                             // Downgrade strategy: If signature is missing for Gemini 3, 
-                             // we cannot send a functionCall part without triggering an error.
-                             // We convert this to a text representation.
                              useFunctionCall = false;
                              downgradedToolCallIds.add(tc.id);
                          }
@@ -325,13 +343,14 @@ const streamAssistantResponse = async function* (
                                  args: JSON.parse(tc.function.arguments)
                              }
                          };
-                         
                          if (isGemini3 && storedSignature) {
                              part.thought_signature = storedSignature;
+                         } else if (isGemini3) {
+                             const rawId = tc.id || randomUUID();
+                             part.thought_signature = Buffer.from(rawId).toString('base64');
                          }
                          parts.push(part);
                      } else {
-                         // Text representation of the tool call
                          parts.push({ 
                              text: `[System Log: Model executed tool '${tc.function.name}' with arguments: ${tc.function.arguments}]` 
                          });
@@ -341,8 +360,6 @@ const streamAssistantResponse = async function* (
              history.push({ role: 'model', parts });
              lastRole = 'model';
         } else if (m.role === 'tool') {
-             // ... (existing tool name lookup logic) ...
-             
              let toolName = "unknown_tool";
              const assistantMsg = messages.find(msg => 
                  msg.role === 'assistant' && 
@@ -354,7 +371,6 @@ const streamAssistantResponse = async function* (
              }
 
              if (downgradedToolCallIds.has(m.tool_call_id)) {
-                 // If the call was downgraded to text, the response must also be text (User role)
                  history.push({
                      role: 'user',
                      parts: [{
@@ -377,28 +393,15 @@ const streamAssistantResponse = async function* (
         }
     }
 
-    // Prepare the last message for `sendMessageStream`
-    // If the last message in `messages` was a user prompt, pop it.
-    // If it was a tool response, pop it? No, `sendMessage` sends the *new* content.
-    // If we are continuously chatting, we start chat with history, and send the new message.
-    
-    // Logic:
-    // 1. If `messages` ends with USER, that is the new message. History is everything before.
-    // 2. If `messages` ends with TOOL, that is the new message (results). History is everything before.
-    
     let messageToSend = history.pop();
-    // Verify valid turn structure for Gemini (User or Function)
     if (!messageToSend) return;
 
-    // Gemini StartChat
     const chatSession = geminiModel.startChat({
         history: history,
         systemInstruction: systemMessage?.content ? { role: 'system', parts: [{ text: systemMessage.content as string }] } : undefined
     });
     
-    // Send
     const result = await chatSession.sendMessageStream(messageToSend.parts);
-    
     let textAccumulator = "";
     const collectedToolCalls: ChatCompletionMessageToolCall[] = [];
 
@@ -409,29 +412,13 @@ const streamAssistantResponse = async function* (
               yield { text };
           }
           
-          // Access raw candidates to find thought/signature not exposed in helper
           const candidate = chunk.candidates?.[0];
           const parts = candidate?.content?.parts;
           
-          if (parts) {
-              parts.forEach((p: any) => {
-                  if (p.functionCall) {
-                      // We need to map this back to the collectedToolCalls.
-                      // Since 'functionCalls()' helper aggregates, we need to be careful.
-                      // But actually, we can just capture the signature here.
-                      // The helper might not give us the signature.
-                      // Let's rely on manual parsing of parts if helper fails.
-                  }
-              });
-          }
-
           const calls = chunk.functionCalls();
           if (calls) {
               calls.forEach((call: any, index: number) => {
                    const callId = 'gemini-' + randomUUID();
-                   
-                   // Try to find the matching part in the raw chunk to get the signature
-                   // This is heuristic because order *should* match.
                    let signature: string | undefined;
                    if (parts) {
                         const matchingPart = parts.find((p: any) => p.functionCall && p.functionCall.name === call.name);
@@ -448,11 +435,9 @@ const streamAssistantResponse = async function* (
                            arguments: JSON.stringify(call.args)
                        }
                    };
-                   
                    if (signature) {
                        toolCallObj.thought_signature = signature;
                    }
-
                    collectedToolCalls.push(toolCallObj);
               });
           }
@@ -570,6 +555,9 @@ export async function* sendMessageAndHandleTools(
   void,
   unknown
 > {
+  // Ensure we have a valid correlation ID for this turn
+  const correlationId = userMessageId || randomUUID();
+
   // Resolve any attachments (images, docs) referenced in the message
   const { resolvedContent, attachments } = await resolveAttachments(message);
 
@@ -608,7 +596,7 @@ export async function* sendMessageAndHandleTools(
 
   if (contextSessionId) {
     await contextService.recordMessage(contextSessionId, {
-      id: userMessageId || randomUUID(),
+      id: correlationId,
       role: "user",
       content: resolvedContent, // Save the resolved content so history makes sense
       metadata: { 
@@ -623,6 +611,7 @@ export async function* sendMessageAndHandleTools(
   let hasLoggedTrace = false;
   let hasSearchedSymbols = false;
   let auditRetries = 0;
+  const ENABLE_SYSTEM_AUDIT = true;
   const MAX_AUDIT_RETRIES = 3; // Increased to accommodate potential double correction
   const transientMessages: ChatCompletionMessageParam[] = [];
 
@@ -713,7 +702,7 @@ export async function* sendMessageAndHandleTools(
 
     // --- AUDIT INTERCEPTOR ---
     let auditTriggered = false;
-    if (contextSessionId && (!yieldedToolCalls || yieldedToolCalls.length === 0) && textAccumulatedInTurn.trim().length > 0) {
+    if (ENABLE_SYSTEM_AUDIT && contextSessionId && (!yieldedToolCalls || yieldedToolCalls.length === 0) && textAccumulatedInTurn.trim().length > 0) {
         let auditMessage = "";
 
         // Check 1: Missing Symbol Search
@@ -764,7 +753,7 @@ export async function* sendMessageAndHandleTools(
           thought_signature: call.thought_signature
         })),
         metadata: { kind: "assistant_response" },
-        correlationId: userMessageId
+        correlationId: correlationId
       });
     }
 
@@ -818,7 +807,7 @@ export async function* sendMessageAndHandleTools(
             toolCallId: call.id,
             toolArgs: { raw: call.function.arguments },
             metadata: { kind: "tool_error", type: "json_parse_error" },
-            correlationId: userMessageId
+            correlationId: correlationId
           });
         }
         continue;
@@ -841,7 +830,7 @@ export async function* sendMessageAndHandleTools(
             toolCallId: call.id,
             toolArgs: args,
             metadata: { kind: "tool_result" },
-            correlationId: userMessageId
+            correlationId: correlationId
           });
         }
       } catch (err) {
@@ -861,7 +850,7 @@ export async function* sendMessageAndHandleTools(
             toolCallId: call.id,
             toolArgs: args,
             metadata: { kind: "tool_error" },
-            correlationId: userMessageId
+            correlationId: correlationId
           });
         }
       }
