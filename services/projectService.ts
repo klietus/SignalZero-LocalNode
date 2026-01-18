@@ -135,7 +135,14 @@ export const projectService = {
 
             // 5. Domains
             loggerService.info("Project Import: Clearing existing domains.");
-            await domainService.clearAll();
+            try {
+                await domainService.clearAll();
+                loggerService.info("Project Import: Existing domains cleared successfully.");
+            } catch (clearError) {
+                loggerService.error("Project Import: Failed to clear existing domains.", { error: clearError });
+                throw clearError;
+            }
+
             loggerService.info("Project Import: Processing domains from zip.");
 
             const domainsFolder = zip.folder("domains");
@@ -146,12 +153,15 @@ export const projectService = {
                     if (relativePath.endsWith('.json')) {
                         const p = (async () => {
                             try {
+                                loggerService.info(`Project Import: Processing domain file: ${relativePath}`);
                                 const content = await file.async("string");
                                 const json = JSON.parse(content);
                                 
                                 if (json.items && Array.isArray(json.items)) {
                                     const id = json.domain || "imported";
                                     
+                                    loggerService.info(`Project Import: Parsed domain '${id}' from ${relativePath}. Symbol count: ${json.items.length}`);
+
                                     // Strictly create domain before upserting symbols
                                     const exists = await domainService.hasDomain(id);
                                     if (!exists) {
@@ -161,6 +171,7 @@ export const projectService = {
                                             invariants: json.invariants,
                                             readOnly: json.readOnly
                                         });
+                                        loggerService.info(`Project Import: Created new domain '${id}'.`);
                                     } else {
                                         await domainService.updateDomainMetadata(id, {
                                             name: json.name,
@@ -168,6 +179,7 @@ export const projectService = {
                                             invariants: json.invariants,
                                             readOnly: json.readOnly
                                         });
+                                        loggerService.info(`Project Import: Updated existing domain '${id}'.`);
                                     }
 
                                     await domainService.bulkUpsert(id, json.items, { bypassValidation: true });
@@ -178,7 +190,9 @@ export const projectService = {
                                         symbolCount: json.items.length
                                     });
                                     totalSymbols += json.items.length;
-                                    loggerService.info(`Project Import: Loaded domain '${id}' with ${json.items.length} symbols.`);
+                                    loggerService.info(`Project Import: Successfully loaded domain '${id}' with ${json.items.length} symbols.`);
+                                } else {
+                                    loggerService.warn(`Project Import: Domain file ${relativePath} missing 'items' array.`);
                                 }
                             } catch (e) {
                                 loggerService.error(`Project Import: Failed to parse domain file ${relativePath}`, { error: e });
@@ -189,6 +203,8 @@ export const projectService = {
                 });
 
                 await Promise.all(filePromises);
+            } else {
+                loggerService.warn("Project Import: No 'domains' folder found in zip.");
             }
             loggerService.info("Project Import: All domains processed. Project loading complete.");
 

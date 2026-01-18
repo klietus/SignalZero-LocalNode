@@ -74,20 +74,23 @@ const buildWhereClause = (metadataFilter?: Record<string, unknown>): Record<stri
 
     if (entries.length === 0) return undefined;
 
-    const where: Record<string, unknown> = {};
+    const conditions: Record<string, unknown>[] = [];
 
     for (const [key, value] of entries) {
         if (Array.isArray(value)) {
             const filteredValues = value.filter((v) => ['string', 'number', 'boolean'].includes(typeof v));
             if (filteredValues.length > 0) {
-                where[key] = { $in: filteredValues };
+                conditions.push({ [key]: { $in: filteredValues } });
             }
         } else if (['string', 'number', 'boolean'].includes(typeof value)) {
-            where[key] = value;
+            conditions.push({ [key]: value });
         }
     }
 
-    return Object.keys(where).length > 0 ? where : undefined;
+    if (conditions.length === 0) return undefined;
+    if (conditions.length === 1) return conditions[0];
+
+    return { $and: conditions };
 };
 
 export const vectorService = {

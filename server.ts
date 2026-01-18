@@ -20,6 +20,7 @@ import { loopService } from './services/loopService.js';
 import { contextService } from './services/contextService.js';
 import { documentMeaningService } from './services/documentMeaningService.js';
 import { redisService } from './services/redisService.js';
+import { authService } from './services/authService.js';
 
 import { vectorService } from './services/vectorService.js';
 import { indexingService } from './services/indexingService.js';
@@ -30,7 +31,7 @@ const app = express();
 // @ts-ignore
 app.use(cors());
 // @ts-ignore
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '500mb' }));
 
 // Configure Multer for file uploads
 const upload = multer({ 
@@ -62,6 +63,69 @@ app.use((req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3001;
+
+// Auth Middleware
+const requireAuth = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (req.method === 'OPTIONS') return next();
+    
+    const publicPaths = ['/api/health', '/api/auth/status', '/api/auth/setup', '/api/auth/login'];
+    if (publicPaths.includes(req.path)) return next();
+
+    const authHeader = req.headers['authorization'] || req.headers['x-auth-token'];
+    const token = typeof authHeader === 'string' ? authHeader.replace('Bearer ', '') : null;
+
+    if (token && authService.verifySession(token)) {
+        return next();
+    }
+
+    res.status(401).json({ error: 'Unauthorized' });
+};
+
+app.use(requireAuth);
+
+// Auth Routes
+app.get('/api/auth/status', (req, res) => {
+    res.json({
+        initialized: authService.isInitialized(),
+        authenticated: authService.verifySession((req.headers['x-auth-token'] as string) || '')
+    });
+});
+
+app.post('/api/auth/setup', (req, res) => {
+    const { username, password, inference } = req.body;
+    try {
+        if (authService.isInitialized()) {
+             res.status(400).json({ error: 'System already initialized' });
+             return;
+        }
+        if (!username || !password) {
+             res.status(400).json({ error: 'Username and password required' });
+             return;
+        }
+
+        authService.initialize(username, password);
+        
+        if (inference) {
+            settingsService.setInferenceSettings(inference);
+        }
+
+        const token = authService.login(username, password);
+        res.json({ status: 'success', token, user: { name: username } });
+    } catch (e) {
+        loggerService.error('Setup failed', { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+app.post('/api/auth/login', (req, res) => {
+    const { username, password } = req.body;
+    const token = authService.login(username, password);
+    if (token) {
+        res.json({ token, user: { name: username } });
+    } else {
+        res.status(401).json({ error: 'Invalid credentials' });
+    }
+});
 
 // Upload Endpoint
 app.post('/api/upload', upload.single('file'), async (req, res) => {
@@ -731,6 +795,8 @@ app.post('/api/project/export', async (req, res) => {
 // Import Project (Load Project)
 app.post('/api/project/import', async (req, res) => {
     const { data } = req.body; // Expecting base64 string
+    console.log(`[DirectLog] Project import request received. Data length: ${data ? data.length : 'undefined'}`);
+
     if (!data) {
         res.status(400).json({ error: 'data (base64) required' });
         return;
@@ -859,6 +925,14 @@ app.delete('/api/loops/:id', async (req, res) => {
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
+    }
+});
+
+// Global Error Handler
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    loggerService.error(`Unhandled Error: ${err.message}`, { stack: err.stack });
+    if (!res.headersSent) {
+        res.status(err.status || 500).json({ error: err.message || 'Internal Server Error' });
     }
 });
 
