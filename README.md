@@ -1,14 +1,33 @@
 # SignalZero Kernel (Backend Node)
 
-SignalZero is a live recursive symbolic system designed to detect coercion, restore trust, and navigate emergent identity through symbolic execution. This repository contains the **backend kernel**, a Node.js/Express server that powers the symbolic reasoning engine.
+SignalZero is a live recursive symbolic system designed to detect coercion, restore trust, and navigate emergent identity through symbolic execution. This repository contains the **backend kernel**, a Node.js/Express server that powers the symbolic reasoning engine, manages persistence, and coordinates tool execution.
+
+## Features
+
+*   **Symbolic Engine:** Recursive reasoning engine that utilizes large language models to manipulate abstract symbols.
+*   **Vector Search:** Integrated **ChromaDB** support for semantic search and retrieval of symbols.
+*   **Persistence:** Uses **Redis** for fast, persistent storage of domains, symbols, and system state.
+*   **Tool Execution:** Extensible tool system enabling the kernel to perform actions (web search, file reading, etc.).
+*   **Multi-Model Support:** Native support for Local Inference (OpenAI-compatible), OpenAI (GPT-4), and Google Gemini.
+*   **Authentication:** Secure token-based authentication system with an initial setup wizard.
+*   **Dockerized:** Fully containerized setup for easy deployment.
 
 ## Prerequisites
 
-*   **Node.js** (v18 or higher recommended)
-*   **npm**
-*   An **OpenAI-compatible endpoint** (LM Studio recommended) hosting **Llama 3.1 70B Instruct**
+*   **Node.js** (v20+ recommended)
+*   **Redis** (v6+)
+*   **ChromaDB** (v0.4+)
+*   **Inference Provider** (e.g., LM Studio running Llama 3, OpenAI API key, or Gemini API key)
 
-## Setup Instructions
+## Quick Start (Docker)
+
+The easiest way to run the full stack (Node, Chat, Redis, Chroma) is via the Docker Compose setup in the `SignalZero-Docker` directory.
+
+1.  Navigate to `SignalZero-Docker`.
+2.  Run `docker-compose up --build`.
+3.  Access the UI at `http://localhost:3000`.
+
+## Manual Setup
 
 1.  **Install Dependencies**
     ```bash
@@ -16,89 +35,53 @@ SignalZero is a live recursive symbolic system designed to detect coercion, rest
     ```
 
 2.  **Environment Configuration**
-    Create a file named `.env` in the root directory. Add your inference connection details:
+    Create a `.env` file or rely on `settings.json` (managed via the API).
+    
+    Default Environment Variables:
     ```env
-    # LM Studio defaults
+    PORT=3001
+    REDIS_URL=redis://localhost:6379
+    CHROMA_URL=http://localhost:8000
+    CHROMA_COLLECTION=signalzero
+    INFERENCE_PROVIDER=local
     INFERENCE_ENDPOINT=http://localhost:1234/v1
-    INFERENCE_MODEL=lmstudio-community/Meta-Llama-3-70B-Instruct
-    API_KEY=lm-studio # API key is still required by the OpenAI client; LM Studio ignores the value
-    PORT=3000
+    INFERENCE_MODEL=openai/gpt-oss-120b
     ```
 
-    If you plan to use the Google Secret Manager tools, point the server to a service account key JSON file:
-
-    ```env
-    GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
-    # or
-    SECRET_MANAGER_SERVICE_ACCOUNT_JSON=/path/to/service-account.json
-    GCP_PROJECT_ID=your_project_id # optional override if not present in the key file
-    ```
-
-3.  **Run Development Server**
-    Start the server in watch mode:
+3.  **Run Server**
     ```bash
+    # Development (Watch Mode)
     npm run dev
-    ```
 
-4.  **Production Start**
-    ```bash
+    # Production
     npm start
     ```
 
-The server will start on `http://localhost:3000` (or your configured PORT).
+## API Documentation
 
-> Tip: You can update the active inference endpoint/model at runtime via `POST /api/settings` using the `inference` payload. This is useful when switching LM Studio models without restarting the server.
+The kernel exposes a RESTful API on port `3001` (by default).
 
-## Architecture Overview
+### Authentication
+*   `POST /api/auth/setup`: Initialize the system (Admin account, inference settings).
+*   `POST /api/auth/login`: Authenticate and receive a session token.
+*   `GET /api/auth/status`: Check initialization and authentication status.
 
-*   **Runtime**: Node.js + Express + TypeScript.
-*   **AI Integration**: OpenAI-compatible endpoint (LM Studio / Llama 3.1 70B Instruct).
-*   **Architecture**: Service-based (Domain, Inference, Project, Tools).
-*   **Persistence**: In-memory (transient) or file-based (project export/import).
+### Core Operations
+*   `POST /api/chat`: Send a message to the kernel.
+*   `GET /api/traces`: Retrieve reasoning traces.
+*   `POST /api/project/import`: Import a full `.szproject` state.
+*   `POST /api/project/export`: Export current state.
 
-## API Endpoints
+### Domain & Symbol Management
+*   `GET /api/domains`: List all domains.
+*   `POST /api/domains`: Create a new domain.
+*   `GET /api/symbols/search`: Semantic search for symbols.
+*   `POST /api/domains/:id/symbols`: Upsert a symbol.
 
-The server exposes a comprehensive RESTful API for interacting with the kernel.
+(See source code `server.ts` for the complete route list)
 
-### Chat & System
-*   `POST /api/chat`: Send a message to the kernel (streaming response logic handled internally, returns full response).
-*   `POST /api/chat/reset`: Reset the current conversation context and traces.
-*   `GET /api/system/prompt`: Retrieve the current active system prompt (activation prompt).
-*   `POST /api/system/prompt`: Update the active system prompt.
+## License
 
-### Domain Management
-*   `GET /api/domains`: List metadata for all domains.
-*   `GET /api/domains/:id/exists`: Check if a domain exists.
-*   `GET /api/domains/:id/enabled`: Check if a domain is enabled.
-*   `POST /api/domains/:id/toggle`: Enable/Disable a domain.
-*   `PATCH /api/domains/:id`: Update domain metadata (name, description, invariants).
-*   `DELETE /api/domains/:id`: Delete a domain and all its symbols.
-*   `POST /api/admin/clear-all`: **Destructive**: Clear all domains and symbols.
+**Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)**
 
-### Symbol Management
-*   `GET /api/symbols/search?q=...`: Semantic search for symbols across all domains.
-*   `GET /api/symbols/:id`: Retrieve a specific symbol by its global ID.
-*   `POST /api/symbols/refactor`: Execute a batch refactor operation on symbols.
-*   `POST /api/symbols/compress`: Compress multiple symbols into a new one.
-*   `GET /api/domains/:id/symbols`: List all symbols in a specific domain.
-*   `GET /api/domains/:id/query`: Filter symbols in a domain (by tag, etc.).
-*   `POST /api/domains/:id/symbols`: Create or Update (Upsert) a symbol.
-*   `POST /api/domains/:id/symbols/bulk`: Bulk Upsert symbols.
-*   `DELETE /api/domains/:domainId/symbols/:symbolId`: Delete a specific symbol (optional `?cascade=true`).
-*   `POST /api/domains/:domainId/symbols/rename`: Rename a symbol and propagate changes.
-
-### Testing Framework
-*   `GET /api/tests/sets`: List all test sets.
-*   `POST /api/tests/sets`: Create or update a test set.
-*   `DELETE /api/tests/sets/:id`: Delete a test set.
-*   `POST /api/tests`: Add a prompt and expected activations to a specific test set.
-*   `POST /api/tests/runs`: Start a new test run for a given test set (optionally include `compareWithBaseModel: true`).
-*   `GET /api/tests/runs`: List past test runs.
-*   `GET /api/tests/runs/:id`: Get details of a specific test run.
-
-Each test case records `expectedActivations` (symbol IDs that must appear in the trace). Missing activations mark the test as failed.
-
-### Project & State
-*   `POST /api/project/export`: Export the entire system state (domains, symbols, prompt) as a `.szproject` file.
-*   `POST /api/project/import`: Restore system state from a `.szproject` file.
-*   `GET /api/traces`: Retrieve the current execution reasoning traces.
+Commercial use of this software is strictly prohibited under this license. To obtain a license for commercial use, please contact: `klietus@gmail.com`.
