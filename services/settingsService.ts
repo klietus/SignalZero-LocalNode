@@ -5,7 +5,7 @@ import path from 'path';
 
 dotenv.config();
 
-const SETTINGS_FILE = path.join(process.cwd(), 'settings.json');
+const SETTINGS_FILE = process.env.SETTINGS_FILE_PATH || path.join(process.cwd(), 'settings.json');
 
 export interface VectorSettings {
   useExternal: boolean;
@@ -21,6 +21,12 @@ export interface RedisSettings {
   redisPassword: string;
 }
 
+export interface AdminUser {
+  username: string;
+  passwordHash: string;
+  salt: string;
+}
+
 export interface SystemSettings {
   redis?: {
     server?: string;
@@ -33,6 +39,7 @@ export interface SystemSettings {
     useExternal?: boolean;
   };
   inference?: Partial<InferenceSettings>;
+  adminUser?: AdminUser;
 }
 
 export interface InferenceConfiguration {
@@ -55,6 +62,7 @@ export interface InferenceSettings {
 
 // In-memory store for saved configs, loaded from file
 let _savedInferenceConfigs: Record<string, InferenceConfiguration> = {};
+let _adminUser: AdminUser | null = null;
 
 const savePersistedSettings = (settings: any) => {
   try {
@@ -64,7 +72,8 @@ const savePersistedSettings = (settings: any) => {
       inference: {
         ...settings.inference,
         savedConfigs: _savedInferenceConfigs
-      }
+      },
+      adminUser: _adminUser
     };
     fs.writeFileSync(SETTINGS_FILE, JSON.stringify(payload, null, 2));
   } catch (e) {
@@ -97,6 +106,9 @@ const loadPersistedSettings = () => {
         if (data.inference.savedConfigs) {
            _savedInferenceConfigs = data.inference.savedConfigs;
         }
+      }
+      if (data.adminUser) {
+          _adminUser = data.adminUser;
       }
     } catch (e) {
       console.error('Failed to load settings file', e);
@@ -142,6 +154,14 @@ export const settingsService = {
   },
 
   clearSystemPrompt: () => {},
+
+  // --- Admin Auth ---
+  getAdminUser: (): AdminUser | null => _adminUser,
+  
+  setAdminUser: (user: AdminUser) => {
+      _adminUser = user;
+      savePersistedSettings(settingsService.getSystemSettings());
+  },
 
   // --- Redis Settings ---
   getRedisSettings: (): RedisSettings => {
@@ -205,9 +225,9 @@ export const settingsService = {
       provider: (process.env.INFERENCE_PROVIDER as 'local' | 'openai' | 'gemini') || 'local',
       apiKey: process.env.INFERENCE_API_KEY || '',
       endpoint: process.env.INFERENCE_ENDPOINT || 'http://localhost:1234/v1',
-      model: process.env.INFERENCE_MODEL || 'lmstudio-community/Meta-Llama-3-70B-Instruct',
-      loopModel: process.env.INFERENCE_LOOP_MODEL || process.env.INFERENCE_MODEL || 'lmstudio-community/Meta-Llama-3-70B-Instruct',
-      visionModel: process.env.INFERENCE_VISION_MODEL || 'gpt-4o-mini',
+      model: process.env.INFERENCE_MODEL || 'openai/gpt-oss-120b',
+      loopModel: process.env.INFERENCE_LOOP_MODEL || process.env.INFERENCE_MODEL || 'openai/gpt-oss-120b',
+      visionModel: process.env.INFERENCE_VISION_MODEL || 'zai-org/glm-4.6v-flash',
       savedConfigs: _savedInferenceConfigs
     };
   },
@@ -262,6 +282,7 @@ export const settingsService = {
         loopModel: inferenceSettings.loopModel,
         visionModel: inferenceSettings.visionModel,
       },
+      adminUser: _adminUser || undefined
     };
   },
 
@@ -301,8 +322,12 @@ export const settingsService = {
       });
     }
 
-    // Save aggregated settings to file
-    savePersistedSettings(settingsService.getSystemSettings());
+    if (settings.adminUser) {
+        settingsService.setAdminUser(settings.adminUser);
+    } else {
+        // Save aggregated settings to file
+        savePersistedSettings(settingsService.getSystemSettings());
+    }
   },
 
   // --- Utilities ---
