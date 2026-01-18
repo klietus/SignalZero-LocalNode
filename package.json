@@ -3,6 +3,7 @@
   "version": "2.0.0",
   "type": "module",
   "description": "SignalZero Recursive Symbolic Kernel - Backend Server",
+  "license": "CC-BY-NC-4.0",
   "scripts": {
     "start": "tsx server.ts",
     "dev": "tsx watch server.ts",
