@@ -461,6 +461,17 @@ export const toolDeclarations: ChatCompletionTool[] = [
             type: 'string',
             description: 'The search query to look up on Google Custom Search.'
           },
+          queries: {
+            type: 'array',
+            description: 'Optional list of multiple search queries to execute in parallel. If provided, "query" is ignored.',
+            items: {
+              type: 'object',
+              properties: {
+                query: { type: 'string' }
+              },
+              required: ['query']
+            }
+          },
           image_search: {
             type: 'boolean',
             description: 'If true, performs an image search instead of a web search.'
@@ -1094,79 +1105,87 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
       }
 
       case 'web_search': {
-          const { query, image_search } = args;
-          if (!query || typeof query !== 'string') {
-              return { error: "Missing or invalid 'query' argument." };
+          const { query, queries, image_search } = args;
+          
+          // Normalize input to a list of queries
+          let queryList: string[] = [];
+          if (Array.isArray(queries) && queries.length > 0) {
+              queryList = queries.map((q: any) => typeof q === 'string' ? q : q.query).filter((q: any) => typeof q === 'string' && q.trim().length > 0);
+          } else if (typeof query === 'string' && query.trim().length > 0) {
+              queryList = [query];
           }
 
-          try {
-              const apiKey = process.env.API_KEY || process.env.GOOGLE_CUSTOM_SEARCH_KEY || process.env.GOOGLE_SEARCH_KEY;
-              const searchEngineId = process.env.GOOGLE_CSE_ID || process.env.GOOGLE_SEARCH_ENGINE_ID || process.env.GOOGLE_CUSTOM_SEARCH_CX;
+          if (queryList.length === 0) {
+              loggerService.warn("web_search failed: No valid queries provided", { args });
+              return { error: "Missing or invalid 'query' or 'queries' argument." };
+          }
 
-              if (!apiKey) {
-                  return { error: 'Google Custom Search failed: Missing GOOGLE_API_KEY environment variable.' };
-              }
+          loggerService.info(`web_search executing ${queryList.length} queries`, { queries: queryList });
 
-              if (!searchEngineId) {
-                  return { error: 'Google Custom Search failed: Missing search engine ID (set GOOGLE_CSE_ID or GOOGLE_SEARCH_ENGINE_ID).' };
-              }
+          const apiKey = process.env.API_KEY || process.env.GOOGLE_CUSTOM_SEARCH_KEY || process.env.GOOGLE_SEARCH_KEY;
+          const searchEngineId = process.env.GOOGLE_CSE_ID || process.env.GOOGLE_SEARCH_ENGINE_ID || process.env.GOOGLE_CUSTOM_SEARCH_CX;
 
-              const searchUrl = new URL('https://customsearch.googleapis.com/customsearch/v1');
-              searchUrl.searchParams.set('key', apiKey);
-              searchUrl.searchParams.set('cx', searchEngineId);
-              searchUrl.searchParams.set('q', query);
-              searchUrl.searchParams.set('num', '10');
-              
-              if (image_search) {
-                  searchUrl.searchParams.set('searchType', 'image');
-              }
+          loggerService.info("web_search config check", {
+              hasApiKey: !!apiKey,
+              apiKeyLength: apiKey ? apiKey.length : 0,
+              hasSearchEngineId: !!searchEngineId,
+              searchEngineIdLength: searchEngineId ? searchEngineId.length : 0
+          });
 
-              const response = await fetch(searchUrl.toString(), {
-                  headers: {
-                      'User-Agent': 'Mozilla/5.0 (compatible; SignalZeroBot/1.0; +https://signalzero.ai)',
-                      'Accept': 'application/json'
-                  }
-              });
+          if (!apiKey) return { error: 'Google Custom Search failed: Missing GOOGLE_API_KEY environment variable.' };
+          if (!searchEngineId) return { error: 'Google Custom Search failed: Missing search engine ID.' };
 
-              if (!response.ok) {
-                  return { error: `Google Custom Search failed: HTTP ${response.status}` };
-              }
-
-              const bodyText = await response.text();
-
-              let json;
+          const executeSearch = async (q: string) => {
               try {
-                  json = JSON.parse(bodyText);
-              } catch (parseError) {
-                  return { error: `Google Custom Search failed: Invalid JSON (${String(parseError)})`, response_preview: bodyText.slice(0, 200) };
+                  const searchUrl = new URL('https://customsearch.googleapis.com/customsearch/v1');
+                  searchUrl.searchParams.set('key', apiKey);
+                  searchUrl.searchParams.set('cx', searchEngineId);
+                  searchUrl.searchParams.set('q', q);
+                  searchUrl.searchParams.set('num', '10');
+                  if (image_search) searchUrl.searchParams.set('searchType', 'image');
+
+                  const response = await fetch(searchUrl.toString(), {
+                      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SignalZeroBot/1.0; +https://signalzero.ai)', 'Accept': 'application/json' }
+                  });
+
+                  if (!response.ok) {
+                      const errorBody = await response.text();
+                      loggerService.error("web_search HTTP error", { status: response.status, body: errorBody });
+                      return { query: q, error: `HTTP ${response.status}: ${errorBody}` };
+                  }
+
+                  const bodyText = await response.text();
+                  const json = JSON.parse(bodyText);
+                  const items = Array.isArray(json.items) ? json.items : [];
+                  
+                  return {
+                      query: q,
+                      total_results: json.searchInformation?.totalResults,
+                      results: items.map((item: any) => ({
+                          title: item.title,
+                          snippet: item.snippet || item.htmlSnippet,
+                          url: item.link,
+                          display_link: item.displayLink,
+                          mime: item.mime
+                      }))
+                  };
+              } catch (e: any) {
+                  return { query: q, error: e.message || String(e) };
               }
+          };
 
-              const items = Array.isArray(json.items) ? json.items : [];
-              const results = items.map((item: any) => ({
-                  title: item.title,
-                  snippet: item.snippet || item.htmlSnippet,
-                  url: item.link,
-                  display_link: item.displayLink,
-                  mime: item.mime
-              }));
+          const results = await Promise.all(queryList.map(executeSearch));
+          
+          const errors = results.filter(r => r.error);
+          loggerService.info(`web_search completed ${results.length} searches`, { 
+              successCount: results.filter(r => !r.error).length,
+              errorCount: errors.length,
+              errors: errors.map(e => ({ query: e.query, error: e.error }))
+          });
 
-              loggerService.info('Web Search Response', {
-                  query,
-                  status: response.status,
-                  content_type: response.headers.get('content-type') || 'unknown',
-                  content_length: bodyText.length,
-                  result_count: results.length
-              });
-
-              return {
-                  query,
-                  search_engine: 'google_custom_search',
-                  total_results: json.searchInformation?.totalResults,
-                  results
-              };
-          } catch (error) {
-              return { error: `Google Custom Search failed: ${String(error)}` };
-          }
+          // Flatten results if single query for backward compatibility, or return list structure
+          if (results.length === 1) return results[0];
+          return { batch_results: results };
       }
 
       case 'list_secrets': {
