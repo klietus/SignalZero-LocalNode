@@ -608,6 +608,7 @@ export async function* sendMessageAndHandleTools(
 
   let loops = 0;
   let totalTextAccumulatedAcrossLoops = "";
+  let previousTurnText = "";
   let hasLoggedTrace = false;
   let hasSearchedSymbols = false;
   let auditRetries = 0;
@@ -685,6 +686,17 @@ export async function* sendMessageAndHandleTools(
     }
 
     totalTextAccumulatedAcrossLoops += textAccumulatedInTurn;
+
+    // Deduplicate: If the exact same text was generated in the previous loop, ignore it.
+    if (loops > 0 && textAccumulatedInTurn.trim().length > 0 && textAccumulatedInTurn.trim() === previousTurnText.trim()) {
+         loggerService.warn("Detected duplicate text generation (echo). Suppressing from history.", { 
+             contextSessionId, 
+             textSnippet: textAccumulatedInTurn.slice(0, 50) 
+         });
+         textAccumulatedInTurn = ""; 
+    } else if (textAccumulatedInTurn.trim().length > 0) {
+         previousTurnText = textAccumulatedInTurn;
+    }
 
     // SANITIZE: Check for and fix malformed tool arguments before persisting
     if ((nextAssistant as any).tool_calls) {
