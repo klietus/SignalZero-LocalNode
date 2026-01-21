@@ -105,6 +105,10 @@ Return JSON with the field "invariants" as a non-empty array of concise invarian
 
         if (provider === 'gemini') {
             try {
+                loggerService.info(`Inferring invariants with Gemini model: ${model}`, { 
+                    keyPresent: !!apiKey, 
+                    keyLen: apiKey?.length 
+                });
                 const genAI = new GoogleGenerativeAI(apiKey);
                 const genModel = genAI.getGenerativeModel({ 
                     model: model, 
@@ -113,7 +117,11 @@ Return JSON with the field "invariants" as a non-empty array of concise invarian
                 const result = await genModel.generateContent(prompt);
                 messageText = result.response.text();
             } catch (err: any) {
-                 loggerService.error('Gemini Inference Failed', { err: String(err) });
+                 loggerService.error('Gemini Inference Failed', { 
+                     err: String(err), 
+                     model, 
+                     keyPartial: apiKey ? `${apiKey.slice(0, 4)}...` : 'none' 
+                 });
                  throw new Error(`Gemini Inference Failed: ${err.message || String(err)}`);
             }
         } else {
