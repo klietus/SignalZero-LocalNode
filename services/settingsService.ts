@@ -40,6 +40,10 @@ export interface SystemSettings {
   };
   inference?: Partial<InferenceSettings>;
   adminUser?: AdminUser;
+  googleSearch?: {
+    apiKey?: string;
+    cx?: string;
+  };
 }
 
 export interface InferenceConfiguration {
@@ -106,6 +110,10 @@ const loadPersistedSettings = () => {
         if (data.inference.savedConfigs) {
            _savedInferenceConfigs = data.inference.savedConfigs;
         }
+      }
+      if (data.googleSearch) {
+        if (data.googleSearch.apiKey) process.env.GOOGLE_CUSTOM_SEARCH_KEY = data.googleSearch.apiKey;
+        if (data.googleSearch.cx) process.env.GOOGLE_CSE_ID = data.googleSearch.cx;
       }
       if (data.adminUser) {
           _adminUser = data.adminUser;
@@ -282,6 +290,10 @@ export const settingsService = {
         loopModel: inferenceSettings.loopModel,
         visionModel: inferenceSettings.visionModel,
       },
+      googleSearch: {
+        apiKey: process.env.GOOGLE_CUSTOM_SEARCH_KEY || '',
+        cx: process.env.GOOGLE_CSE_ID || ''
+      },
       adminUser: _adminUser || undefined
     };
   },
@@ -320,6 +332,11 @@ export const settingsService = {
         loopModel: (inferenceInput.loopModel as string | undefined) ?? (inferenceInput.model as string | undefined) ?? currentInference.loopModel,
         visionModel: (inferenceInput.visionModel as string | undefined) ?? currentInference.visionModel,
       });
+    }
+
+    if (settings.googleSearch) {
+        if (settings.googleSearch.apiKey !== undefined) process.env.GOOGLE_CUSTOM_SEARCH_KEY = settings.googleSearch.apiKey;
+        if (settings.googleSearch.cx !== undefined) process.env.GOOGLE_CSE_ID = settings.googleSearch.cx;
     }
 
     if (settings.adminUser) {

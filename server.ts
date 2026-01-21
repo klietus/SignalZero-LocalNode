@@ -190,8 +190,8 @@ app.get('/api/settings', (req, res) => {
 
 app.post('/api/settings', (req, res) => {
     try {
-        const { redis, chroma, inference } = req.body || {};
-        settingsService.setSystemSettings({ redis, chroma, inference });
+        const { redis, chroma, inference, googleSearch } = req.body || {};
+        settingsService.setSystemSettings({ redis, chroma, inference, googleSearch });
         const updated = settingsService.getSystemSettings();
         res.json(updated);
     } catch (e) {
