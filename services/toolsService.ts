@@ -452,6 +452,35 @@ export const toolDeclarations: ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
+      name: 'web_post',
+      description: 'Submit data to a web URL (POST, PUT, DELETE, etc.) and return the response. Supports JSON bodies and form data.',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'The absolute URL to send data to.' },
+          method: { type: 'string', description: 'HTTP method (POST, PUT, PATCH, DELETE). Defaults to POST.' },
+          headers: {
+            type: 'object',
+            description: 'Optional custom HTTP headers.',
+            additionalProperties: true
+          },
+          body: {
+            type: 'string',
+            description: 'Raw body content (e.g. JSON string). Mutually exclusive with form_data.'
+          },
+          form_data: {
+            type: 'object',
+            description: 'Key-value pairs for form submission (application/x-www-form-urlencoded). Mutually exclusive with body.',
+            additionalProperties: true
+          }
+        },
+        required: ['url']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
       name: 'web_search',
       description: 'Perform a Google Custom Search for a query and return structured JSON results.',
       parameters: {
@@ -1101,6 +1130,76 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           } catch (error: any) {
               loggerService.error("Web fetch failed", { url, error: error.message || String(error) });
               return { error: `Failed to fetch URL: ${error.message || String(error)}` };
+          }
+      }
+
+      case 'web_post': {
+          const { url, method = 'POST', headers, body, form_data } = args;
+          
+          if (!url || typeof url !== 'string') return { error: "Missing 'url' argument." };
+
+          const requestHeaders: Record<string, string> = {
+              'User-Agent': 'Mozilla/5.0 (compatible; SignalZeroBot/1.0; +https://signalzero.ai)',
+          };
+
+          if (headers && typeof headers === 'object') {
+              Object.assign(requestHeaders, headers);
+          }
+
+          let requestBody: any = undefined;
+
+          if (form_data) {
+              const params = new URLSearchParams();
+              for (const [key, value] of Object.entries(form_data)) {
+                  params.append(key, String(value));
+              }
+              requestBody = params;
+              // URLSearchParams automatically sets Content-Type to application/x-www-form-urlencoded usually,
+              // but explicit header doesn't hurt if fetch doesn't do it automatically in this env.
+              // Actually, passing URLSearchParams to fetch body usually handles it.
+          } else if (body) {
+              requestBody = typeof body === 'string' ? body : JSON.stringify(body);
+              if (!requestHeaders['Content-Type']) {
+                   // Try to infer JSON
+                   try {
+                       JSON.parse(requestBody);
+                       requestHeaders['Content-Type'] = 'application/json';
+                   } catch (e) {
+                       requestHeaders['Content-Type'] = 'text/plain';
+                   }
+              }
+          }
+
+          try {
+              const response = await fetch(url, {
+                  method: method.toUpperCase(),
+                  headers: requestHeaders,
+                  body: requestBody
+              });
+
+              if (!response.ok) {
+                   const errorText = await response.text();
+                   return { error: `HTTP ${response.status} ${response.statusText}: ${errorText}` };
+              }
+
+              const buffer = await response.arrayBuffer();
+              const contentType = response.headers.get('content-type') || '';
+              const parsed = await documentMeaningService.parse(Buffer.from(buffer), contentType, url);
+
+              return {
+                  url,
+                  method,
+                  status: response.status,
+                  content_type: contentType,
+                  document_type: parsed.type,
+                  metadata: parsed.metadata,
+                  content: parsed.content,
+                  structured_data: parsed.structured_data
+              };
+
+          } catch (error: any) {
+              loggerService.error("Web post failed", { url, method, error: error.message || String(error) });
+              return { error: `Failed to post to URL: ${error.message || String(error)}` };
           }
       }
 
