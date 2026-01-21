@@ -143,6 +143,30 @@ class DocumentMeaningService {
             }
         });
 
+        // Extract forms
+        const forms: any[] = [];
+        const formElements = doc.querySelectorAll('form');
+        formElements.forEach((form) => {
+            const inputs: any[] = [];
+            form.querySelectorAll('input, textarea, select').forEach((el: any) => {
+                inputs.push({
+                    name: el.getAttribute('name'),
+                    type: el.tagName.toLowerCase() === 'input' ? el.getAttribute('type') : el.tagName.toLowerCase(),
+                    value: el.getAttribute('value'),
+                    placeholder: el.getAttribute('placeholder'),
+                    required: el.hasAttribute('required')
+                });
+            });
+
+            forms.push({
+                action: form.getAttribute('action'),
+                method: form.getAttribute('method') || 'GET',
+                id: form.getAttribute('id'),
+                name: form.getAttribute('name'),
+                inputs: inputs
+            });
+        });
+
         const reader = new Readability(doc);
         const article = reader.parse();
 
@@ -157,12 +181,18 @@ class DocumentMeaningService {
                 images.map(img => `[Image: ${img.title || 'No description'}] (${img.url})`).join('\n');
         }
 
+        if (forms.length > 0) {
+            enrichedContent += '\n\n--- Forms in Document ---\n' +
+                forms.map(f => `[Form: ${f.name || f.id || 'Unnamed'} (${f.method} ${f.action})] Inputs: ${f.inputs.length}`).join('\n');
+        }
+
         return {
             type: 'html',
             metadata: {
                 title,
                 description,
                 image_count: images.length,
+                form_count: forms.length,
                 byline: article?.byline,
                 siteName: article?.siteName,
                 lang: article?.lang
@@ -170,6 +200,7 @@ class DocumentMeaningService {
             content: enrichedContent,
             structured_data: {
                 images,
+                forms,
                 readability: article ? {
                     length: article.length,
                     excerpt: article.excerpt
