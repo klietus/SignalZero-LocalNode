@@ -37,7 +37,7 @@ export class ContextWindowService {
     const stableContext = await this.buildStableContext();
     messages.push({
       role: 'system',
-      content: `[STATIC_KNOWLEDGE]\n${stableContext}`
+      content: `[KERNEL]\n${stableContext}`
     });
 
     // 3. Sliding History Window (Token based)
@@ -275,7 +275,10 @@ export class ContextWindowService {
             triadDisplay = `[${triadArr.slice(0, 3).join(', ')}]`;
         }
         
-        return `| ${s.id} | ${s.name} | ${triadDisplay} | ${kindDisplay} |`;
+        // Truncate macro for brevity if needed, but keep it useful
+        const macroDisplay = (s.macro || "").slice(0, 100).replace(/\n/g, " ");
+
+        return `| ${s.id} | ${s.name} | ${triadDisplay} | ${kindDisplay} | ${macroDisplay} |`;
     }).join('\n');
   }
 
