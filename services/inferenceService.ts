@@ -28,7 +28,7 @@ interface ChatSessionState {
 // We cast to 'any' when pushing to parts array to bypass strict type check for now
 // as the library types might lag behind the API.
 
-const MAX_TOOL_LOOPS = 50;
+const MAX_TOOL_LOOPS = 15;
 
 const getClient = () => {
   const { endpoint, provider, apiKey } = settingsService.getInferenceSettings();
@@ -744,6 +744,7 @@ export async function* sendMessageAndHandleTools(
 
                 yield { text: "\n\n> *[System Audit: Enforcing Symbolic Integrity - Retrying]*\n\n" };
 
+                previousTurnText = ""; // Reset deduplication tracking since this turn was rejected
                 auditRetries++;
                 loops++;
                 continue; 
