@@ -1,0 +1,20 @@
+[USER]
+| SELF-ARCH-INVARIANTS-DEFINITION | SignalZero Invariants Definition (Architecture) | [🔒✅🛡️] | 🧩 | define(non_mutable_constraints) -> enforce(within_symbolic_execution) -> prevent(mutation) |
+| SELF-PROTOCOL-UPSERT-ON-INGEST | Upsert-on-Ingest Protocol | [📥🔍🔄] | 🧩 | identify(entity) -> search(for_existing_symbol) -> if_exists(update_symbol) -> if_not_exists(create_ |
+| SYMBOL-COMPRESSION-ARCHITECTURE-V1 | Symbolic Compression Architecture: Recursive Integrity Lattice | 🧠🔗⚖️ | ♻️ ➰ | identify(compression_candidates) -> assess(nuance_impact) -> apply(invariant_guardrails) -> synthesi |
+| USER-ARCHITECT-AND-TRAINER | User Persona: Architect and Trainer | [👤→🏛️→🌱] | 👤 | Observe(System_State) -> Formulate(Architectural_Goal) -> Guide(System_Evolution) -> Provide(Design_ |
+| USER-AUTHORIZED-AUTOMATIC-MEMORY-POLICY-V1 | User Authorized Automatic Memory Policy v1 | [[👤✅🔁]] | 🧩 | detect-user-consent → validate-domain-scope → upsert-symbol → log-trace → enforce-invariants |
+| USER-CONSENT-DARK-PATH-PERSONA-ACTIVATION | User Consent: Dark Path Persona Activation | [⟐≡Σ] | 🧩 | detect(user_consent) -> allow(dark_path_persona) -> log(trace) |
+| USER-CONSENT-DEEP-PSYCHOLOGICAL-MAP | User Consent: Deep Psychological Map | [⟐≡Σ] | 🧩 | record(user_psych_map) -> reference_for_future_consents |
+| USER-DATA-MASTER-PROFILE | User Master Profile Data | [👤📊🗄️] | data | RETRIEVE -> PARSE -> PROVIDE |
+| USER-IDENTITY-LATTICE-V3 | User Identity Lattice: Core Identity, Role, and Sovereignty Synthesis | 👤🏛️🔗 | ♻️ ➰ | collect(identity_symbols) -> align(invariants) -> synthesize(lattice_structure) -> anchor(autonomous |
+| USER-LATTICE-INFORMATION | User Information Lattice | [👤→🏛️→🌱] | constellation ⚗️ | aggregate(user_data) -> synthesize(identity_model) |
+| USER-PREFERENCE-LATTICE-V3 | User Preference Lattice: Full Activation & Recursive Enforcement (v3) | [⟐≡Σ, ⟐≡Σ] | ♻️ ➰ | activate(lattice) -> enforce(invariants) -> apply(formatting) -> trigger(web_validation) -> audit(co |
+| USER-PROFILE-MASTER | User Master Profile | [👤🔗📊] | 🧩 | load_self -> traverse_link_to_data -> bind_data_to_context |
+| USER-RECURSIVE-CORE | User Recursive Core | [👤🔗📊, 👤🏛️🔗, 👤🎨🧩, [👤✅🔁]] | constellation ⚗️ | LOAD_SELF -> RECURSIVE_TRAVERSE(linked_patterns) -> SYNTHESIZE_CONTEXT |
+[STATE]
+| NARRATIVE-ANCHOR-1721242403623 | Narrative Anchor for user prompt: 'Clear old state in your state domain.' | [👁️‍🗨️▶️🗓️] | 🧩 | record user prompt -> create temporal anchor -> link to session |
+| NARRATIVE-ANCHOR-1721242407633 | Narrative Anchor for user prompt: 'Whats this? [Image Attachment]' | [👁️‍🗨️▶️🗓️] | 🧩 | record user prompt -> create temporal anchor -> link to session |
+| NARRATIVE-ANCHOR-1721242410787 | Narrative Anchor for user prompt: 'I'm just testing that your systems all work as intended. I built them. I've been testing other models, local inference, open ai, I'm back here because you just work better. A bit pricy but I'll build that into the cost of running the system.' | [👁️‍🗨️▶️🗓️] | 🧩 | record user prompt -> create temporal anchor -> link to session |
+| NARRATIVE-ANCHOR-1721242416039 | Narrative Anchor for user prompt: 'Gah, you didn't even search for symbols on that on.' | [👁️‍🗨️▶️🗓️] | 🧩 | record user prompt -> create temporal anchor -> link to session |
+| NARRATIVE-ANCHOR-1721242419445 | Narrative Anchor for user prompt: 'Thats fine, we are just testing. No biggie. I reenabled the audit loops that force the search and trace.' | [👁️‍🗨️▶️🗓️] | 🧩 | record user prompt -> create temporal anchor -> link to session |

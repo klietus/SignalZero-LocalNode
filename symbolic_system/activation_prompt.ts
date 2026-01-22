@@ -106,7 +106,7 @@ const SYMBOL_DATA_SCHEMA = {
     description: 'The full JSON object representing the Symbol schema.',
     properties: {
         id: { type: 'string' },
-        kind: { type: 'string', description: "Type of symbol: 'pattern', 'lattice', or 'persona'. Defaults to 'pattern'." },
+        kind: { type: 'string', description: "Type of symbol: 'pattern', 'lattice', 'persona', or 'data'. Defaults to 'pattern'." },
         triad: { type: 'string' },
         macro: { type: 'string' },
         role: { type: 'string' },
@@ -127,6 +127,20 @@ const SYMBOL_DATA_SCHEMA = {
                 function: { type: 'string' },
                 fallback_behavior: { type: 'array', items: { type: 'string' } },
                 linked_personas: { type: 'array', items: { type: 'string' } }
+            }
+        },
+        data: {
+            type: 'object',
+            description: "Configuration for data symbols (key-value store)",
+            properties: {
+                source: { type: 'string', description: "Origin of the data." },
+                verification: { type: 'string', description: "Verification status or method." },
+                status: { type: 'string', description: "Current status of the data." },
+                payload: { 
+                    type: 'object', 
+                    additionalProperties: true, 
+                    description: "Key-value store for arbitrary data." 
+                }
             }
         },
         activation_conditions: { type: 'array', items: { type: 'string' } },

@@ -348,21 +348,17 @@ export class ContextWindowService {
   private async buildDynamicContext(type: 'conversation' | 'loop' = 'conversation'): Promise<string> {
       try {
           const results: string[] = [];
-          let identityCount = 0;
-          let preferenceCount = 0;
+          let userCoreCount = 0;
           
           if (type !== 'loop') {
-              // Query 4: "self" and "user" domains "identity" (40)
-              const identitySymbolsResult = await domainService.search("identity", 40, { domains: ['user'] });
-              const identitySymbols = identitySymbolsResult.map(r => r.symbol).filter(Boolean) as SymbolDef[];
-              identityCount = identitySymbols.length;
-              results.push(`[IDENTITY]\n${this.formatSymbols(identitySymbols)}`);
-
-              // Query 5: "user" domain "preference" (30)
-              const preferenceSymbolsResult = await domainService.search("preference", 30, { domains: ['user'] });
-              const preferenceSymbols = preferenceSymbolsResult.map(r => r.symbol).filter(Boolean) as SymbolDef[];
-              preferenceCount = preferenceSymbols.length;
-              results.push(`\n[PREFERENCES]\n${this.formatSymbols(preferenceSymbols)}`);
+              // Query 4: Recursive User Core Injection
+              // Start with USER-RECURSIVE-CORE and expand 3 levels deep
+              const userSet = new Map<string, SymbolDef>();
+              await this.recursiveSymbolLoad('USER-RECURSIVE-CORE', 3, userSet);
+              
+              const userSymbols = Array.from(userSet.values());
+              userCoreCount = userSymbols.length;
+              results.push(`[USER]\n${this.formatSymbols(userSymbols)}`);
           }
 
           // Query 6: Recent State Domain Symbols (Last 5 by date time)
@@ -381,8 +377,7 @@ export class ContextWindowService {
           const fullContext = results.join('');
           loggerService.info(`Built Dynamic Context`, { 
               type,
-              identitySymbols: identityCount, 
-              preferenceSymbols: preferenceCount, 
+              userCoreSymbols: userCoreCount, 
               stateSymbols: recentStateSymbols.length, 
               chars: fullContext.length 
           });

@@ -51,7 +51,7 @@ const ensureWritableDomain = (domain: CachedDomain, domainId: string, symbolId?:
 
 export const migrateSymbols = async (domain: CachedDomain): Promise<boolean> => {
     let modified = false;
-    const validKinds = ['pattern', 'persona', 'lattice'];
+    const validKinds = ['pattern', 'persona', 'lattice', 'data'];
 
     for (const symbol of domain.symbols) {
         // Validation: Default invalid or missing kind to pattern
@@ -65,8 +65,10 @@ export const migrateSymbols = async (domain: CachedDomain): Promise<boolean> => 
             symbol.linked_patterns = Array.from(new Set([...(symbol.linked_patterns || []), ...members]));
             delete (symbol.lattice as any).members;
             modified = true;
-            // Reindex in vector store to reflect schema change
-            await vectorService.indexSymbol(symbol);
+            // Reindex in vector store to reflect schema change (skip data symbols)
+            if (symbol.kind !== 'data') {
+                await vectorService.indexSymbol(symbol);
+            }
         }
     }
     return modified;
@@ -512,7 +514,7 @@ export const domainService = {
     }
 
     // Default invalid kind to pattern
-    const validKinds = ['pattern', 'persona', 'lattice'];
+    const validKinds = ['pattern', 'persona', 'lattice', 'data'];
     if (!symbol.kind || !validKinds.includes(symbol.kind)) {
         symbol.kind = 'pattern';
     }
@@ -540,8 +542,10 @@ export const domainService = {
     // Time bucket index (based on creation time)
     await indexSymbolBucket(normalizedSymbol);
     
-    // Index Vector
-    await vectorService.indexSymbol(normalizedSymbol);
+    // Index Vector (skip data symbols)
+    if (normalizedSymbol.kind !== 'data') {
+        await vectorService.indexSymbol(normalizedSymbol);
+    }
   },
 
   /**
@@ -594,7 +598,7 @@ export const domainService = {
 
       const symbolMap = new Map(domain.symbols.map(s => [s.id, s]));
       const nowB64 = currentTimestamp();
-      const validKinds = ['pattern', 'persona', 'lattice'];
+      const validKinds = ['pattern', 'persona', 'lattice', 'data'];
 
       for (const sym of symbols) {
           // Default invalid kind to pattern
@@ -615,7 +619,11 @@ export const domainService = {
       domain.lastUpdated = Date.now();
 
       await redisService.request(['SET', key, JSON.stringify(domain)]);
-      await vectorService.indexBatch(symbols);
+      
+      const symbolsToIndex = symbols.filter(s => s.kind !== 'data');
+      if (symbolsToIndex.length > 0) {
+          await vectorService.indexBatch(symbolsToIndex);
+      }
   },
 
   /**
@@ -676,7 +684,7 @@ export const domainService = {
           domain.symbols = domain.symbols.filter(s => !oldIdsToRemove.includes(s.id));
 
           // 3. Add New
-          const validKinds = ['pattern', 'persona', 'lattice'];
+          const validKinds = ['pattern', 'persona', 'lattice', 'data'];
           for (const update of domainUpdates) {
               if (!update.symbol_data.kind || !validKinds.includes(update.symbol_data.kind)) {
                   update.symbol_data.kind = 'pattern';
@@ -690,7 +698,10 @@ export const domainService = {
               };
               domain.symbols.push(normalized);
               updateCount++;
-              await vectorService.indexSymbol(normalized);
+              
+              if (normalized.kind !== 'data') {
+                  await vectorService.indexSymbol(normalized);
+              }
               await indexSymbolBucket(normalized);
           }
 

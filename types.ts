@@ -73,7 +73,7 @@ export interface SymbolFacet {
   [key: string]: any;
 }
 
-export type SymbolKind = 'pattern' | 'lattice' | 'persona';
+export type SymbolKind = 'pattern' | 'lattice' | 'persona' | 'data';
 export type LatticeTopology = 'inductive' | 'deductive' | 'bidirectional' | 'invariant' | 'energy';
 export type LatticeClosure = 'loop' | 'branch' | 'collapse' | 'constellation' | 'synthesis';
 
@@ -89,6 +89,13 @@ export interface SymbolPersonaDef {
     linked_personas: string[];
 }
 
+export interface SymbolDataDef {
+    source: string;
+    verification: string;
+    status: string;
+    payload: Record<string, any>;
+}
+
 export interface SymbolDef {
   id: string;
   name: string;
@@ -101,6 +108,7 @@ export interface SymbolDef {
   macro: string; // Used for patterns
   lattice?: SymbolLatticeDef; // Used for lattices
   persona?: SymbolPersonaDef; // Used for personas
+  data?: SymbolDataDef; // Used for data symbols
   activation_conditions: string[];
   symbol_domain: string;
   symbol_tag: string;
