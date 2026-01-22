@@ -24,4 +24,4 @@ dist-ssr
 *.sw?
 .env
 service-account-key.json
-settings.json
+settings.jsondynamic_context.txt
