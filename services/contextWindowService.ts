@@ -232,7 +232,8 @@ export class ContextWindowService {
 
     const KIND_MAP: Record<string, string> = {
         'pattern': '🧩',
-        'persona': '👤'
+        'persona': '👤',
+        'data': '💾'
     };
 
     // Format symbols using DSL: | ID | Name | Triad | Kind |
@@ -240,6 +241,7 @@ export class ContextWindowService {
     return uniqueSymbols.map(s => {
         let triadDisplay = "";
         let kindDisplay = KIND_MAP[s.kind || 'pattern'] || (s.kind || 'pattern');
+        let payloadDisplay = "";
 
         if (s.kind === 'lattice') {
             const topKey = s.lattice?.topology || 'inductive';
@@ -264,6 +266,18 @@ export class ContextWindowService {
              } else {
                  triadDisplay = s.triad || "[]";
              }
+        } else if (s.kind === 'data') {
+             // For data symbols, include the payload
+             if (s.data && s.data.payload) {
+                 payloadDisplay = `Payload: ${JSON.stringify(s.data.payload)}`;
+             }
+             let triadArr: string[] = [];
+             if (Array.isArray(s.triad)) {
+                triadArr = s.triad;
+             } else if (typeof s.triad === 'string') {
+                triadArr = (s.triad as string).split(',').map(t => t.trim());
+             }
+             triadDisplay = `[${triadArr.slice(0, 3).join(', ')}]`;
         } else {
             let triadArr: string[] = [];
             if (Array.isArray(s.triad)) {
@@ -277,8 +291,9 @@ export class ContextWindowService {
         
         // Truncate macro for brevity if needed, but keep it useful
         const macroDisplay = (s.macro || "").slice(0, 100).replace(/\n/g, " ");
+        const content = payloadDisplay ? `${payloadDisplay}` : macroDisplay;
 
-        return `| ${s.id} | ${s.name} | ${triadDisplay} | ${kindDisplay} | ${macroDisplay} |`;
+        return `| ${s.id} | ${s.name} | ${triadDisplay} | ${kindDisplay} | ${content} |`;
     }).join('\n');
   }
 
@@ -367,12 +382,28 @@ export class ContextWindowService {
               .sort((a, b) => {
                   const getT = (s?: string) => {
                       if (!s) return 0;
-                      try { return Number(Buffer.from(s, 'base64').toString()); } catch { return 0; }
+                      // Handle ISO string or timestamp
+                      const date = new Date(s);
+                      return !isNaN(date.getTime()) ? date.getTime() : 0;
                   };
+                  // Sort DESC (Newest First)
                   return getT(b.created_at) - getT(a.created_at);
               })
               .slice(0, 5);
-          results.push(`\n[STATE]\n${this.formatSymbols(recentStateSymbols)}`);
+          
+          // Custom formatter for state symbols to include timestamp
+          const stateFormatted = recentStateSymbols.map(s => {
+              // Reuse base logic but append timestamp
+              const base = this.formatSymbols([s]).trim(); 
+              // formatSymbols returns a block, possibly with newlines if multiple.
+              // Since we map 1 by 1, it should be a single line (or block).
+              // We want to inject the timestamp. 
+              // DSL is: | ID | Name | Triad | Kind | Content |
+              // We will append | CreatedAt |
+              return `${base.slice(0, -1)} ${s.created_at} |`;
+          }).join('\n');
+
+          results.push(`\n[STATE]\n${stateFormatted}`);
 
           const fullContext = results.join('');
           loggerService.info(`Built Dynamic Context`, { 
