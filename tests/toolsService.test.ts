@@ -138,4 +138,12 @@ describe('ToolsService', () => {
         await toolExecutor('upsert_symbols', { symbols: updates });
         expect(domainService.processRefactorOperation).toHaveBeenCalledWith(updates);
     });
+
+    it('sys_info returns system information', async () => {
+        const res = await toolExecutor('sys_info', { categories: ['os', 'time'] });
+        expect(res).toHaveProperty('os');
+        expect(res).toHaveProperty('time');
+        expect(res.os).toHaveProperty('platform');
+        expect(res.time).toHaveProperty('current');
+    });
 });
