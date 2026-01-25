@@ -35,6 +35,7 @@ describe('DomainService', () => {
     });
 
     it('should upsert a symbol', async () => {
+        await domainService.createDomain('new-domain');
         const symbol: any = { id: 'sym-1', name: 'Symbol 1' };
         await domainService.upsertSymbol('new-domain', symbol);
 

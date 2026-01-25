@@ -61,16 +61,16 @@ describe('TestService', () => {
 
         const runner = vi.fn().mockResolvedValue({ text: 'res', meta: {} });
         vi.spyOn(traceService, 'clear').mockReturnValue();
-        vi.spyOn(traceService, 'getTraces').mockReturnValue([
-            { activation_path: [{ symbol_id: 'OTHER', reason: '', link_type: '' }] } as any
+        vi.spyOn(traceService, 'getTraces').mockResolvedValue([
+            { id: 'T1', activation_path: [{ symbol_id: 'OTHER', reason: '', link_type: '' }] } as any
         ]);
 
         const run = await testService.startTestRun('ts2', runner);
         await new Promise(r => setTimeout(r, 20));
         const storedRun = await testService.getTestRun(run.id);
 
-        expect(storedRun?.results[0].status).toBe('failed');
-        expect(storedRun?.results[0].missingActivations).toContain('SYM-1');
+        expect(storedRun?.results![0].status).toBe('failed');
+        expect(storedRun?.results![0].missingActivations).toContain('SYM-1');
     });
 
     it('should include baseline comparison when requested', async () => {
@@ -85,7 +85,7 @@ describe('TestService', () => {
 
         const runner = vi.fn().mockResolvedValue({ text: 'res', meta: {} });
         vi.spyOn(traceService, 'clear').mockReturnValue();
-        vi.spyOn(traceService, 'getTraces').mockReturnValue([]);
+        vi.spyOn(traceService, 'getTraces').mockResolvedValue([]);
 
         const run = await testService.startTestRun('ts3', runner, true);
         let storedRun = await testService.getTestRun(run.id);
@@ -98,7 +98,7 @@ describe('TestService', () => {
 
         expect(inferenceService.runBaselineTest).toHaveBeenCalledWith('Prompt 3');
         expect(inferenceService.evaluateComparison).toHaveBeenCalled();
-        expect(storedRun?.results[0].baselineResponse).toBe('baseline-response');
-        expect(storedRun?.results[0].compareWithBaseModel).toBe(true);
+        expect(storedRun?.results![0].baselineResponse).toBe('baseline-response');
+        expect(storedRun?.results![0].compareWithBaseModel).toBe(true);
     });
 });

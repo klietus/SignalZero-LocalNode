@@ -52,6 +52,7 @@ export interface TraceData {
   id: string;
   created_at: string;
   updated_at: string;
+  sessionId?: string;
   entry_node?: string;
   activated_by?: string;
   activation_path?: TraceStep[];
@@ -145,7 +146,7 @@ export interface TestResult {
   id: string;
   name?: string;
   prompt: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped' | 'cancelled';
   signalZeroResponse?: string;
   baselineResponse?: string;
   evaluation?: EvaluationMetrics;
@@ -156,6 +157,12 @@ export interface TestResult {
   missingActivations?: string[];
   activationCheckPassed?: boolean;
   compareWithBaseModel?: boolean;
+  expectedResponse?: string;
+  responseMatch?: boolean;
+  responseMatchReasoning?: string;
+  baselineResponseMatch?: boolean;
+  baselineResponseMatchReasoning?: string;
+  traceIds?: string[];
 }
 
 export interface TestCase {
@@ -163,6 +170,7 @@ export interface TestCase {
   name: string;
   prompt: string;
   expectedActivations: string[];
+  expectedResponse?: string;
 }
 
 export interface TestSet {
@@ -179,10 +187,10 @@ export interface TestRun {
   testSetId: string;
   testSetName: string;
   compareWithBaseModel?: boolean;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped' | 'cancelled';
   startTime: string;
   endTime?: string;
-  results: TestResult[];
+  results?: TestResult[];
   summary: {
     total: number;
     completed: number;

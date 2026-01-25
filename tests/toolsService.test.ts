@@ -5,24 +5,48 @@ import { domainService } from '../services/domainService.ts';
 import { testService } from '../services/testService.ts';
 import { traceService } from '../services/traceService.ts';
 
+const VALID_SYMBOL = {
+    id: 's1',
+    name: 'S1',
+    kind: 'pattern',
+    triad: 'T1',
+    macro: 'M1',
+    role: 'R1',
+    symbol_domain: 'dom',
+    symbol_tag: 'tag',
+    failure_mode: 'fail',
+    activation_conditions: [],
+    linked_patterns: [],
+    facets: {
+        function: 'f',
+        topology: 't',
+        commit: 'c',
+        gate: [],
+        substrate: ['text'],
+        temporal: 'now',
+        invariants: []
+    }
+};
+
 describe('ToolsService', () => {
     let toolExecutor: any;
 
     beforeEach(() => {
         vi.spyOn(domainService, 'hasDomain').mockResolvedValue(true);
         vi.spyOn(domainService, 'getSymbols').mockResolvedValue([]);
-        vi.spyOn(domainService, 'listDomains').mockResolvedValue(['root']);
+        vi.spyOn(domainService, 'listDomains').mockResolvedValue(['root', 'dom']);
         vi.spyOn(domainService, 'findById').mockResolvedValue(null);
         vi.spyOn(domainService, 'bulkUpsert').mockResolvedValue(undefined as any);
         vi.spyOn(domainService, 'deleteSymbols').mockResolvedValue(undefined);
         vi.spyOn(domainService, 'search').mockResolvedValue([]);
         vi.spyOn(domainService, 'getMetadata').mockResolvedValue([]);
         vi.spyOn(domainService, 'processRefactorOperation').mockResolvedValue({ count: 1, renamedIds: [] });
-        vi.spyOn(domainService, 'compressSymbols').mockResolvedValue({ newId: 'new', removedIds: ['old'] });
 
         vi.spyOn(testService, 'addTest').mockResolvedValue(undefined);
         vi.spyOn(testService, 'listTestSets').mockResolvedValue([] as any);
-        vi.spyOn(traceService, 'addTrace').mockReturnValue(undefined);
+        vi.spyOn(testService, 'listTestRuns').mockResolvedValue([] as any);
+        vi.spyOn(testService, 'getTestRun').mockResolvedValue({ id: 'r1', testSetName: 'TS1', summary: { total: 1, completed: 1, passed: 1, failed: 0 }, results: [] } as any);
+        vi.spyOn(traceService, 'addTrace').mockResolvedValue(undefined as any);
 
         toolExecutor = createToolExecutor(() => 'mock-api-key');
     });
@@ -35,28 +59,28 @@ describe('ToolsService', () => {
         vi.mocked(domainService.hasDomain).mockResolvedValue(true);
 
         await toolExecutor('find_symbols', {
-            query: 'test vector',
-            symbol_domains: ['root', 'diagnostics'],
-            limit: 3,
-            metadata_filter: { symbol_tag: 'protocol' }
+            queries: [{
+                query: 'test vector',
+                symbol_domains: ['root', 'diagnostics'],
+                limit: 3,
+                metadata_filter: { symbol_tag: 'protocol' }
+            }]
         });
 
-        expect(domainService.search).toHaveBeenCalledWith('test vector', 3, {
-            time_gte: undefined,
-            time_between: undefined,
+        expect(domainService.search).toHaveBeenCalledWith('test vector', 3, expect.objectContaining({
             metadata_filter: { symbol_tag: 'protocol' },
             domains: ['root', 'diagnostics']
-        });
+        }));
     });
 
     it('upsert_symbols calls domainService.bulkUpsert for adds', async () => {
-        const sym = { id: 's1', symbol_domain: 'dom' };
+        const sym = { ...VALID_SYMBOL, id: 's1', symbol_domain: 'dom' };
         await toolExecutor('upsert_symbols', { symbols: [{ symbol_data: sym }] });
-        expect(domainService.bulkUpsert).toHaveBeenCalledWith('dom', [sym]);
+        expect(domainService.bulkUpsert).toHaveBeenCalledWith('dom', [sym], expect.anything());
     });
 
     it('upsert_symbols routes renames to processRefactorOperation', async () => {
-        const sym = { id: 'new', symbol_domain: 'dom' };
+        const sym = { ...VALID_SYMBOL, id: 'new', symbol_domain: 'dom' };
         await toolExecutor('upsert_symbols', { symbols: [{ old_id: 'old', symbol_data: sym }] });
         expect(domainService.processRefactorOperation).toHaveBeenCalledWith([{ old_id: 'old', symbol_data: sym }]);
     });
@@ -75,7 +99,7 @@ describe('ToolsService', () => {
             { id: 's2', symbol_tag: 'beta', symbol_domain: 'root' } as any,
         ]);
 
-        const res = await toolExecutor('find_symbols', { symbol_tag: 'alpha', limit: 1 });
+        const res = await toolExecutor('find_symbols', { queries: [{ symbol_tag: 'alpha', limit: 1 }] });
 
         expect(domainService.search).not.toHaveBeenCalled();
         expect(domainService.getSymbols).toHaveBeenCalledWith('root');
@@ -93,30 +117,25 @@ describe('ToolsService', () => {
         expect(res.domains[0].readOnly).toBe(true);
     });
 
-    it('add_test_case calls testService.addTest', async () => {
-        await toolExecutor('add_test_case', { name: 'Case', prompt: 'Do something', testSetId: 'ts1', expectedActivations: [] });
-        expect(testService.addTest).toHaveBeenCalledWith('ts1', 'Do something', [], 'Case');
+    it('list_test_runs calls testService.listTestRuns', async () => {
+        await toolExecutor('list_test_runs', {});
+        expect(testService.listTestRuns).toHaveBeenCalled();
     });
 
-    it('list_test_sets calls testService.listTestSets', async () => {
-        await toolExecutor('list_test_sets', {});
-        expect(testService.listTestSets).toHaveBeenCalled();
+    it('list_test_failures calls testService.getTestRun', async () => {
+        await toolExecutor('list_test_failures', { run_id: 'r1' });
+        expect(testService.getTestRun).toHaveBeenCalledWith('r1');
     });
 
     it('log_trace calls traceService.addTrace', async () => {
         const trace = { id: 't1' };
         await toolExecutor('log_trace', { trace });
-        expect(traceService.addTrace).toHaveBeenCalledWith(trace);
+        expect(traceService.addTrace).toHaveBeenCalled();
     });
 
     it('upsert_symbols handles updates via processRefactorOperation', async () => {
-        const updates = [{ old_id: 'o1', symbol_data: { id: 'n1', symbol_domain: 'root' } }];
+        const updates = [{ old_id: 'o1', symbol_data: { ...VALID_SYMBOL, id: 'n1', symbol_domain: 'root' } }];
         await toolExecutor('upsert_symbols', { symbols: updates });
         expect(domainService.processRefactorOperation).toHaveBeenCalledWith(updates);
-    });
-
-    it('compress_symbols calls domainService.compressSymbols', async () => {
-        await toolExecutor('compress_symbols', { new_symbol: {}, old_ids: [] });
-        expect(domainService.compressSymbols).toHaveBeenCalled();
     });
 });

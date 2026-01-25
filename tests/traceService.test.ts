@@ -3,25 +3,22 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { traceService } from '../services/traceService.ts';
 import { TraceData } from '../types.ts';
 import { decodeTimestamp } from '../services/timeService.ts';
+import { __redisTestUtils } from '../services/redisService.ts';
 
 describe('TraceService', () => {
-    beforeEach(() => {
-        traceService.clear();
+    beforeEach(async () => {
+        __redisTestUtils.resetMock();
+        await traceService.clear();
     });
 
-    it('should add traces and retrieve them', () => {
-        const trace: TraceData = {
+    it('should add traces and retrieve them', async () => {
+        const trace: Partial<TraceData> = {
             id: 'test-1',
-            timestamp: Date.now(),
-            created_at: '',
-            updated_at: '',
-            source: 'test',
-            content: { step: 'init' },
-            type: 'reasoning'
+            sessionId: 'sess-1'
         };
 
-        traceService.addTrace(trace);
-        const traces = traceService.getTraces();
+        await traceService.addTrace(trace);
+        const traces = await traceService.getTraces();
         
         expect(traces).toHaveLength(1);
         expect(traces[0].id).toEqual(trace.id);
@@ -29,58 +26,65 @@ describe('TraceService', () => {
         expect(decodeTimestamp(traces[0].updated_at)).not.toBeNull();
     });
 
-    it('should auto-generate ID if missing', () => {
+    it('should auto-generate ID if missing', async () => {
         const trace: Partial<TraceData> = {
-            timestamp: Date.now(),
-            source: 'test',
-            content: { step: 'init' },
-            type: 'reasoning'
+            sessionId: 'sess-2'
         };
 
-        traceService.addTrace(trace);
-        const traces = traceService.getTraces();
+        await traceService.addTrace(trace);
+        const traces = await traceService.getTraces();
         
         expect(traces).toHaveLength(1);
         expect(traces[0].id).toBeDefined();
         expect(traces[0].id).toContain('TR-');
     });
 
-    it('should clear traces', () => {
-        traceService.addTrace({ timestamp: Date.now(), source: 'test', content: {}, type: 'reasoning' });
-        expect(traceService.getTraces()).toHaveLength(1);
+    it('should clear traces', async () => {
+        await traceService.addTrace({ sessionId: 'sess-3' });
+        expect(await traceService.getTraces()).toHaveLength(1);
         
-        traceService.clear();
-        expect(traceService.getTraces()).toHaveLength(0);
+        await traceService.clear();
+        // Wait for notify
+        await new Promise(r => setTimeout(r, 10));
+        expect(await traceService.getTraces()).toHaveLength(0);
     });
 
-    it('should notify listeners on add and clear', () => {
+    it('should notify listeners on add and clear', async () => {
         const listener = vi.fn();
         const unsubscribe = traceService.subscribe(listener);
 
-        // Initial call on subscribe
+        // Wait for initial call on subscribe
+        await new Promise(r => setTimeout(r, 10));
         expect(listener).toHaveBeenCalledTimes(1);
         expect(listener).toHaveBeenCalledWith([]);
 
         // Add trace
-        traceService.addTrace({ timestamp: Date.now(), source: 'test', content: {}, type: 'reasoning' });
+        await traceService.addTrace({ sessionId: 'sess-4' });
+        // Wait for notify
+        await new Promise(r => setTimeout(r, 10));
         expect(listener).toHaveBeenCalledTimes(2);
         const tracesArg = listener.mock.calls[1][0];
         expect(tracesArg).toHaveLength(1);
 
         // Clear
-        traceService.clear();
+        await traceService.clear();
+        // Wait for notify
+        await new Promise(r => setTimeout(r, 10));
         expect(listener).toHaveBeenCalledTimes(3);
         expect(listener.mock.calls[2][0]).toHaveLength(0);
 
         unsubscribe();
     });
 
-    it('should unsubscribe correctly', () => {
+    it('should unsubscribe correctly', async () => {
         const listener = vi.fn();
         const unsubscribe = traceService.subscribe(listener);
         
         unsubscribe();
-        traceService.addTrace({ timestamp: Date.now(), source: 'test', content: {}, type: 'reasoning' });
+        await traceService.addTrace({ sessionId: 'sess-5' });
+        
+        // Wait just in case
+        await new Promise(r => setTimeout(r, 10));
         
         // Should only be called once (initial subscribe)
         expect(listener).toHaveBeenCalledTimes(1);

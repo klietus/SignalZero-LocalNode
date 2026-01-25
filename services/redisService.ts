@@ -7,6 +7,7 @@ const isTestEnv = process.env.NODE_ENV === 'test';
 // Lightweight in-memory mock to avoid real Redis connections during tests
 const mockStore = new Map<string, string>();
 const mockSets = new Map<string, Set<string>>();
+const mockHashes = new Map<string, Map<string, string>>();
 const mockSortedSets = new Map<string, Map<string, number>>();
 
 const getMockSet = (key: string) => {
@@ -17,6 +18,39 @@ const getMockSet = (key: string) => {
 const handleMockCommand = async (command: any[]): Promise<any> => {
     const [cmd, ...args] = command;
     switch (cmd) {
+    case 'HINCRBY': {
+        const [key, field, increment] = args;
+        const hash = mockHashes.get(key) || new Map<string, string>();
+        const current = parseInt(hash.get(field) || '0', 10);
+        const next = current + parseInt(increment, 10);
+        hash.set(field, String(next));
+        mockHashes.set(key, hash);
+        return next;
+    }
+    case 'HGETALL': {
+        const key = args[0];
+        const hash = mockHashes.get(key);
+        if (!hash) return [];
+        const result: string[] = [];
+        hash.forEach((val, key) => {
+            result.push(key, val);
+        });
+        return result;
+    }
+    case 'KEYS': {
+        const pattern = args[0].replace(/\*/g, '.*');
+        const regex = new RegExp(`^${pattern}$`);
+        const keys = [
+            ...mockStore.keys(),
+            ...mockSets.keys(),
+            ...mockHashes.keys(),
+            ...mockSortedSets.keys()
+        ];
+        return keys.filter(k => regex.test(k));
+    }
+    case 'EXPIRE': {
+        return 1;
+    }
     case 'ZADD': {
         const key = args[0];
         const set = mockSortedSets.get(key) || new Map<string, number>();
@@ -78,6 +112,7 @@ const handleMockCommand = async (command: any[]): Promise<any> => {
         args.forEach((key) => {
             if (mockStore.delete(key)) removed++;
             if (mockSets.delete(key)) removed++;
+            if (mockHashes.delete(key)) removed++;
             if (mockSortedSets.delete(key)) removed++;
         });
         return removed;
@@ -114,19 +149,39 @@ const getClient = (): Redis => {
     } else if (connectionUrl.startsWith('https://')) {
         connectionUrl = connectionUrl.replace('https://', 'rediss://');
     } else if (!connectionUrl.includes('://')) {
-        // Assume localhost:6379 if just that is provided, or add redis://
         connectionUrl = `redis://${connectionUrl}`;
     }
 
     loggerService.info(`Initializing Redis Client with URL: ${connectionUrl}`);
 
-    client = new Redis(connectionUrl, {
-        lazyConnect: true,
-        retryStrategy(times: number) {
-            const delay = Math.min(times * 50, 2000);
-            return delay;
-        },
-    });
+    try {
+        const parsedUrl = new URL(connectionUrl);
+        const options: any = {
+            host: parsedUrl.hostname || 'localhost',
+            port: parseInt(parsedUrl.port, 10) || 6379,
+            password: parsedUrl.password || undefined,
+            lazyConnect: true,
+            retryStrategy(times: number) {
+                const delay = Math.min(times * 50, 2000);
+                return delay;
+            },
+        };
+
+        if (parsedUrl.protocol === 'rediss:') {
+            options.tls = {};
+        }
+
+        client = new Redis(options);
+    } catch (e) {
+        loggerService.warn("Failed to parse Redis URL, falling back to raw string", { error: String(e) });
+        client = new Redis(connectionUrl, {
+            lazyConnect: true,
+            retryStrategy(times: number) {
+                const delay = Math.min(times * 50, 2000);
+                return delay;
+            },
+        });
+    }
 
     client.on('error', (err: any) => {
         loggerService.error('Redis Client Error', { error: err });
@@ -201,6 +256,7 @@ export const __redisTestUtils = {
     resetMock: () => {
         mockStore.clear();
         mockSets.clear();
+        mockHashes.clear();
         mockSortedSets.clear();
     }
 };

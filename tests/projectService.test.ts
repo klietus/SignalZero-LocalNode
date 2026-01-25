@@ -72,7 +72,7 @@ describe('ProjectService', () => {
         expect(result.stats.loopCount).toBe(1);
         
         expect(domainService.clearAll).toHaveBeenCalled();
-        expect(domainService.bulkUpsert).toHaveBeenCalledWith('d1', expect.anything());
+        expect(domainService.bulkUpsert).toHaveBeenCalledWith('d1', expect.anything(), { bypassValidation: true });
         expect(testService.setTests).toHaveBeenCalledWith(['t1']);
         expect(loopService.replaceAllLoops).toHaveBeenCalledWith(expect.any(Array));
     });

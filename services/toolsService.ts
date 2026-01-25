@@ -13,6 +13,7 @@ import { redisService } from "./redisService.js";
 import { secretManagerService } from "./secretManagerService.ts";
 import { contextService } from "./contextService.js";
 import { documentMeaningService } from "./documentMeaningService.js";
+import { runSignalZeroTest } from "./inferenceService.js";
 
 // Shared Symbol Data Schema Properties for reuse in tools
 const SYMBOL_DATA_SCHEMA = {
@@ -276,25 +277,6 @@ export const toolDeclarations: ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'compress_symbols',
-      description: 'Merge multiple existing symbols into a single new symbol (compression). This action stores the new symbol, updates all references in the domain to point to it, and then deletes the old symbols ids.',
-      parameters: {
-        type: 'object',
-        properties: {
-          new_symbol: SYMBOL_DATA_SCHEMA,
-          old_ids: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'List of old symbol IDs to remove after merging. MUTUALLY EXCLUSIVE WITH "linked_patterns" array.'
-          }
-        },
-        required: ['new_symbol', 'old_ids']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
       name: 'create_domain',
       description: 'Create a new SignalZero domain. When only a domain id and description are provided, the tool infers invariants using semantic similarity to the root domain and the two closest domains before saving.',
       parameters: {
@@ -366,69 +348,32 @@ export const toolDeclarations: ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'add_test_case',
-      description: 'Add a new test case prompt to the persistent Test Runner suite.',
+      name: 'list_test_runs',
+      description: 'Retrieve a list of all historical and active test runs with their summary metadata.',
+      parameters: {
+        type: 'object',
+        properties: {}
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_test_failures',
+      description: 'Get a detailed report of failed test cases for a specific test run.',
       parameters: {
         type: 'object',
         properties: {
-          name: {
-            type: 'string',
-            description: 'A human-friendly name for the test case.',
-          },
-          prompt: {
-            type: 'string',
-            description: 'The prompt string to verify or test the system with.',
-          },
-          testSetId: {
-            type: 'string',
-            description: 'Identifier of the test set to append the case to.'
-          },
-          expectedActivations: {
-            type: 'array',
-            description: 'List of symbol IDs that must appear in the resulting trace for the test to pass.',
-            items: { type: 'string' }
-          }
+          run_id: { type: 'string', description: 'The unique ID of the test run to analyze.' }
         },
-        required: ['name', 'prompt', 'testSetId', 'expectedActivations'],
-      },
-    },
+        required: ['run_id']
+      }
+    }
   },
-  {
-    type: 'function',
-    function: {
-      name: 'list_test_sets',
-      description: 'List all configured test sets with their metadata and test case names.',
-      parameters: {
-        type: 'object',
-        properties: {},
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'delete_test_case',
-      description: 'Delete an existing test case from a specific test set.',
-      parameters: {
-        type: 'object',
-        properties: {
-          testSetId: {
-            type: 'string',
-            description: 'Identifier of the test set that contains the test case.'
-          },
-          testId: {
-            type: 'string',
-            description: 'Identifier of the test case to remove.'
-          }
-        },
-        required: ['testSetId', 'testId'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'reindex_vector_store',
+    {
+      type: 'function',
+      function: {
+        name: 'reindex_vector_store',
       description: 'Reset the ChromaDB collection and rebuild the vector index from the current symbol store.',
       parameters: {
         type: 'object',
@@ -895,39 +840,6 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           }
       }
 
-      case 'compress_symbols': {
-          const { new_symbol, old_ids } = args;
-          // IMPORTANT: bypass_validation is intentionally removed from the AI tool interface.
-          const bypass_validation = false;
-
-          if (!new_symbol || !old_ids || !Array.isArray(old_ids)) {
-              return { error: "Invalid arguments for compression. Requires new_symbol object and old_ids array." };
-          }
-
-          // Filter out old_ids that are actually linked in the new symbol.
-          // We preserve these symbols instead of deleting them.
-          const linkedPatterns = new_symbol.linked_patterns || [];
-          const finalOldIds = old_ids.filter(id => !linkedPatterns.includes(id));
-          const preservedCount = old_ids.length - finalOldIds.length;
-
-          try {
-              const results = await domainService.compressSymbols(new_symbol, finalOldIds, { bypassValidation: bypass_validation });
-              const response: any = {
-                  status: "Compression complete.",
-                  new_symbol_id: results.newId,
-                  removed_symbols_count: results.removedIds.length,
-                  removed_ids: results.removedIds
-              };
-              if (preservedCount > 0) {
-                  response.message = `${preservedCount} symbol(s) were preserved because they were linked to the new symbol.`;
-              }
-              return response;
-          } catch (e: any) {
-              loggerService.error("Compress symbols failed", { error: e.message || String(e), stack: e.stack });
-              return { error: `Compression failed: ${e.message || String(e)}` };
-          }
-      }
-
       case 'create_domain': {
           const { domain_id, description, name, invariants } = args;
           if (!domain_id || !description) {
@@ -1043,42 +955,47 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           return { logs };
       }
 
-      case 'add_test_case': {
-          const { name, prompt, testSetId, expectedActivations } = args;
-          if (!name || !prompt || !testSetId || !Array.isArray(expectedActivations)) return { error: "Missing name, prompt, testSetId, or expectedActivations argument" };
-
-          await testService.addTest(testSetId, prompt, expectedActivations, name);
+      case 'list_test_runs': {
+          const runs = await testService.listTestRuns();
           return {
-              status: "Test case added successfully to persistent suite.",
-              name,
-              prompt: prompt,
-              testSetId,
-              expectedActivations
-          };
-      }
-
-      case 'list_test_sets': {
-          const sets = await testService.listTestSets();
-          return {
-              count: sets.length,
-              testSets: sets.map(set => ({
-                  id: set.id,
-                  name: set.name,
-                  description: set.description,
-                  tests: set.tests.map(test => ({ id: test.id, name: test.name, prompt: test.prompt, expectedActivations: test.expectedActivations }))
+              count: runs.length,
+              runs: runs.map(r => ({
+                  id: r.id,
+                  testSetId: r.testSetId,
+                  testSetName: r.testSetName,
+                  status: r.status,
+                  startTime: r.startTime,
+                  endTime: r.endTime,
+                  summary: r.summary,
+                  compareWithBaseModel: r.compareWithBaseModel
               }))
           };
       }
 
-      case 'delete_test_case': {
-          const { testSetId, testId } = args;
-          if (!testSetId || !testId) return { error: "Missing testSetId or testId argument" };
+      case 'list_test_failures': {
+          const { run_id } = args;
+          if (!run_id) return { error: "Missing run_id" };
+          
+          const run = await testService.getTestRun(run_id);
+          if (!run) return { error: `Test run ${run_id} not found.` };
 
-          await testService.deleteTest(testSetId, testId);
+          const failures = (run.results || []).filter(r => r.status === 'failed' || r.responseMatch === false);
+          
           return {
-              status: "Test case deleted successfully from persistent suite.",
-              testSetId,
-              testId
+              run_id,
+              testSetName: run.testSetName,
+              failure_count: failures.length,
+              total_count: run.summary?.total || run.results?.length || 0,
+              failures: failures.map(f => ({
+                  id: f.id,
+                  name: f.name,
+                  prompt: f.prompt,
+                  expected_response: f.expectedResponse,
+                  signalzero_response: f.signalZeroResponse,
+                  match_reasoning: f.responseMatchReasoning,
+                  analysis: f.evaluation?.overall_reasoning,
+                  error: f.error
+              }))
           };
       }
 
@@ -1339,7 +1256,10 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           const { trace } = args;
           if (!trace) return { error: "Missing trace argument" };
 
-          traceService.addTrace(trace as TraceData);
+          await traceService.addTrace({ 
+              ...trace, 
+              sessionId: contextSessionId 
+          } as TraceData);
           return { status: "Trace logged successfully." };
       }
 
