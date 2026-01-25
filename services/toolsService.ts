@@ -14,6 +14,11 @@ import { secretManagerService } from "./secretManagerService.ts";
 import { contextService } from "./contextService.js";
 import { documentMeaningService } from "./documentMeaningService.js";
 import { runSignalZeroTest } from "./inferenceService.js";
+import os from 'os';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 // Shared Symbol Data Schema Properties for reuse in tools
 const SYMBOL_DATA_SCHEMA = {
@@ -530,6 +535,26 @@ export const toolDeclarations: ChatCompletionTool[] = [
           trace: TRACE_DATA_SCHEMA
         },
         required: ['trace']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'sys_info',
+      description: 'Query information about the host system including time, CPU load, memory, disk space, and running processes.',
+      parameters: {
+        type: 'object',
+        properties: {
+          categories: {
+            type: 'array',
+            items: { 
+                type: 'string', 
+                enum: ['time', 'cpu', 'memory', 'disk', 'processes', 'network', 'os'] 
+            },
+            description: 'List of information categories to retrieve. Defaults to all if omitted.'
+          }
+        }
       }
     }
   }
@@ -1261,6 +1286,75 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
               sessionId: contextSessionId 
           } as TraceData);
           return { status: "Trace logged successfully." };
+      }
+
+      case 'sys_info': {
+          const { categories = ['time', 'cpu', 'memory', 'disk', 'processes', 'network', 'os'] } = args || {};
+          const info: any = {};
+
+          if (categories.includes('time')) {
+              info.time = {
+                  current: new Date().toISOString(),
+                  uptime: os.uptime(),
+                  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+              };
+          }
+
+          if (categories.includes('cpu')) {
+              const cpus = os.cpus();
+              info.cpu = {
+                  model: cpus.length > 0 ? cpus[0].model : 'Unknown',
+                  cores: cpus.length,
+                  load_avg: os.loadavg()
+              };
+          }
+
+          if (categories.includes('memory')) {
+              info.memory = {
+                  total: os.totalmem(),
+                  free: os.freemem(),
+                  used: os.totalmem() - os.freemem()
+              };
+          }
+
+          if (categories.includes('os')) {
+              info.os = {
+                  platform: os.platform(),
+                  release: os.release(),
+                  type: os.type(),
+                  arch: os.arch(),
+                  hostname: os.hostname()
+              };
+          }
+
+          if (categories.includes('network')) {
+              info.network = os.networkInterfaces();
+          }
+
+          if (categories.includes('disk')) {
+              try {
+                  const { stdout } = await execAsync('df -h /');
+                  info.disk = stdout;
+              } catch (e) {
+                  info.disk = "Failed to retrieve disk info";
+              }
+          }
+
+          if (categories.includes('processes')) {
+              try {
+                  // limit to top 20 by memory to avoid massive output
+                  // Note: Alpine (busybox) and Debian have different ps flags.
+                  // Try a safe common one first or check platform.
+                  const isAlpine = os.platform() === 'linux' && fs.existsSync('/etc/alpine-release');
+                  const cmd = isAlpine ? 'ps -o pid,user,comm,vsz | head -n 21' : 'ps aux --sort=-%mem | head -n 21';
+                  const { stdout } = await execAsync(cmd);
+                  info.processes = stdout;
+              } catch (e) {
+                  info.processes = "Failed to retrieve process info";
+              }
+          }
+
+          return info;
       }
 
       default:
