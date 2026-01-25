@@ -611,7 +611,7 @@ export async function* sendMessageAndHandleTools(
   let totalTextAccumulatedAcrossLoops = "";
   let previousTurnText = "";
   let hasLoggedTrace = false;
-  let hasSearchedSymbols = false;
+  let hasUsedSymbolTools = false;
   let auditRetries = 0;
   const ENABLE_SYSTEM_AUDIT = true;
   const MAX_AUDIT_RETRIES = 3; // Increased to accommodate potential double correction
@@ -726,9 +726,9 @@ export async function* sendMessageAndHandleTools(
     if (ENABLE_SYSTEM_AUDIT && contextSessionId && (!yieldedToolCalls || yieldedToolCalls.length === 0) && textAccumulatedInTurn.trim().length > 0) {
         let auditMessage = "";
 
-        // Check 1: Missing Symbol Search
-        if (!hasSearchedSymbols) {
-            auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You attempted to respond without querying the symbol store. You must execute `find_symbols` with the current topic and synonyms to ground your response in the active context.\n";
+        // Check 1: Missing Symbol Operation
+        if (!hasUsedSymbolTools) {
+            auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You attempted to respond without interacting with the symbol store. You must execute one of `find_symbols`, `upsert_symbols`, or `delete_symbols` to ground your response in the active symbolic context.\n";
             auditTriggered = true;
         }
 
@@ -740,7 +740,7 @@ export async function* sendMessageAndHandleTools(
 
         if (auditTriggered) {
             if (auditRetries < MAX_AUDIT_RETRIES) {
-                loggerService.warn("System Audit Failure: Model missing required tool calls. Forcing retry.", { contextSessionId, auditRetries, hasSearchedSymbols, hasLoggedTrace });
+                loggerService.warn("System Audit Failure: Model missing required tool calls. Forcing retry.", { contextSessionId, auditRetries, hasUsedSymbolTools, hasLoggedTrace });
                 
                 const finalAuditMessage = auditMessage + "Retry immediately by calling the required tools.";
 
@@ -809,8 +809,9 @@ export async function* sendMessageAndHandleTools(
       if (toolName === 'log_trace') {
           hasLoggedTrace = true;
       }
-      if (toolName === 'find_symbols' || toolName === 'load_symbols') {
-          hasSearchedSymbols = true;
+      const SYMBOL_TOOLS = ['find_symbols', 'load_symbols', 'upsert_symbols', 'delete_symbols'];
+      if (SYMBOL_TOOLS.includes(toolName)) {
+          hasUsedSymbolTools = true;
       }
 
       const { data: args, error: parseError } = parseToolArguments(call.function.arguments || "");
