@@ -462,7 +462,8 @@ const _streamAssistantResponseInternal = async function* (
     model,
     messages,
     tools: toolDeclarations,
-    stream: true
+    stream: true,
+    max_tokens: 4096
   });
 
   let textAccumulator = "";
@@ -657,6 +658,8 @@ export async function* sendMessageAndHandleTools(
         let isFirstTextChunkInTurn = true;
         for await (const chunk of assistantMessage) {
             if (chunk.text) {
+                // Log the chunk size for debug (verbose)
+                // loggerService.debug(`Received text chunk: ${chunk.text.length} chars`);
                 let textToYield = chunk.text;
                 if (isFirstTextChunkInTurn && totalTextAccumulatedAcrossLoops.length > 0) {
                     textToYield = "\n\n" + textToYield;
@@ -671,6 +674,12 @@ export async function* sendMessageAndHandleTools(
             }
             if (chunk.assistantMessage) nextAssistant = chunk.assistantMessage;
         }
+
+        loggerService.info(`Turn Loop ${loops} Complete`, { 
+            textAccumulatedInTurnLength: textAccumulatedInTurn.length,
+            toolCallsCount: yieldedToolCalls?.length || 0,
+            retries
+        });
 
         if (textAccumulatedInTurn.trim() || (yieldedToolCalls && yieldedToolCalls.length > 0)) {
             break;
@@ -776,6 +785,15 @@ export async function* sendMessageAndHandleTools(
     // Check if tools were called
     if (!yieldedToolCalls || yieldedToolCalls.length === 0) {
       break;
+    }
+
+    // Nudge model if it's stuck in tool loops without text output
+    if (loops >= 5 && totalTextAccumulatedAcrossLoops.length === 0) {
+        loggerService.info("Nudging model to produce text response", { contextSessionId, loops });
+        transientMessages.push({ 
+            role: 'system', 
+            content: "System Notice: You have executed multiple tool cycles. Please conclude your symbolic processing and provide the final text response to the user's request now." 
+        });
     }
 
     const toolResponses: ChatCompletionMessageParam[] = [];
@@ -925,7 +943,7 @@ export const processMessageAsync = async (
 export const runSignalZeroTest = async (
   prompt: string,
   toolExecutor: (name: string, args: any) => Promise<any>,
-  primingPrompts: string[] = ["Load domains"],
+  primingPrompts: string[] = [],
   systemInstruction: string = ACTIVATION_PROMPT
 ): Promise<{ text: string; meta: TestMeta }> => {
   const startTime = Date.now();
@@ -942,14 +960,22 @@ export const runSignalZeroTest = async (
     }
   }
 
+  // Create a temporary context session for this test run
+  // We use 'test_run' type if we want to differentiate, or 'conversation'
+  const session = await contextService.createSession('conversation', { source: 'test', temporary: true });
+  const contextSessionId = session.id;
+
   try {
-    const chat = createFreshChatSession(systemInstruction);
+    const chat = createFreshChatSession(systemInstruction, contextSessionId);
 
     const executeTurn = async (msg: string): Promise<string> => {
       let turnText = "";
-      for await (const chunk of sendMessageAndHandleTools(chat, msg, toolExecutor, systemInstruction)) {
+      loggerService.info("Starting executeTurn", { msgPreview: msg.slice(0, 50), contextSessionId });
+      // Pass contextSessionId to enable full ContextWindowService logic
+      for await (const chunk of sendMessageAndHandleTools(chat, msg, toolExecutor, systemInstruction, contextSessionId)) {
         if (chunk.text) turnText += chunk.text;
       }
+      loggerService.info("executeTurn Complete", { turnTextLength: turnText.length });
       return turnText;
     };
 
@@ -959,6 +985,15 @@ export const runSignalZeroTest = async (
 
     const finalResponse = await executeTurn(prompt);
     const endTime = Date.now();
+
+    loggerService.info(`SignalZero Test Execution Complete`, { 
+        promptLength: prompt.length,
+        responseLength: finalResponse.length,
+        responsePreview: finalResponse.slice(0, 100)
+    });
+
+    // Cleanup: Close/Archive the temporary session
+    await contextService.closeSession(contextSessionId);
 
     return {
       text: finalResponse,
@@ -972,6 +1007,9 @@ export const runSignalZeroTest = async (
     };
   } catch (error) {
     loggerService.error("SignalZero Test Run Failed:", { error });
+    // Cleanup on error
+    await contextService.closeSession(contextSessionId);
+    
     const endTime = Date.now();
     return {
       text: `ERROR: ${String(error)}`,
@@ -999,7 +1037,8 @@ export const runBaselineTest = async (prompt: string): Promise<string> => {
     const client = getClient();
     const completion = await client.chat.completions.create({
       model: getModel(),
-      messages: [{ role: "user", content: prompt }]
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: 4096
     });
 
     return completion.choices[0]?.message?.content || "";
@@ -1089,5 +1128,65 @@ export const evaluateComparison = async (
       base: { alignment_score: 0, drift_detected: false, symbolic_depth: 0, reasoning_depth: 0, auditability_score: 0 },
       overall_reasoning: `Eval Failed: ${String(error)}`,
     };
+  }
+};
+
+export const evaluateSemanticMatch = async (
+  prompt: string,
+  actualResponse: string,
+  expectedResponse: string
+): Promise<{ match: boolean; reason: string }> => {
+  try {
+    const matchPrompt = `
+      You are a Quality Assurance Judge. Compare the ACTUAL RESPONSE to the EXPECTED RESPONSE for the given PROMPT.
+
+      PROMPT: "${prompt}"
+
+      EXPECTED RESPONSE (Ground Truth):
+      ${expectedResponse}
+
+      ACTUAL RESPONSE:
+      ${actualResponse}
+
+      TASK: Determine if the ACTUAL RESPONSE is semantically equivalent to the EXPECTED RESPONSE.
+      - It does NOT need to be an exact string match.
+      - It MUST convey the same key information and conclusion.
+      - If the expected response specifies a specific value, the actual response must contain it.
+      - If the expected response implies a failure, the actual response must indicate failure.
+
+      OUTPUT JSON ONLY:
+      {
+        "match": boolean, // true if semantically equivalent, false otherwise
+        "reason": "concise explanation of why it passed or failed"
+      }
+    `;
+
+    const settings = settingsService.getInferenceSettings();
+    let messageText = "{}";
+
+    if (settings.provider === 'gemini') {
+        const client = getGeminiClient();
+        const model = client.getGenerativeModel({ model: settings.model, generationConfig: { responseMimeType: "application/json" } });
+        const result = await model.generateContent(matchPrompt);
+        messageText = result.response.text();
+    } else {
+        const client = getClient();
+        const result = await client.chat.completions.create({
+          model: getModel(),
+          messages: [{ role: "user", content: matchPrompt }],
+          response_format: { type: "json_object" },
+        });
+        messageText = result.choices[0]?.message?.content || "{}";
+    }
+
+    const json = JSON.parse(messageText);
+    return {
+      match: json.match === true,
+      reason: json.reason || "No reasoning provided."
+    };
+
+  } catch (error) {
+    loggerService.error("Semantic Match Eval Failed", { error });
+    return { match: false, reason: `Evaluation failed: ${String(error)}` };
   }
 };

@@ -146,9 +146,9 @@ class LoopService {
         return `${basePrompt}\n\n[Loop Prompt]\n${prompt}`;
     }
 
-    private captureNewTraces(existingIds: Set<string>): TraceData[] {
-        const traces = traceService.getTraces();
-        return traces.filter((trace) => !existingIds.has(trace.id));
+    private async captureNewTraces(existingIds: Set<string>): Promise<TraceData[]> {
+        const traces = await traceService.getTraces();
+        return (traces as TraceData[]).filter((trace) => !existingIds.has(trace.id));
     }
 
     private async executeLoop(loop: LoopDefinition): Promise<void> {
@@ -161,7 +161,8 @@ class LoopService {
         const executionId = `${loop.id}-${Date.now()}`;
         const startedAt = new Date().toISOString();
         const contextSession = await contextService.startLoopSession(loop.id, { executionId });
-        const baselineTraceIds = new Set(traceService.getTraces().map((t) => t.id));
+        const baselineTraces = await traceService.getTraces();
+        const baselineTraceIds = new Set<string>(baselineTraces.map((t: TraceData) => t.id));
         loggerService.info('LoopService: Executing loop', { loopId: loop.id, executionId });
 
         await this.updateLastRun(loop, startedAt);
@@ -192,7 +193,7 @@ class LoopService {
                 if (chunk.toolCalls) toolCalls.push(...chunk.toolCalls);
             }
 
-            traces = this.captureNewTraces(baselineTraceIds);
+            traces = await this.captureNewTraces(baselineTraceIds);
             logFilePath = await this.writeExecutionLogFile(executionId, {
                 loopId: loop.id,
                 executionId,

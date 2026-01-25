@@ -7,12 +7,21 @@ import { traceService } from '../services/traceService.ts';
 import { testService } from '../services/testService.ts';
 import { projectService } from '../services/projectService.ts';
 import { contextService } from '../services/contextService.ts';
+import { authService } from '../services/authService.ts';
 
 // Mock Services
 vi.mock('../services/domainService');
 vi.mock('../services/traceService');
 vi.mock('../services/testService');
 vi.mock('../services/projectService');
+vi.mock('../services/authService', () => ({
+    authService: {
+        verifySession: vi.fn().mockReturnValue(true),
+        isInitialized: vi.fn().mockReturnValue(true),
+        login: vi.fn(),
+        initialize: vi.fn()
+    }
+}));
 vi.mock('../services/contextService', () => ({
     contextService: {
         ensureConversationSession: vi.fn().mockResolvedValue({ session: { id: 'ctx-1', status: 'open' }, created: false }),
@@ -24,21 +33,15 @@ vi.mock('../services/contextService', () => ({
         hasActiveMessage: vi.fn().mockResolvedValue(false),
         setActiveMessage: vi.fn(),
         clearActiveMessage: vi.fn(),
-        recordMessage: vi.fn()
+        recordMessage: vi.fn(),
+        cleanupTestSessions: vi.fn().mockResolvedValue(0),
+        clearCancellation: vi.fn(),
+        isCancelled: vi.fn().mockResolvedValue(false)
     }
 }));
-vi.mock('../services/inferenceService', () => ({
-    getChatSession: vi.fn(),
-    resetChatSession: vi.fn(),
-    sendMessageAndHandleTools: vi.fn().mockImplementation(async function* () {
-        yield { text: 'Response' };
-    }),
-    runSignalZeroTest: vi.fn(),
-    processMessageAsync: vi.fn()
-}));
-vi.mock('../services/toolsService', () => ({
-    createToolExecutor: vi.fn()
-}));
+
+const AUTH_TOKEN = 'test-token';
+const authedRequest = () => request(app).get('/').set('x-auth-token', AUTH_TOKEN); // helper just for headers if needed
 
 describe('Server API Endpoints', () => {
     beforeEach(() => {
@@ -47,7 +50,7 @@ describe('Server API Endpoints', () => {
 
     // --- System ---
     it('GET /api/system/prompt should return current prompt', async () => {
-        const res = await request(app).get('/api/system/prompt');
+        const res = await request(app).get('/api/system/prompt').set('x-auth-token', AUTH_TOKEN);
         expect(res.status).toBe(200);
         expect(res.body).toHaveProperty('prompt');
     });
@@ -59,6 +62,7 @@ describe('Server API Endpoints', () => {
 
         const res = await request(app)
             .post('/api/chat')
+            .set('x-auth-token', AUTH_TOKEN)
             .send({ message: 'Hello', contextSessionId: 'ctx-1' });
         
         expect(res.status).toBe(202);
@@ -70,6 +74,7 @@ describe('Server API Endpoints', () => {
 
         const res = await request(app)
             .post('/api/chat')
+            .set('x-auth-token', AUTH_TOKEN)
             .send({ message: 'Hello', contextSessionId: 'ctx-99' });
 
         expect(res.status).toBe(202);
@@ -82,6 +87,7 @@ describe('Server API Endpoints', () => {
 
         const res = await request(app)
             .post('/api/chat')
+            .set('x-auth-token', AUTH_TOKEN)
             .send({ message: 'Hello', contextSessionId: 'missing' });
 
         expect(res.status).toBe(404);
@@ -91,7 +97,7 @@ describe('Server API Endpoints', () => {
     it('GET /api/contexts should list contexts', async () => {
         vi.mocked(contextService.listSessions).mockResolvedValue([{ id: 'ctx-1', status: 'open' } as any]);
 
-        const res = await request(app).get('/api/contexts');
+        const res = await request(app).get('/api/contexts').set('x-auth-token', AUTH_TOKEN);
         expect(res.status).toBe(200);
         expect(res.body.contexts[0].id).toBe('ctx-1');
     });
@@ -105,7 +111,7 @@ describe('Server API Endpoints', () => {
             status: 'complete'
         }]);
 
-        const res = await request(app).get('/api/contexts/ctx-1/history');
+        const res = await request(app).get('/api/contexts/ctx-1/history').set('x-auth-token', AUTH_TOKEN);
         expect(res.status).toBe(200);
         expect(res.body.session.id).toBe('ctx-1');
         expect(res.body.history).toHaveLength(1);
@@ -115,7 +121,7 @@ describe('Server API Endpoints', () => {
     it('GET /api/domains should list domains', async () => {
         vi.mocked(domainService.getMetadata).mockResolvedValue([{ id: 'd1', name: 'D1' }] as any);
         
-        const res = await request(app).get('/api/domains');
+        const res = await request(app).get('/api/domains').set('x-auth-token', AUTH_TOKEN);
         expect(res.status).toBe(200);
         expect(res.body).toHaveLength(1);
         expect(res.body[0].id).toBe('d1');
@@ -126,6 +132,7 @@ describe('Server API Endpoints', () => {
         
         const res = await request(app)
             .post('/api/domains/d1/toggle')
+            .set('x-auth-token', AUTH_TOKEN)
             .send({ enabled: true });
             
         expect(res.status).toBe(200);
@@ -136,14 +143,14 @@ describe('Server API Endpoints', () => {
     it('GET /api/symbols/search should search symbols', async () => {
         vi.mocked(domainService.search).mockResolvedValue([{ id: 's1', score: 1 }] as any);
 
-        const res = await request(app).get('/api/symbols/search?q=test');
+        const res = await request(app).get('/api/symbols/search?q=test').set('x-auth-token', AUTH_TOKEN);
         expect(res.status).toBe(200);
         expect(res.body).toHaveLength(1);
         expect(domainService.search).toHaveBeenCalledWith('test', 5, { time_gte: undefined, time_between: undefined });
     });
 
     it('GET /api/symbols/search should require query or time filter', async () => {
-        const res = await request(app).get('/api/symbols/search');
+        const res = await request(app).get('/api/symbols/search').set('x-auth-token', AUTH_TOKEN);
         expect(res.status).toBe(400);
         expect(res.body.error).toContain('Provide a query or time filter');
         expect(domainService.search).not.toHaveBeenCalled();
@@ -152,7 +159,7 @@ describe('Server API Endpoints', () => {
     it('GET /api/symbols/:id should return symbol', async () => {
         vi.mocked(domainService.findById).mockResolvedValue({ id: 's1' } as any);
 
-        const res = await request(app).get('/api/symbols/s1');
+        const res = await request(app).get('/api/symbols/s1').set('x-auth-token', AUTH_TOKEN);
         expect(res.status).toBe(200);
         expect(res.body.id).toBe('s1');
     });
@@ -162,6 +169,7 @@ describe('Server API Endpoints', () => {
 
         const res = await request(app)
             .post('/api/domains/d1/symbols')
+            .set('x-auth-token', AUTH_TOKEN)
             .send({ id: 's1' });
 
         expect(res.status).toBe(400);
@@ -172,7 +180,7 @@ describe('Server API Endpoints', () => {
     it('GET /api/tests/sets should list test sets', async () => {
         vi.mocked(testService.listTestSets).mockResolvedValue([{ id: 'ts1' }] as any);
         
-        const res = await request(app).get('/api/tests/sets');
+        const res = await request(app).get('/api/tests/sets').set('x-auth-token', AUTH_TOKEN);
         expect(res.status).toBe(200);
         expect(res.body[0].id).toBe('ts1');
     });
@@ -182,7 +190,7 @@ describe('Server API Endpoints', () => {
         const mockBlob = new Blob(['zip content']);
         vi.mocked(projectService.export).mockResolvedValue(mockBlob as any);
         
-        const res = await request(app).post('/api/project/export');
+        const res = await request(app).post('/api/project/export').set('x-auth-token', AUTH_TOKEN);
         expect(res.status).toBe(200);
         expect(res.header['content-type']).toBe('application/zip');
     });

@@ -153,8 +153,14 @@ describe('SettingsService', () => {
                 model: 'Meta-Llama-3-70B-Instruct',
                 provider: 'local',
                 apiKey: '',
-                loopModel: 'Meta-Llama-3-70B-Instruct'
-            }
+                loopModel: 'Meta-Llama-3-70B-Instruct',
+                visionModel: 'zai-org/glm-4.6v-flash'
+            },
+            googleSearch: {
+                apiKey: '',
+                cx: ''
+            },
+            adminUser: undefined
         });
     });
 
@@ -199,8 +205,14 @@ describe('SettingsService', () => {
                 model: 'Meta-Llama-3-70B-Instruct',
                 provider: 'local',
                 apiKey: '',
-                loopModel: 'Meta-Llama-3-70B-Instruct'
-            }
+                loopModel: 'Meta-Llama-3-70B-Instruct',
+                visionModel: 'zai-org/glm-4.6v-flash'
+            },
+            googleSearch: {
+                apiKey: '',
+                cx: ''
+            },
+            adminUser: undefined
         });
     });
 });

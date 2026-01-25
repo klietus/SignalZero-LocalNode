@@ -1,15 +1,16 @@
-
-import { TestSet, TestRun, TestResult, TestCase } from '../types.js';
+import { TestSet, TestRun, TestResult, TestCase, TraceData } from '../types.js';
 import { redisService } from './redisService.js';
 import { traceService } from './traceService.js';
-import { evaluateComparison, runBaselineTest } from './inferenceService.js';
+import { evaluateComparison, runBaselineTest, evaluateSemanticMatch } from './inferenceService.js';
 import { loggerService } from './loggerService.js';
+import pLimit from 'p-limit';
 
 const KEYS = {
   TEST_SETS: 'sz:test_sets',
   TEST_SET_PREFIX: 'sz:test_set:',
   TEST_RUNS: 'sz:test_runs',
-  TEST_RUN_PREFIX: 'sz:test_run:'
+  TEST_RUN_PREFIX: 'sz:test_run:',
+  RESULT_PREFIX: 'sz:test_run_result:'
 };
 
 // Default tests to seed if empty
@@ -29,7 +30,8 @@ const normalizeTestCase = (test: TestCase | string, idx: number, setId: string):
         id: test.id || `${setId}-T${idx}`,
         name: test.name || test.prompt || `Test ${idx + 1}`,
         prompt: test.prompt,
-        expectedActivations: Array.isArray(test.expectedActivations) ? test.expectedActivations : []
+        expectedActivations: Array.isArray(test.expectedActivations) ? test.expectedActivations : [],
+        expectedResponse: test.expectedResponse
     };
 };
 
@@ -52,7 +54,6 @@ export const testService = {
   listTestSets: async (): Promise<TestSet[]> => {
     const ids = await redisService.request(['SMEMBERS', KEYS.TEST_SETS]);
     if (!ids || ids.length === 0) {
-        // Seed default if empty
         const defaultSet: TestSet = {
             id: 'default',
             name: 'Core System Invariants',
@@ -65,10 +66,6 @@ export const testService = {
         return [defaultSet];
     }
 
-    const commands = ids.map((id: string) => ['GET', `${KEYS.TEST_SET_PREFIX}${id}`]);
-    // Note: In a real Redis client we'd use MGET or pipeline. 
-    // REST API doesn't always support pipeline easily without specific endpoint. 
-    // We'll do parallel fetch for this scale.
     const promises = ids.map((id: string) => redisService.request(['GET', `${KEYS.TEST_SET_PREFIX}${id}`]));
     const results = await Promise.all(promises);
     
@@ -113,16 +110,71 @@ export const testService = {
         .sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
   },
 
-  getTestRun: async (id: string): Promise<TestRun | null> => {
+  getTestRun: async (id: string, excludeResults: boolean = false): Promise<TestRun | null> => {
       const data = await redisService.request(['GET', `${KEYS.TEST_RUN_PREFIX}${id}`]);
-      return data ? JSON.parse(data) : null;
+      if (!data) return null;
+      
+      const run: TestRun = JSON.parse(data);
+      
+      if (excludeResults) {
+          run.results = [];
+          return run;
+      }
+
+      // Hydrate results from individual keys
+      const resultKeys = await redisService.request(['KEYS', `${KEYS.RESULT_PREFIX}${id}:*`]);
+      if (resultKeys && resultKeys.length > 0) {
+          const resultsRaw = await Promise.all(resultKeys.map((k: string) => redisService.request(['GET', k])));
+          run.results = resultsRaw
+            .filter(r => r !== null)
+            .map(r => JSON.parse(r))
+            .sort((a, b) => {
+                const aIdx = parseInt(a.id.split('-T').pop() || '0');
+                const bIdx = parseInt(b.id.split('-T').pop() || '0');
+                return aIdx - bIdx;
+            });
+      } else {
+          run.results = [];
+      }
+
+      return run;
   },
 
-  /**
-   * Starts a new test run.
-   * NOTE: The actual execution logic (runTestFn) is passed in to avoid circular dependencies 
-   * between testService, inference, and toolsService.
-   */
+  getTestRunResults: async (runId: string, limit: number = 50, offset: number = 0, status?: string): Promise<{ results: TestResult[], total: number }> => {
+      const resultKeys = await redisService.request(['KEYS', `${KEYS.RESULT_PREFIX}${runId}:*`]);
+      if (!resultKeys || resultKeys.length === 0) return { results: [], total: 0 };
+
+      // KEYS output is not naturally sorted.
+      const sortedKeys = (resultKeys as string[]).sort((a: string, b: string) => {
+          const aIdx = parseInt(a.split('-T').pop() || '0');
+          const bIdx = parseInt(b.split('-T').pop() || '0');
+          return aIdx - bIdx;
+      });
+
+      let filteredKeys = sortedKeys;
+      
+      // If status is provided, we MUST fetch all results first to filter them, OR we fetch them in batches.
+      // Since result objects are individual keys, we can't easily filter by status without GETing them.
+      // However, for pagination to work correctly with filtering, we need to know which keys match.
+      
+      const allResultsRaw = await Promise.all(sortedKeys.map((k: string) => redisService.request(['GET', k])));
+      const allResults = allResultsRaw
+        .filter(r => r !== null)
+        .map(r => JSON.parse(r) as TestResult);
+
+      let results = allResults;
+      if (status && status !== 'all') {
+          if (status === 'passed') results = allResults.filter(r => r.status === 'completed' && r.responseMatch !== false);
+          else if (status === 'failed') results = allResults.filter(r => r.status === 'failed' || r.responseMatch === false);
+          else if (status === 'completed') results = allResults.filter(r => r.status === 'completed' || r.status === 'failed');
+      }
+
+      const total = results.length;
+      const pagedResults = results.slice(offset, offset + limit);
+
+      return { results: pagedResults, total };
+  },
+
   startTestRun: async (
       testSetId: string,
       runTestFn: (prompt: string, compareWithBaseModel?: boolean) => Promise<{ text: string, meta: any, error?: string }>,
@@ -141,56 +193,72 @@ export const testService = {
           status: 'running',
           compareWithBaseModel,
           startTime: new Date().toISOString(),
-          results: testSet.tests.map((test, idx) => ({
-              id: `${runId}-T${idx}`,
-              name: test.name,
-              prompt: test.prompt,
-              expectedActivations: test.expectedActivations,
-              compareWithBaseModel,
-              status: 'pending'
-          })),
           summary: {
               total: testSet.tests.length,
               completed: 0,
               passed: 0,
               failed: 0
-          }
+          },
+          results: []
       };
 
-      // Save Initial State
+      // Save Initial State (Metadata only)
       await redisService.request(['SADD', KEYS.TEST_RUNS, runId]);
-      await redisService.request(['SET', `${KEYS.TEST_RUN_PREFIX}${runId}`, JSON.stringify(newRun)]);
+      await testService.updateRunState(newRun);
 
-      loggerService.info(`Test Run Started: ${runId}`, {
-          testSetId: testSet.id,
-          testSetName: testSet.name,
-          compareWithBaseModel
+      // Pre-initialize result keys as pending
+      const initPromises = testSet.tests.map((test, idx) => {
+          const result: TestResult = {
+              id: `${runId}-T${idx}`,
+              name: test.name,
+              prompt: test.prompt,
+              expectedActivations: test.expectedActivations,
+              expectedResponse: test.expectedResponse,
+              compareWithBaseModel,
+              status: 'pending'
+          };
+          return redisService.request(['SET', `${KEYS.RESULT_PREFIX}${runId}:${result.id}`, JSON.stringify(result), 'EX', '604800']);
       });
+      await Promise.all(initPromises);
 
-      // Start Async Execution (Fire and forget from API perspective)
-      // We process serially to avoid rate limits
+      loggerService.info(`Test Run Started: ${runId}`);
+
+      // Background Worker
       (async () => {
-          try {
-              for (let i = 0; i < newRun.results.length; i++) {
-                  const testCase = newRun.results[i];
-                  const expected = testSet.tests[i]?.expectedActivations || [];
-                  testCase.status = 'running';
-                  await testService.updateRunState(newRun);
+          const limit = pLimit(15);
+          const tasks = testSet.tests.map((test, i) => {
+              return limit(async () => {
+                  const resultId = `${runId}-T${i}`;
+                  
+                  // Status check
+                  const currentRun = await testService.getTestRun(runId, true);
+                  if (currentRun && (currentRun.status === 'stopped' || currentRun.status === 'cancelled')) return;
 
-                  loggerService.info(`Test Case Started: ${testCase.id}`, {
-                      runId,
-                      name: testCase.name,
-                      prompt: testCase.prompt,
-                      expectedActivations: expected
-                  });
+                  const testCase: TestResult = {
+                      id: resultId,
+                      name: test.name,
+                      prompt: test.prompt,
+                      expectedActivations: test.expectedActivations,
+                      expectedResponse: test.expectedResponse,
+                      compareWithBaseModel,
+                      status: 'running'
+                  };
+                  
+                  await testService.updateTestCaseState(runId, resultId, { status: 'running' });
 
                   try {
-                      traceService.clear();
+                      const result = await runTestFn(test.prompt, compareWithBaseModel);
+                      
+                      // Process Result
+                      const sessionId = result.meta?.contextSessionId;
+                      let traces: TraceData[] = [];
+                      let traceIds: string[] = [];
 
-                      // Execute via injected runner
-                      const result = await runTestFn(testCase.prompt, compareWithBaseModel);
+                      if (sessionId) {
+                          traces = await traceService.getBySession(sessionId);
+                          traceIds = traces.map(t => t.id);
+                      }
 
-                      const traces = traceService.getTraces();
                       const activatedIds = new Set<string>();
                       traces.forEach(trace => {
                           trace.activation_path?.forEach(step => activatedIds.add(step.symbol_id));
@@ -198,84 +266,56 @@ export const testService = {
                           if (trace.output_node) activatedIds.add(trace.output_node);
                       });
 
-                      const missingActivations = expected.filter(id => !activatedIds.has(id));
+                      const missingActivations = (test.expectedActivations || []).filter(id => !activatedIds.has(id));
 
                       testCase.signalZeroResponse = result.text;
                       testCase.meta = result.meta;
-                      testCase.traces = traces;
-                      testCase.expectedActivations = expected;
-                      testCase.missingActivations = missingActivations;
+                      testCase.traceIds = traceIds;
                       testCase.activationCheckPassed = missingActivations.length === 0;
-                      testCase.compareWithBaseModel = compareWithBaseModel;
+                      testCase.missingActivations = missingActivations;
+
+                      if (test.expectedResponse) {
+                          const evalResult = await evaluateSemanticMatch(test.prompt, result.text || '', test.expectedResponse);
+                          testCase.responseMatch = evalResult.match;
+                          testCase.responseMatchReasoning = evalResult.reason;
+                      }
 
                       if (compareWithBaseModel) {
-                          testCase.baselineResponse = await runBaselineTest(testCase.prompt);
-                          testCase.evaluation = await evaluateComparison(
-                              testCase.prompt,
-                              testCase.signalZeroResponse || '',
-                              testCase.baselineResponse || ''
-                          );
+                          testCase.baselineResponse = await runBaselineTest(test.prompt);
+                          if (test.expectedResponse) {
+                              const baseEvalResult = await evaluateSemanticMatch(test.prompt, testCase.baselineResponse || '', test.expectedResponse);
+                              testCase.baselineResponseMatch = baseEvalResult.match;
+                              testCase.baselineResponseMatchReasoning = baseEvalResult.reason;
+                          }
+                          testCase.evaluation = await evaluateComparison(test.prompt, result.text || '', testCase.baselineResponse || '');
                       }
 
-                      testCase.status = result.error || missingActivations.length > 0 ? 'failed' : 'completed';
-                      testCase.error = result.error || (missingActivations.length > 0 ? `Missing activations: ${missingActivations.join(', ')}` : undefined);
-
-                      if (testCase.status === 'completed') {
-                          newRun.summary.passed++;
-                          loggerService.info(`Test Case Passed: ${testCase.id}`, {
-                              runId,
-                              name: testCase.name,
-                              missingActivations
-                          });
-                      } else {
-                          newRun.summary.failed++;
-                          loggerService.warn(`Test Case Failed: ${testCase.id}`, {
-                              runId,
-                              name: testCase.name,
-                              error: testCase.error,
-                              missingActivations
-                          });
-                      }
+                      let passed = !result.error;
+                      if ((test.expectedActivations?.length ?? 0) > 0 && missingActivations.length > 0) passed = false;
+                      if (test.expectedResponse && !testCase.responseMatch) passed = false;
+                      
+                      testCase.status = passed ? 'completed' : 'failed';
+                      if (result.error) testCase.error = result.error;
 
                   } catch (err) {
                       testCase.status = 'failed';
                       testCase.error = String(err);
-                      newRun.summary.failed++;
-                      loggerService.error(`Test Case Error: ${testCase.id}`, {
-                          runId,
-                          name: testCase.name,
-                          error: err
-                      });
                   }
 
-                  newRun.summary.completed++;
-                  await testService.updateRunState(newRun);
+                  await testService.updateRunProgress(runId, testCase);
+              });
+          });
+
+          try {
+              await Promise.all(tasks);
+              const finalRun = await testService.getTestRun(runId);
+              if (finalRun && finalRun.status === 'running') {
+                  finalRun.status = 'completed';
+                  finalRun.endTime = new Date().toISOString();
+                  await testService.updateRunState(finalRun);
               }
-
-              newRun.status = 'completed';
-              newRun.endTime = new Date().toISOString();
-              await testService.updateRunState(newRun);
-
-              loggerService.info(`Test Run Completed: ${runId}`, {
-                  testSetId: testSet.id,
-                  testSetName: testSet.name,
-                  summary: newRun.summary,
-                  compareWithBaseModel
-              });
-
-          } catch (fatalErr) {
-              console.error("Fatal Test Run Error", fatalErr);
-              newRun.status = 'failed';
-              newRun.endTime = new Date().toISOString();
-              await testService.updateRunState(newRun);
-
-              loggerService.error(`Test Run Failed: ${runId}`, {
-                  testSetId: testSet.id,
-                  testSetName: testSet.name,
-                  error: fatalErr,
-                  summary: newRun.summary,
-                  compareWithBaseModel
-              });
+          } catch (fatal) {
+              loggerService.error("Test Worker Fatal Error", { runId, fatal });
           }
       })();
 
@@ -283,12 +323,260 @@ export const testService = {
   },
 
   updateRunState: async (run: TestRun) => {
-      await redisService.request(['SET', `${KEYS.TEST_RUN_PREFIX}${run.id}`, JSON.stringify(run)]);
+      const { results, ...meta } = run;
+      await redisService.request(['SET', `${KEYS.TEST_RUN_PREFIX}${run.id}`, JSON.stringify(meta)]);
   },
 
-  // --- Legacy Support (Backwards Compatibility) ---
-  // These are kept for the current "simple" test runner if needed, 
-  // or mapped to the "default" test set.
+  updateTestCaseState: async (runId: string, testCaseId: string, updates: Partial<TestResult>) => {
+      const key = `${KEYS.RESULT_PREFIX}${runId}:${testCaseId}`;
+      const data = await redisService.request(['GET', key]);
+      if (data) {
+          const current = JSON.parse(data);
+          await redisService.request(['SET', key, JSON.stringify({ ...current, ...updates }), 'EX', '604800']);
+      }
+  },
+
+  updateRunProgress: async (runId: string, testCase: TestResult) => {
+      const resultKey = `${KEYS.RESULT_PREFIX}${runId}:${testCase.id}`;
+      const summaryKey = `sz:test_run_summary:${runId}`;
+
+      // 1. Fetch the OLD state to calculate deltas
+      const oldRaw = await redisService.request(['GET', resultKey]);
+      const oldResult: TestResult | null = oldRaw ? JSON.parse(oldRaw) : null;
+
+      // 2. Save individual result (Atomic)
+      await redisService.request(['SET', resultKey, JSON.stringify(testCase), 'EX', '604800']);
+
+      // 3. Apply atomic deltas to counters
+      // Terminal states are 'completed' and 'failed'.
+      const wasTerminal = oldResult && (oldResult.status === 'completed' || oldResult.status === 'failed');
+      const isTerminal = testCase.status === 'completed' || testCase.status === 'failed';
+
+      if (!wasTerminal && isTerminal) {
+          // Newly completed
+          await redisService.request(['HINCRBY', summaryKey, 'completed', '1']);
+          if (testCase.status === 'completed') await redisService.request(['HINCRBY', summaryKey, 'passed', '1']);
+          else await redisService.request(['HINCRBY', summaryKey, 'failed', '1']);
+      } else if (wasTerminal && isTerminal) {
+          // Transition between terminal states (Rerun correction)
+          if (oldResult!.status === 'failed' && testCase.status === 'completed') {
+              await redisService.request(['HINCRBY', summaryKey, 'failed', '-1']);
+              await redisService.request(['HINCRBY', summaryKey, 'passed', '1']);
+          } else if (oldResult!.status === 'completed' && testCase.status === 'failed') {
+              await redisService.request(['HINCRBY', summaryKey, 'passed', '-1']);
+              await redisService.request(['HINCRBY', summaryKey, 'failed', '1']);
+          }
+          // if failed -> failed or passed -> passed, no summary delta needed
+      }
+
+      await redisService.request(['EXPIRE', summaryKey, '604800']);
+
+      // 4. Update metadata key for UI polling
+      const data = await redisService.request(['GET', `${KEYS.TEST_RUN_PREFIX}${runId}`]);
+      if (data) {
+          const run: TestRun = JSON.parse(data);
+          const summaryRaw = await redisService.request(['HGETALL', summaryKey]);
+          
+          let summary: any = {};
+          if (Array.isArray(summaryRaw)) {
+              for (let i = 0; i < (summaryRaw as string[]).length; i += 2) {
+                  summary[summaryRaw[i]] = parseInt(summaryRaw[i+1], 10);
+              }
+          } else if (summaryRaw && typeof summaryRaw === 'object') {
+              summary = summaryRaw;
+          }
+
+          run.summary = {
+              total: run.summary?.total || 0,
+              completed: parseInt(summary.completed || 0, 10),
+              passed: parseInt(summary.passed || 0, 10),
+              failed: parseInt(summary.failed || 0, 10)
+          };
+          
+          await testService.updateRunState(run);
+      }
+  },
+
+  stopTestRun: async (runId: string): Promise<void> => {
+      const run = await testService.getTestRun(runId, true);
+      if (run && run.status === 'running') {
+          run.status = 'stopped';
+          await testService.updateRunState(run);
+          loggerService.info(`Test Run Stopped: ${runId}`);
+      }
+  },
+
+  resumeTestRun: async (
+      runId: string,
+      runTestFn: (prompt: string, compareWithBaseModel?: boolean) => Promise<{ text: string, meta: any, error?: string }>
+  ): Promise<TestRun> => {
+      const run = await testService.getTestRun(runId);
+      if (!run) throw new Error("Test run not found");
+
+      if (run.status === 'completed') return run;
+
+      run.status = 'running';
+      await testService.updateRunState(run);
+
+      // Same logic as startTestRun but only for pending/failed
+      (async () => {
+          const limit = pLimit(15);
+          const tasks = (run.results || []).map((testCase) => {
+              if (testCase.status === 'completed') return Promise.resolve();
+              
+              return limit(async () => {
+                  const currentRun = await testService.getTestRun(runId, true);
+                  if (currentRun && (currentRun.status === 'stopped' || currentRun.status === 'cancelled')) return;
+
+                  testCase.status = 'running';
+                  await testService.updateTestCaseState(runId, testCase.id, { status: 'running' });
+
+                  try {
+                      const result = await runTestFn(testCase.prompt, run.compareWithBaseModel);
+                      
+                      const sessionId = result.meta?.contextSessionId;
+                      let traces: TraceData[] = [];
+                      let traceIds: string[] = [];
+                      if (sessionId) {
+                          traces = await traceService.getBySession(sessionId);
+                          traceIds = traces.map(t => t.id);
+                      }
+
+                      const activatedIds = new Set<string>();
+                      traces.forEach(t => {
+                          t.activation_path?.forEach(s => activatedIds.add(s.symbol_id));
+                          if (t.entry_node) activatedIds.add(t.entry_node);
+                          if (t.output_node) activatedIds.add(t.output_node);
+                      });
+
+                      const missing = (testCase.expectedActivations || []).filter(id => !activatedIds.has(id));
+                      
+                      testCase.signalZeroResponse = result.text;
+                      testCase.meta = result.meta;
+                      testCase.traceIds = traceIds;
+                      testCase.activationCheckPassed = missing.length === 0;
+                      testCase.missingActivations = missing;
+
+                      if (testCase.expectedResponse) {
+                          const evalRes = await evaluateSemanticMatch(testCase.prompt, result.text || '', testCase.expectedResponse);
+                          testCase.responseMatch = evalRes.match;
+                          testCase.responseMatchReasoning = evalRes.reason;
+                      }
+
+                      if (run.compareWithBaseModel) {
+                          testCase.baselineResponse = await runBaselineTest(testCase.prompt);
+                          if (testCase.expectedResponse) {
+                              const baseEval = await evaluateSemanticMatch(testCase.prompt, testCase.baselineResponse || '', testCase.expectedResponse);
+                              testCase.baselineResponseMatch = baseEval.match;
+                              testCase.baselineResponseMatchReasoning = baseEval.reason;
+                          }
+                          testCase.evaluation = await evaluateComparison(testCase.prompt, result.text || '', testCase.baselineResponse || '');
+                      }
+
+                      let passed = !result.error;
+                      if ((testCase.expectedActivations?.length ?? 0) > 0 && missing.length > 0) passed = false;
+                      if (testCase.expectedResponse && !testCase.responseMatch) passed = false;
+                      testCase.status = passed ? 'completed' : 'failed';
+
+                  } catch (err) {
+                      testCase.status = 'failed';
+                      testCase.error = String(err);
+                  }
+
+                  await testService.updateRunProgress(runId, testCase);
+              });
+          });
+
+          await Promise.all(tasks);
+          const finalRun = await testService.getTestRun(runId, true);
+          if (finalRun && finalRun.status === 'running') {
+              finalRun.status = 'completed';
+              finalRun.endTime = new Date().toISOString();
+              await testService.updateRunState(finalRun);
+          }
+      })();
+
+      return run;
+  },
+
+  rerunTestCase: async (
+      runId: string,
+      testCaseId: string,
+      runTestFn: (prompt: string, compareWithBaseModel?: boolean) => Promise<{ text: string, meta: any, error?: string }>
+  ): Promise<TestResult | null> => {
+      const run = await testService.getTestRun(runId);
+      if (!run) throw new Error("Test run not found");
+
+      const testCase = (run.results || []).find(r => r.id === testCaseId);
+      if (!testCase) throw new Error("Test case not found");
+
+      testCase.status = 'running';
+      testCase.error = undefined;
+      testCase.signalZeroResponse = undefined;
+      await testService.updateTestCaseState(runId, testCaseId, { status: 'running' });
+
+      try {
+          const result = await runTestFn(testCase.prompt, run.compareWithBaseModel);
+          const sessionId = result.meta?.contextSessionId;
+          let traces: TraceData[] = [];
+          if (sessionId) traces = await traceService.getBySession(sessionId);
+
+          const activatedIds = new Set<string>();
+          traces.forEach(t => {
+              t.activation_path?.forEach(s => activatedIds.add(s.symbol_id));
+              if (t.entry_node) activatedIds.add(t.entry_node);
+              if (t.output_node) activatedIds.add(t.output_node);
+          });
+
+          const missing = (testCase.expectedActivations || []).filter(id => !activatedIds.has(id));
+          
+          testCase.signalZeroResponse = result.text;
+          testCase.meta = result.meta;
+          testCase.traceIds = traces.map(t => t.id);
+          testCase.activationCheckPassed = missing.length === 0;
+          testCase.missingActivations = missing;
+
+          if (testCase.expectedResponse) {
+              const evalRes = await evaluateSemanticMatch(testCase.prompt, result.text || '', testCase.expectedResponse);
+              testCase.responseMatch = evalRes.match;
+              testCase.responseMatchReasoning = evalRes.reason;
+          }
+
+          if (run.compareWithBaseModel) {
+              testCase.baselineResponse = await runBaselineTest(testCase.prompt);
+              if (testCase.expectedResponse) {
+                  const baseEval = await evaluateSemanticMatch(testCase.prompt, testCase.baselineResponse || '', testCase.expectedResponse);
+                  testCase.baselineResponseMatch = baseEval.match;
+                  testCase.baselineResponseMatchReasoning = baseEval.reason;
+              }
+              testCase.evaluation = await evaluateComparison(testCase.prompt, result.text || '', testCase.baselineResponse || '');
+          }
+
+          let passed = !result.error;
+          if ((testCase.expectedActivations?.length ?? 0) > 0 && missing.length > 0) passed = false;
+          if (testCase.expectedResponse && !testCase.responseMatch) passed = false;
+          testCase.status = passed ? 'completed' : 'failed';
+
+      } catch (err) {
+          testCase.status = 'failed';
+          testCase.error = String(err);
+      }
+
+      await testService.updateRunProgress(runId, testCase);
+      return testCase;
+  },
+
+  deleteTestRun: async (runId: string): Promise<void> => {
+      await redisService.request(['SREM', KEYS.TEST_RUNS, runId]);
+      await redisService.request(['DEL', `${KEYS.TEST_RUN_PREFIX}${runId}`]);
+      const resultKeys = await redisService.request(['KEYS', `${KEYS.RESULT_PREFIX}${runId}:*`]);
+      if (resultKeys.length > 0) {
+          await redisService.request(['DEL', ...resultKeys]);
+      }
+      loggerService.info(`Test Run Deleted: ${runId}`);
+  },
+
+  // --- Legacy Support ---
 
   getTests: async (): Promise<TestCase[]> => {
     const sets = await testService.listTestSets();
@@ -296,30 +584,18 @@ export const testService = {
     return defaultSet ? defaultSet.tests : DEFAULT_TESTS;
   },
 
-  addTest: async (testSetId: string, prompt: string, expectedActivations: string[], name?: string): Promise<void> => {
+  addTest: async (testSetId: string, prompt: string, expectedActivations: string[], name?: string, expectedResponse?: string): Promise<void> => {
      const set = await testService.getTestSet(testSetId);
-     if (!set) {
-         throw new Error("Test set not found");
-     }
-
-     const newTest = normalizeTestCase({ id: `${testSetId}-T${set.tests.length}`, name: name || prompt, prompt, expectedActivations }, set.tests.length, testSetId);
+     if (!set) throw new Error("Test set not found");
+     const newTest = normalizeTestCase({ id: `${testSetId}-T${set.tests.length}`, name: name || prompt, prompt, expectedActivations, expectedResponse }, set.tests.length, testSetId);
      set.tests.push(newTest);
      await testService.createOrUpdateTestSet(set);
   },
 
   deleteTest: async (testSetId: string, testId: string): Promise<void> => {
       const set = await testService.getTestSet(testSetId);
-      if (!set) {
-          throw new Error("Test set not found");
-      }
-
-      const initialLength = set.tests.length;
+      if (!set) throw new Error("Test set not found");
       set.tests = set.tests.filter(test => test.id !== testId);
-
-      if (set.tests.length === initialLength) {
-          throw new Error("Test case not found");
-      }
-
       await testService.createOrUpdateTestSet(set);
   },
 
@@ -337,7 +613,22 @@ export const testService = {
   },
 
   clearTests: async () => {
-      // Clears default set
       await testService.setTests([]);
+  },
+
+  cleanupActiveRuns: async (): Promise<number> => {
+      const ids = await redisService.request(['SMEMBERS', KEYS.TEST_RUNS]);
+      if (!ids || !Array.isArray(ids)) return 0;
+
+      let cleanedCount = 0;
+      for (const id of ids) {
+          const run = await testService.getTestRun(id, true);
+          if (run && run.status === 'running') {
+              run.status = 'stopped'; // Set to stopped so user can resume
+              await testService.updateRunState(run);
+              cleanedCount++;
+          }
+      }
+      return cleanedCount;
   }
 };

@@ -56,7 +56,6 @@ const closeSessionInternal = async (session: ContextSession): Promise<ContextSes
 const writeToolNames = new Set([
   'upsert_symbols',
   'delete_symbols',
-  'compress_symbols',
   'create_domain',
   'upsert_loop',
   'add_test_case',
@@ -276,4 +275,25 @@ export const contextService = {
       const session = await loadSession(sessionId);
       return !!session?.activeMessageId;
   },
+
+  async cleanupTestSessions(): Promise<number> {
+      const sessions = await this.listSessions();
+      // Test sessions often have a specific metadata signature or type 'loop' that wasn't properly closed
+      // Or they are 'conversation' type but were created specifically for a test run
+      // Looking at startTestRun in testService, it creates tool executors which might use temp sessions.
+      // Actually, runSignalZeroTest often creates a session with source: 'test' or similar if we set it.
+      
+      const toDelete = sessions.filter(s => 
+          s.status === 'open' && 
+          (s.metadata?.source === 'test' || s.metadata?.temp === true)
+      );
+
+      for (const session of toDelete) {
+          await redisService.request(['SREM', CONTEXT_INDEX_KEY, session.id]);
+          await redisService.request(['DEL', sessionKey(session.id)]);
+          await redisService.request(['DEL', historyKey(session.id)]);
+      }
+
+      return toDelete.length;
+  }
 };

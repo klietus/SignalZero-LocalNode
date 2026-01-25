@@ -707,6 +707,61 @@ app.post('/api/tests/runs', async (req, res) => {
     }
 });
 
+// Stop Test Run
+app.post('/api/tests/runs/:runId/stop', async (req, res) => {
+    try {
+        await testService.stopTestRun(req.params.runId);
+        res.json({ status: 'success' });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+// Resume Test Run
+app.post('/api/tests/runs/:runId/resume', async (req, res) => {
+    try {
+        // Reinject runner
+        const runnerFn = async (prompt: string) => {
+            const toolExecutor = createToolExecutor(() => settingsService.getApiKey());
+            return await runSignalZeroTest(prompt, toolExecutor, [], activeSystemPrompt);
+        };
+
+        const run = await testService.resumeTestRun(req.params.runId, runnerFn);
+        res.json({ status: 'resumed', runId: run.id });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+// Rerun Single Test Case
+app.post('/api/tests/runs/:runId/cases/:caseId/rerun', async (req, res) => {
+    try {
+        const runnerFn = async (prompt: string) => {
+            const toolExecutor = createToolExecutor(() => settingsService.getApiKey());
+            return await runSignalZeroTest(prompt, toolExecutor, [], activeSystemPrompt);
+        };
+
+        const result = await testService.rerunTestCase(req.params.runId, req.params.caseId, runnerFn);
+        res.json({ status: 'success', result });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+// Delete Test Run
+app.delete('/api/tests/runs/:runId', async (req, res) => {
+    try {
+        await testService.deleteTestRun(req.params.runId);
+        res.json({ status: 'success' });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
 // Add Test to Set
 app.post('/api/tests', async (req, res) => {
     const { testSetId, name, prompt, expectedActivations } = req.body;
@@ -750,14 +805,29 @@ app.get('/api/tests/runs', async (req, res) => {
 // Get Test Run Details
 app.get('/api/tests/runs/:id', async (req, res) => {
     try {
-        const run = await testService.getTestRun(req.params.id);
+        const excludeResults = req.query.excludeResults === 'true';
+        const run = await testService.getTestRun(req.params.id, excludeResults);
         if (run) {
             res.json(run);
             return;
         }
 
-        // Return an empty result set instead of a 404 to keep the response shape predictable
         res.json({ results: [] });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+// Get Paginated Test Run Results
+app.get('/api/tests/runs/:runId/results', async (req, res) => {
+    try {
+        const limit = parseInt(req.query.limit as string || '50', 10);
+        const offset = parseInt(req.query.offset as string || '0', 10);
+        const status = req.query.status as string | undefined;
+        
+        const result = await testService.getTestRunResults(req.params.runId, limit, offset, status);
+        res.json(result);
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
@@ -853,9 +923,26 @@ app.post('/api/project/active', async (req, res) => {
 });
 
 // Trace Endpoint
-app.get('/api/traces', (req, res) => {
-    const since = req.query.since ? parseInt(req.query.since as string, 10) : undefined;
-    res.json(traceService.getTraces(Number.isNaN(since) ? undefined : since));
+app.get('/api/traces', async (req, res) => {
+    try {
+        const since = req.query.since ? parseInt(req.query.since as string, 10) : undefined;
+        const traces = await traceService.getTraces(Number.isNaN(since) ? undefined : since);
+        res.json(traces);
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+app.get('/api/traces/:id', async (req, res) => {
+    try {
+        const trace = await traceService.findById(req.params.id);
+        if (trace) res.json(trace);
+        else res.status(404).json({ error: 'Trace not found' });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
 });
 
 // Loop Management
@@ -942,9 +1029,16 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     app.listen(PORT, async () => {
         loggerService.info(`SignalZero Kernel Server running on port ${PORT}`);
         
-        // Startup Health Check
+        // Startup Health Check with retry
         loggerService.info("Performing startup health checks...");
-        const redisHealth = await domainService.healthCheck();
+        let redisHealth = false;
+        for (let i = 0; i < 5; i++) {
+            redisHealth = await domainService.healthCheck();
+            if (redisHealth) break;
+            loggerService.warn(`Redis health check retry ${i+1}/5...`);
+            await new Promise(res => setTimeout(res, 1000));
+        }
+
         if (redisHealth) {
             loggerService.info("Redis Connection: OK");
             
@@ -957,12 +1051,23 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
                 loggerService.error("Failed to load system prompt during startup", { error });
             }
         } else {
-            loggerService.error("Redis Connection: FAILED");
+            loggerService.error("Redis Connection: FAILED after retries");
         }
 
         const vectorHealth = await vectorService.healthCheck();
         if (vectorHealth) loggerService.info("Vector DB Connection: OK");
         else loggerService.error("Vector DB Connection: FAILED");
+
+        // Cleanup hanging test runs
+        try {
+            loggerService.info("Cleaning up hanging test runs...");
+            const cleanedRuns = await testService.cleanupActiveRuns();
+            if (cleanedRuns > 0) {
+                loggerService.info(`Marked ${cleanedRuns} hanging test run(s) as stopped.`);
+            }
+        } catch (error) {
+            loggerService.error("Test run cleanup failed", { error });
+        }
 
         // Run full registry migration/refactor (Lattice membership unification)
         try {
@@ -979,6 +1084,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 
         // Context Recovery: Retry contexts that were active when service died
         try {
+            loggerService.info("Cleaning up hanging test contexts...");
+            const cleanedCount = await contextService.cleanupTestSessions();
+            if (cleanedCount > 0) {
+                loggerService.info(`Cleaned up ${cleanedCount} hanging test session(s).`);
+            }
+
             loggerService.info("Checking for interrupted contexts requiring recovery...");
             const contexts = await contextService.listSessions();
             const pendingContexts = contexts.filter(c => c.activeMessageId && c.status === 'open');

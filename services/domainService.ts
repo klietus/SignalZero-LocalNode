@@ -65,10 +65,8 @@ export const migrateSymbols = async (domain: CachedDomain): Promise<boolean> => 
             symbol.linked_patterns = Array.from(new Set([...(symbol.linked_patterns || []), ...members]));
             delete (symbol.lattice as any).members;
             modified = true;
-            // Reindex in vector store to reflect schema change (skip data symbols)
-            if (symbol.kind !== 'data') {
-                await vectorService.indexSymbol(symbol);
-            }
+            // Reindex in vector store to reflect schema change
+            await vectorService.indexSymbol(symbol);
         }
     }
     return modified;
