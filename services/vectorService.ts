@@ -126,6 +126,8 @@ export const vectorService = {
             Description: ${JSON.stringify(symbol.facets || {})}
             Lattice: ${symbol.kind === 'lattice' ? JSON.stringify(symbol.lattice) : 'N/A'}
             Persona: ${symbol.kind === 'persona' ? JSON.stringify(symbol.persona) : 'N/A'}
+            Data Source: ${symbol.kind === 'data' ? symbol.data?.source : 'N/A'}
+            Data Status: ${symbol.kind === 'data' ? symbol.data?.status : 'N/A'}
         `.trim().replace(/\s+/g, ' ');
 
         const collection = await getCollectionInstance();

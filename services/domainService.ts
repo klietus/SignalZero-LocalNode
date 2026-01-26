@@ -562,10 +562,8 @@ export const domainService = {
     // Time bucket index (based on creation time)
     await indexSymbolBucket(normalizedSymbol);
     
-    // Index Vector (skip data symbols)
-    if (normalizedSymbol.kind !== 'data') {
-        await vectorService.indexSymbol(normalizedSymbol);
-    }
+    // Index Vector
+    await vectorService.indexSymbol(normalizedSymbol);
 
     // Handle Bidirectional Links
     if (!options.internalBidirectionalCall && normalizedSymbol.linked_patterns) {
@@ -676,9 +674,8 @@ export const domainService = {
 
       await redisService.request(['SET', key, JSON.stringify(domain)]);
       
-      const symbolsToIndex = symbols.filter(s => s.kind !== 'data');
-      if (symbolsToIndex.length > 0) {
-          await vectorService.indexBatch(symbolsToIndex);
+      if (symbols.length > 0) {
+          await vectorService.indexBatch(symbols);
       }
 
       // Handle Bidirectional Links for the batch
@@ -784,9 +781,7 @@ export const domainService = {
               domain.symbols.push(normalized);
               updateCount++;
               
-              if (normalized.kind !== 'data') {
-                  await vectorService.indexSymbol(normalized);
-              }
+              await vectorService.indexSymbol(normalized);
               await indexSymbolBucket(normalized);
           }
 
