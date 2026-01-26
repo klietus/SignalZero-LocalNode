@@ -500,7 +500,7 @@ export const domainService = {
   /**
    * Saves or updates a symbol.
    */
-  upsertSymbol: async (domainId: string, symbol: SymbolDef, options: { bypassValidation?: boolean } = {}) => {
+  upsertSymbol: async (domainId: string, symbol: SymbolDef, options: { bypassValidation?: boolean, internalBidirectionalCall?: boolean } = {}) => {
     const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
     const data = await redisService.request(['GET', key]);
     
@@ -566,12 +566,36 @@ export const domainService = {
     if (normalizedSymbol.kind !== 'data') {
         await vectorService.indexSymbol(normalizedSymbol);
     }
+
+    // Handle Bidirectional Links
+    if (!options.internalBidirectionalCall && normalizedSymbol.linked_patterns) {
+        for (const link of normalizedSymbol.linked_patterns) {
+            if (link.bidirectional) {
+                const targetSymbol = await domainService.findById(link.id);
+                if (targetSymbol) {
+                    const backLink = { id: normalizedSymbol.id, link_type: link.link_type, bidirectional: true };
+                    const hasBackLink = targetSymbol.linked_patterns.some(l => l.id === normalizedSymbol.id);
+                    
+                    if (!hasBackLink) {
+                        const updatedTarget = {
+                            ...targetSymbol,
+                            linked_patterns: [...targetSymbol.linked_patterns, backLink]
+                        };
+                        await domainService.upsertSymbol(targetSymbol.symbol_domain, updatedTarget, { 
+                            bypassValidation: true, 
+                            internalBidirectionalCall: true 
+                        });
+                    }
+                }
+            }
+        }
+    }
   },
 
   /**
    * Bulk upsert.
    */
-  bulkUpsert: async (domainId: string, symbols: SymbolDef[], options: { bypassValidation?: boolean } = {}) => {
+  bulkUpsert: async (domainId: string, symbols: SymbolDef[], options: { bypassValidation?: boolean, internalBidirectionalCall?: boolean } = {}) => {
       const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
       const data = await redisService.request(['GET', key]);
       
@@ -655,6 +679,36 @@ export const domainService = {
       const symbolsToIndex = symbols.filter(s => s.kind !== 'data');
       if (symbolsToIndex.length > 0) {
           await vectorService.indexBatch(symbolsToIndex);
+      }
+
+      // Handle Bidirectional Links for the batch
+      if (!options.internalBidirectionalCall) {
+          const upsertIds = new Set(symbols.map(s => s.id));
+          for (const sym of symbols) {
+              if (sym.linked_patterns) {
+                  for (const link of sym.linked_patterns) {
+                      if (link.bidirectional) {
+                          // If target is in the same batch, it might already have the link or will be handled in its turn.
+                          // But to be sure, we ensure both sides have it.
+                          const targetSymbol = await domainService.findById(link.id);
+                          if (targetSymbol) {
+                              const hasBackLink = targetSymbol.linked_patterns.some(l => l.id === sym.id);
+                              if (!hasBackLink) {
+                                  const backLink = { id: sym.id, link_type: link.link_type, bidirectional: true };
+                                  const updatedTarget = {
+                                      ...targetSymbol,
+                                      linked_patterns: [...targetSymbol.linked_patterns, backLink]
+                                  };
+                                  await domainService.upsertSymbol(targetSymbol.symbol_domain, updatedTarget, { 
+                                      bypassValidation: true, 
+                                      internalBidirectionalCall: true 
+                                  });
+                              }
+                          }
+                      }
+                  }
+              }
+          }
       }
   },
 
