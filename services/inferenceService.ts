@@ -30,7 +30,7 @@ interface ChatSessionState {
 
 const MAX_TOOL_LOOPS = 15;
 
-const getClient = () => {
+export const getClient = () => {
   const { endpoint, provider, apiKey } = settingsService.getInferenceSettings();
   
   if (provider === 'openai') {
@@ -47,7 +47,7 @@ const getClient = () => {
   });
 };
 
-const getGeminiClient = () => {
+export const getGeminiClient = () => {
   const { apiKey } = settingsService.getInferenceSettings();
   return new GoogleGenerativeAI(apiKey);
 };
