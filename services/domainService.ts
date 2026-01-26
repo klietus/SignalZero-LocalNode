@@ -215,26 +215,19 @@ export const domainService = {
    * Checks if a domain is enabled.
    */
   isEnabled: async (domainId: string): Promise<boolean> => {
-    const data = await redisService.request(['GET', `${KEYS.DOMAIN_PREFIX}${domainId}`]);
-    if (!data) return false;
-    try {
-      const domain = parseDomain(data, domainId);
-      return domain.enabled;
-    } catch {
-      return false;
-    }
+    const domain = await domainService.getDomain(domainId);
+    return domain ? domain.enabled : false;
   },
 
   /**
    * Toggles the enabled state of a domain.
    */
   toggleDomain: async (domainId: string, enabled: boolean) => {
-    const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
-    const data = await redisService.request(['GET', key]);
-    if (data) {
-      const domain = parseDomain(data, domainId);
+    const domain = await domainService.getDomain(domainId);
+    if (domain) {
       domain.enabled = enabled;
-      await redisService.request(['SET', key, JSON.stringify(domain)]);
+      domain.lastUpdated = Date.now();
+      await redisService.request(['SET', `${KEYS.DOMAIN_PREFIX}${domainId}`, JSON.stringify(domain)]);
     }
   },
 
@@ -242,16 +235,14 @@ export const domainService = {
    * Updates domain metadata without touching symbols.
    */
   updateDomainMetadata: async (domainId: string, metadata: { name?: string, description?: string, invariants?: string[], readOnly?: boolean }) => {
-    const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
-    const data = await redisService.request(['GET', key]);
-    if (data) {
-      const domain = parseDomain(data, domainId);
+    const domain = await domainService.getDomain(domainId);
+    if (domain) {
       if (metadata.name) domain.name = metadata.name;
       if (metadata.description !== undefined) domain.description = metadata.description;
-      if (metadata.invariants !== undefined) domain.invariants = metadata.invariants;
+      if (metadata.invariants) domain.invariants = metadata.invariants;
       if (metadata.readOnly !== undefined) domain.readOnly = metadata.readOnly;
       domain.lastUpdated = Date.now();
-      await redisService.request(['SET', key, JSON.stringify(domain)]);
+      await redisService.request(['SET', `${KEYS.DOMAIN_PREFIX}${domainId}`, JSON.stringify(domain)]);
     }
   },
 
@@ -259,11 +250,8 @@ export const domainService = {
    * Removes a domain and all its symbols from Redis.
    */
   deleteDomain: async (domainId: string) => {
-    const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
-    const data = await redisService.request(['GET', key]);
-    
-    if (data) {
-      const domain = parseDomain(data, domainId);
+    const domain = await domainService.getDomain(domainId);
+    if (domain) {
       // Clean up vector store
       for (const s of domain.symbols) {
           await vectorService.deleteSymbol(s.id);
@@ -271,8 +259,8 @@ export const domainService = {
     }
 
     // Remove from SET and DEL key
+    await redisService.request(['DEL', `${KEYS.DOMAIN_PREFIX}${domainId}`]);
     await redisService.request(['SREM', KEYS.DOMAINS_SET, domainId]);
-    await redisService.request(['DEL', key]);
   },
 
   /**
@@ -487,30 +475,18 @@ export const domainService = {
    * Retrieves all symbols for a domain.
    */
   getSymbols: async (domainId: string): Promise<SymbolDef[]> => {
-    const data = await redisService.request(['GET', `${KEYS.DOMAIN_PREFIX}${domainId}`]);
-    if (!data) return [];
-    try {
-        const domain = parseDomain(data, domainId);
-        return domain.symbols || [];
-    } catch {
-        return [];
-    }
+    const domain = await domainService.getDomain(domainId);
+    return domain ? domain.symbols : [];
   },
 
   /**
    * Saves or updates a symbol.
    */
   upsertSymbol: async (domainId: string, symbol: SymbolDef, options: { bypassValidation?: boolean, internalBidirectionalCall?: boolean } = {}) => {
-    const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
-    const data = await redisService.request(['GET', key]);
-    
-    let domain: CachedDomain;
+    let domain = await domainService.getDomain(domainId);
 
-    if (!data) {
+    if (!domain) {
         throw new Error(`Domain '${domainId}' not found. You must create the domain first.`);
-    } else {
-        domain = parseDomain(data, domainId);
-        if (!domain.id) domain.id = domainId; // migration safety
     }
 
     ensureWritableDomain(domain, domainId, symbol.id);
@@ -557,7 +533,7 @@ export const domainService = {
     domain.lastUpdated = Date.now();
     
     // Save Domain
-    await redisService.request(['SET', key, JSON.stringify(domain)]);
+    await redisService.request(['SET', `${KEYS.DOMAIN_PREFIX}${domainId}`, JSON.stringify(domain)]);
 
     // Time bucket index (based on creation time)
     await indexSymbolBucket(normalizedSymbol);

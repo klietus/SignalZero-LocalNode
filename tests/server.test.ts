@@ -29,6 +29,7 @@ vi.mock('../services/contextService', () => ({
         listSessions: vi.fn().mockResolvedValue([]),
         getSession: vi.fn(),
         getHistory: vi.fn(),
+        getUnfilteredHistory: vi.fn().mockResolvedValue([]),
         getHistoryGrouped: vi.fn().mockResolvedValue([]),
         hasActiveMessage: vi.fn().mockResolvedValue(false),
         setActiveMessage: vi.fn(),
@@ -46,6 +47,10 @@ const authedRequest = () => request(app).get('/').set('x-auth-token', AUTH_TOKEN
 describe('Server API Endpoints', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        // Setup minimal domainService mocks to support constructContextWindow
+        vi.mocked(domainService.getMetadata).mockResolvedValue([]);
+        vi.mocked(domainService.findById).mockResolvedValue(null);
+        vi.mocked(domainService.getSymbols).mockResolvedValue([]);
     });
 
     // --- System ---
