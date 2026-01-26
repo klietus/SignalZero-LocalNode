@@ -68,6 +68,23 @@ describe('DomainService', () => {
         expect(domain.symbols[0].linked_patterns[0].link_type).toBe('depends_on');
     });
 
+    it('should create back-links for bidirectional links', async () => {
+        await domainService.createDomain('test-dom');
+        const symA: any = { id: 'SYM-A', name: 'Alpha', linked_patterns: [], symbol_domain: 'test-dom' };
+        const symB: any = { 
+            id: 'SYM-B', 
+            name: 'Beta', 
+            symbol_domain: 'test-dom',
+            linked_patterns: [{ id: 'SYM-A', link_type: 'relates_to', bidirectional: true }] 
+        };
+
+        await domainService.upsertSymbol('test-dom', symA, { bypassValidation: true });
+        await domainService.upsertSymbol('test-dom', symB, { bypassValidation: true });
+
+        const updatedA = await domainService.findById('SYM-A');
+        expect(updatedA?.linked_patterns).toContainEqual({ id: 'SYM-B', link_type: 'relates_to', bidirectional: true });
+    });
+
     it('should delete a symbol and perform cascade cleanup on structured links', async () => {
          const mockDomain = {
             id: 'test-domain',
