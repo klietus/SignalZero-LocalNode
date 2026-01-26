@@ -1,0 +1,34 @@
+{
+  "redis": {
+    "server": "initial-host",
+    "port": 6379,
+    "password": "updated-pw"
+  },
+  "chroma": {
+    "url": "http://initial-chroma",
+    "collection": "updated-collection",
+    "useExternal": true
+  },
+  "inference": {
+    "provider": "local",
+    "apiKey": "",
+    "endpoint": "http://localhost:1234/v1",
+    "model": "Meta-Llama-3-70B-Instruct",
+    "loopModel": "Meta-Llama-3-70B-Instruct",
+    "visionModel": "zai-org/glm-4.6v-flash",
+    "savedConfigs": {
+      "local": {
+        "apiKey": "",
+        "endpoint": "http://localhost:1234/v1",
+        "model": "Meta-Llama-3-70B-Instruct",
+        "loopModel": "Meta-Llama-3-70B-Instruct",
+        "visionModel": "zai-org/glm-4.6v-flash"
+      }
+    }
+  },
+  "googleSearch": {
+    "apiKey": "",
+    "cx": ""
+  },
+  "adminUser": null
+}

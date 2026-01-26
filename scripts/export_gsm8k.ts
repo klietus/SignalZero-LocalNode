@@ -1,4 +1,4 @@
-import { redisService } from './services/redisService.js';
+import { redisService } from '../services/redisService.js';
 import fs from 'fs';
 import path from 'path';
 import JSZip from 'jszip';

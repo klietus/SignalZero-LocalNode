@@ -15,6 +15,7 @@ import { contextService } from "./contextService.js";
 import { documentMeaningService } from "./documentMeaningService.js";
 import { runSignalZeroTest } from "./inferenceService.js";
 import os from 'os';
+import fs from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 
@@ -92,7 +93,19 @@ const SYMBOL_DATA_SCHEMA = {
         symbol_domain: { type: 'string' },
         symbol_tag: { type: 'string' },
         failure_mode: { type: 'string' },
-        linked_patterns: { type: 'array', items: { type: 'string' }, description:"valid persistent, existing ids for other symbols." }
+        linked_patterns: { 
+            type: 'array', 
+            items: { 
+                type: 'object',
+                properties: {
+                    id: { type: 'string', description: "The ID of the linked symbol." },
+                    link_type: { type: 'string', description: "Type of relationship: relates_to, depends_on, instance_of, part_of, etc." },
+                    bidirectional: { type: 'boolean', description: "Whether the relationship is mutual." }
+                },
+                required: ['id', 'link_type', 'bidirectional']
+            },
+            description: "Structured links to other symbols." 
+        }
     },
     required: ['id', 'kind', 'triad', 'macro', 'role', 'name', 'activation_conditions', 'facets', 'symbol_domain', 'failure_mode', 'linked_patterns']
 };

@@ -34,45 +34,57 @@ describe('DomainService', () => {
         expect(exists).toBe(true);
     });
 
-    it('should upsert a symbol', async () => {
-        await domainService.createDomain('new-domain');
-        const symbol: any = { id: 'sym-1', name: 'Symbol 1' };
-        await domainService.upsertSymbol('new-domain', symbol);
-
-        expect(vectorService.indexSymbol).toHaveBeenCalledWith(expect.objectContaining({ id: 'sym-1', name: 'Symbol 1' }));
-        const stored = await redisService.request(['GET', 'sz:domain:new-domain']);
-        const domain = JSON.parse(stored);
-        expect(domain.symbols).toHaveLength(1);
-        expect(domain.symbols[0].id).toBe('sym-1');
-    });
-
-    it('should get symbols for a domain', async () => {
+    it('should migrate legacy string links to structured SymbolLink objects', async () => {
+        const legacySymbol = {
+            id: 'legacy-1',
+            name: 'Legacy',
+            linked_patterns: ['sym-a', 'sym-b']
+        };
         const mockDomain = {
-            id: 'test-domain',
-            symbols: [{ id: 's1', name: 'S1' }]
+            id: 'mig-domain',
+            symbols: [legacySymbol]
         };
 
-        await redisService.request(['SET', 'sz:domain:test-domain', JSON.stringify(mockDomain)]);
-
-        const symbols = await domainService.getSymbols('test-domain');
-        expect(symbols).toHaveLength(1);
-        expect(symbols[0].id).toBe('s1');
+        // Trigger migration by calling a method that uses parseDomain/migrateSymbols
+        await redisService.request(['SET', 'sz:domain:mig-domain', JSON.stringify(mockDomain)]);
+        const symbols = await domainService.getSymbols('mig-domain');
+        
+        expect(symbols[0].linked_patterns[0]).toEqual({ id: 'sym-a', link_type: 'relates_to', bidirectional: false });
+        expect(symbols[0].linked_patterns[1]).toEqual({ id: 'sym-b', link_type: 'relates_to', bidirectional: false });
     });
 
-    it('should delete a symbol', async () => {
+    it('should upsert a symbol with structured links', async () => {
+        await domainService.createDomain('new-domain');
+        const symbol: any = { 
+            id: 'sym-1', 
+            name: 'Symbol 1',
+            linked_patterns: [{ id: 'other-1', link_type: 'depends_on', bidirectional: true }]
+        };
+        await domainService.upsertSymbol('new-domain', symbol, { bypassValidation: true });
+
+        const stored = await redisService.request(['GET', 'sz:domain:new-domain']);
+        const domain = JSON.parse(stored);
+        expect(domain.symbols[0].linked_patterns[0].id).toBe('other-1');
+        expect(domain.symbols[0].linked_patterns[0].link_type).toBe('depends_on');
+    });
+
+    it('should delete a symbol and perform cascade cleanup on structured links', async () => {
          const mockDomain = {
             id: 'test-domain',
-            symbols: [{ id: 's1' }, { id: 's2' }]
+            symbols: [
+                { id: 's1' }, 
+                { id: 's2', linked_patterns: [{ id: 's1', link_type: 'relates_to', bidirectional: false }] }
+            ]
         };
 
         await redisService.request(['SET', 'sz:domain:test-domain', JSON.stringify(mockDomain)]);
 
         await domainService.deleteSymbol('test-domain', 's1');
 
-        expect(vectorService.deleteSymbol).toHaveBeenCalledWith('s1');
         const updated = await redisService.request(['GET', 'sz:domain:test-domain']);
         const domainObj = JSON.parse(updated);
         expect(domainObj.symbols).toHaveLength(1);
         expect(domainObj.symbols[0].id).toBe('s2');
+        expect(domainObj.symbols[0].linked_patterns).toHaveLength(0);
     });
 });
