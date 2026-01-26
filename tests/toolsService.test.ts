@@ -48,7 +48,7 @@ describe('ToolsService', () => {
         vi.spyOn(testService, 'getTestRun').mockResolvedValue({ id: 'r1', testSetName: 'TS1', summary: { total: 1, completed: 1, passed: 1, failed: 0 }, results: [] } as any);
         vi.spyOn(traceService, 'addTrace').mockResolvedValue(undefined as any);
 
-        toolExecutor = createToolExecutor(() => 'mock-api-key');
+        toolExecutor = createToolExecutor(() => 'mock-api-key', 'test-session');
     });
 
     afterEach(() => {
@@ -145,5 +145,23 @@ describe('ToolsService', () => {
         expect(res).toHaveProperty('time');
         expect(res.os).toHaveProperty('platform');
         expect(res.time).toHaveProperty('current');
+    });
+
+    it('symbol_transaction queues and commits operations', async () => {
+        // 1. Start Transaction
+        const startRes = await toolExecutor('symbol_transaction', { action: 'start' });
+        expect(startRes.status).toContain('Transaction started');
+
+        // 2. Upsert (should be queued)
+        const sym = { ...VALID_SYMBOL, id: 'queued-1' };
+        const upsertRes = await toolExecutor('upsert_symbols', { symbols: [{ symbol_data: sym }] });
+        expect(upsertRes.status).toBe('Queued for transaction.');
+        expect(domainService.bulkUpsert).not.toHaveBeenCalled();
+
+        // 3. Commit
+        const commitRes = await toolExecutor('symbol_transaction', { action: 'commit' });
+        expect(commitRes.status).toBe('Transaction committed.');
+        expect(commitRes.operations).toBe(1);
+        expect(domainService.bulkUpsert).toHaveBeenCalledWith('dom', [sym], expect.anything());
     });
 });
