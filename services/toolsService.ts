@@ -1446,7 +1446,11 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                       // We must re-invoke the logic without queueing
                       // To do this reliably, we'll call the tool logic directly but with an internal flag
                       const res = await executor(op.name, { ...op.args, _internal_bypass_queue: true });
-                      results.push({ name: op.name, status: "success", result: res });
+                      if (res && typeof res === 'object' && res.error) {
+                          results.push({ name: op.name, status: "failed", error: res.error });
+                      } else {
+                          results.push({ name: op.name, status: "success", result: res });
+                      }
                   } catch (e: any) {
                       results.push({ name: op.name, status: "failed", error: e.message || String(e) });
                   }

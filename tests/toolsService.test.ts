@@ -164,4 +164,34 @@ describe('ToolsService', () => {
         expect(commitRes.operations).toBe(1);
         expect(domainService.bulkUpsert).toHaveBeenCalledWith('dom', [sym], expect.anything());
     });
+
+    it('symbol_transaction rollback clears the queue', async () => {
+        // 1. Start
+        await toolExecutor('symbol_transaction', { action: 'start' });
+
+        // 2. Queue an op
+        await toolExecutor('upsert_symbols', { symbols: [{ symbol_data: { ...VALID_SYMBOL, id: 'to-roll-back' } }] });
+
+        // 3. Rollback
+        const rollbackRes = await toolExecutor('symbol_transaction', { action: 'rollback' });
+        expect(rollbackRes.status).toContain('rolled back');
+
+        // 4. Commit (should fail or be empty depending on implementation, here it returns error if no active)
+        const commitRes = await toolExecutor('symbol_transaction', { action: 'commit' });
+        expect(commitRes.error).toBe('No active transaction to commit');
+        expect(domainService.bulkUpsert).not.toHaveBeenCalled();
+    });
+
+    it('symbol_transaction handles commit error in one of the operations', async () => {
+        await toolExecutor('symbol_transaction', { action: 'start' });
+        
+        // Mock a failure for a specific ID
+        vi.mocked(domainService.bulkUpsert).mockRejectedValueOnce(new Error('Persistence Failure'));
+
+        await toolExecutor('upsert_symbols', { symbols: [{ symbol_data: { ...VALID_SYMBOL, id: 'fail-me' } }] });
+        
+        const commitRes = await toolExecutor('symbol_transaction', { action: 'commit' });
+        expect(commitRes.details[0].status).toBe('failed');
+        expect(commitRes.details[0].error).toContain('Persistence Failure');
+    });
 });
