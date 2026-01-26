@@ -253,19 +253,14 @@ export class ContextWindowService {
             kindDisplay = `${top} ${clo}`;
 
              // Triad as array of linked triads
-             if (s.linked_patterns && s.linked_patterns.length > 0) {
-                 const linkedTriads = s.linked_patterns
-                    .map(id => uniqueMap.get(id)?.triad)
-                    .filter(t => t); // Filter out undefined (missing symbols)
-                 
-                 if (linkedTriads.length > 0) {
-                    triadDisplay = `[${linkedTriads.join(', ')}]`;
-                 } else {
-                     triadDisplay = s.triad || "[]";
-                 }
-             } else {
-                 triadDisplay = s.triad || "[]";
-             }
+            if (s.linked_patterns && s.linked_patterns.length > 0) {
+                const linkedTriads = s.linked_patterns
+                    .map(link => uniqueSymbols.find((ext: SymbolDef) => ext.id === link.id)?.triad)
+                    .filter(Boolean);
+                if (linkedTriads.length > 0) {
+                    kindDisplay += ` (Links: ${linkedTriads.join(', ')})`;
+                }
+            }
         } else if (s.kind === 'data') {
              // For data symbols, include the payload
              if (s.data && s.data.payload) {
@@ -349,12 +344,12 @@ export class ContextWindowService {
 
       collected.set(symbol.id, symbol);
 
-      if (depth > 0 && symbol.linked_patterns && symbol.linked_patterns.length > 0) {
-          // Parallel fetch for next layer
-          await Promise.all(symbol.linked_patterns.map(linkId => 
-              this.recursiveSymbolLoad(linkId, depth - 1, collected)
-          ));
-      }
+        // Recursive expansion (Deep Traversal)
+        if (depth > 0 && symbol.linked_patterns && symbol.linked_patterns.length > 0) {
+            await Promise.all(symbol.linked_patterns.map(link => 
+                this.recursiveSymbolLoad(link.id, depth - 1, collected)
+            ));
+        }
   }
 
   /**

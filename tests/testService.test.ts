@@ -60,7 +60,7 @@ describe('TestService', () => {
         await testService.createOrUpdateTestSet({ ...mockSet, createdAt: '', updatedAt: '' });
 
         const runner = vi.fn().mockResolvedValue({ text: 'res', meta: {} });
-        vi.spyOn(traceService, 'clear').mockReturnValue();
+        vi.spyOn(traceService, 'clear').mockResolvedValue(undefined);
         vi.spyOn(traceService, 'getTraces').mockResolvedValue([
             { id: 'T1', activation_path: [{ symbol_id: 'OTHER', reason: '', link_type: '' }] } as any
         ]);
@@ -84,7 +84,7 @@ describe('TestService', () => {
         await testService.createOrUpdateTestSet({ ...mockSet, createdAt: '', updatedAt: '' });
 
         const runner = vi.fn().mockResolvedValue({ text: 'res', meta: {} });
-        vi.spyOn(traceService, 'clear').mockReturnValue();
+        vi.spyOn(traceService, 'clear').mockResolvedValue(undefined);
         vi.spyOn(traceService, 'getTraces').mockResolvedValue([]);
 
         const run = await testService.startTestRun('ts3', runner, true);

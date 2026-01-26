@@ -60,9 +60,33 @@ export const migrateSymbols = async (domain: CachedDomain): Promise<boolean> => 
             modified = true;
         }
 
+        // Migrate linked_patterns from string[] to SymbolLink[]
+        if (Array.isArray(symbol.linked_patterns)) {
+            const needsMigration = symbol.linked_patterns.some(link => typeof link === 'string');
+            if (needsMigration) {
+                symbol.linked_patterns = symbol.linked_patterns.map((link: any) => {
+                    if (typeof link === 'string') {
+                        return { id: link, link_type: 'relates_to', bidirectional: false };
+                    }
+                    return link;
+                });
+                modified = true;
+            }
+        } else {
+            symbol.linked_patterns = [];
+            modified = true;
+        }
+
         if (symbol.kind === 'lattice' && symbol.lattice && (symbol.lattice as any).members) {
             const members = (symbol.lattice as any).members as string[];
-            symbol.linked_patterns = Array.from(new Set([...(symbol.linked_patterns || []), ...members]));
+            const existingIds = new Set(symbol.linked_patterns.map(l => l.id));
+            
+            members.forEach(id => {
+                if (!existingIds.has(id)) {
+                    symbol.linked_patterns.push({ id, link_type: 'relates_to', bidirectional: false });
+                }
+            });
+
             delete (symbol.lattice as any).members;
             modified = true;
             // Reindex in vector store to reflect schema change
@@ -413,10 +437,7 @@ export const domainService = {
     if (cascade) {
         domain.symbols.forEach(s => {
             if (s.linked_patterns) {
-                s.linked_patterns = s.linked_patterns.filter(id => !idsToDelete.has(id));
-            }
-            if (s.kind === 'lattice' && s.linked_patterns) {
-                s.linked_patterns = s.linked_patterns.filter(id => !idsToDelete.has(id));
+                s.linked_patterns = s.linked_patterns.filter(link => !idsToDelete.has(link.id));
             }
             if (s.kind === 'persona' && s.persona?.linked_personas) {
                 s.persona.linked_personas = s.persona.linked_personas.filter(id => !idsToDelete.has(id));
@@ -441,13 +462,13 @@ export const domainService = {
 
       domain.symbols.forEach(s => {
           let modified = false;
-          if (s.linked_patterns?.includes(oldId)) {
-              s.linked_patterns = s.linked_patterns.map(id => id === oldId ? newId : id);
-              modified = true;
-          }
-          if (s.kind === 'lattice' && s.linked_patterns?.includes(oldId)) {
-              s.linked_patterns = s.linked_patterns.map(id => id === oldId ? newId : id);
-              modified = true;
+          if (s.linked_patterns) {
+              s.linked_patterns.forEach(link => {
+                  if (link.id === oldId) {
+                      link.id = newId;
+                      modified = true;
+                  }
+              });
           }
           if (s.kind === 'persona' && s.persona?.linked_personas?.includes(oldId)) {
               s.persona.linked_personas = s.persona.linked_personas.map(id => id === oldId ? newId : id);
@@ -497,7 +518,8 @@ export const domainService = {
     // Validation: Check if linked patterns exist
     if (!options.bypassValidation && symbol.linked_patterns && symbol.linked_patterns.length > 0) {
         const missingLinks: string[] = [];
-        for (const linkId of symbol.linked_patterns) {
+        for (const link of symbol.linked_patterns) {
+            const linkId = link.id;
             // Self-reference is allowed (or will be created)
             if (linkId === symbol.id) continue;
 
@@ -571,19 +593,31 @@ export const domainService = {
 
           const missingLinksBySymbol: Record<string, string[]> = {};
 
-          for (const sym of symbols) {
-              if (sym.linked_patterns && sym.linked_patterns.length > 0) {
-                  for (const linkId of sym.linked_patterns) {
-                      // Allow self-reference, reference to symbol in this batch, or existing symbol
-                      if (linkId === sym.id || upsertIds.has(linkId) || validIds.has(linkId)) {
-                          continue;
-                      }
-                      
-                      if (!missingLinksBySymbol[sym.id]) missingLinksBySymbol[sym.id] = [];
-                      missingLinksBySymbol[sym.id].push(linkId);
-                  }
-              }
-          }
+                    for (const sym of symbols) {
+
+                        if (sym.linked_patterns && sym.linked_patterns.length > 0) {
+
+                            for (const link of sym.linked_patterns) {
+
+                                const linkId = link.id;
+
+                                // Allow self-reference, reference to symbol in this batch, or existing symbol
+
+                                if (linkId === sym.id || upsertIds.has(linkId) || validIds.has(linkId)) {
+
+                                    continue;
+
+                                }
+
+                                if (!missingLinksBySymbol[sym.id]) missingLinksBySymbol[sym.id] = [];
+
+                                missingLinksBySymbol[sym.id].push(linkId);
+
+                            }
+
+                        }
+
+                    }
 
           if (Object.keys(missingLinksBySymbol).length > 0) {
               const details = Object.entries(missingLinksBySymbol)
@@ -662,11 +696,10 @@ export const domainService = {
               if (update.old_id !== update.symbol_data.id) {
                   domain.symbols.forEach(s => {
                       if (s.id === update.old_id) return;
-                      if (s.linked_patterns?.includes(update.old_id)) {
-                          s.linked_patterns = s.linked_patterns.map(id => id === update.old_id ? update.symbol_data.id : id);
-                      }
-                      if (s.kind === 'lattice' && s.linked_patterns?.includes(update.old_id)) {
-                          s.linked_patterns = s.linked_patterns.map(id => id === update.old_id ? update.symbol_data.id : id);
+                      if (s.linked_patterns) {
+                          s.linked_patterns.forEach(link => {
+                              if (link.id === update.old_id) link.id = update.symbol_data.id;
+                          });
                       }
                       if (s.kind === 'persona' && s.persona?.linked_personas?.includes(update.old_id)) {
                           s.persona.linked_personas = s.persona.linked_personas.map(id => id === update.old_id ? update.symbol_data.id : id);
@@ -719,15 +752,8 @@ export const domainService = {
       // Validation: Check if linked patterns exist
       if (!options.bypassValidation && newSymbol.linked_patterns && newSymbol.linked_patterns.length > 0) {
           const missingLinks: string[] = [];
-          for (const linkId of newSymbol.linked_patterns) {
-              // We skip checking IDs that are in oldIds because they are about to be deleted/merged? 
-              // Or should we check them?
-              // If we are compressing A and B into C, and C links to A, A will be gone.
-              // But C is replacing A.
-              // Usually linked_patterns point to OTHER symbols.
-              // If C links to A, and A is in oldIds, that link will be broken/self-referential after rename?
-              // But rename happens later.
-              // Let's stick to simple existence check. If it's in oldIds, it exists NOW.
+          for (const link of newSymbol.linked_patterns) {
+              const linkId = link.id;
               const exists = await domainService.findById(linkId);
               if (!exists) {
                   missingLinks.push(linkId);

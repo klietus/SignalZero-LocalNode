@@ -97,6 +97,12 @@ export interface SymbolDataDef {
     payload: Record<string, any>;
 }
 
+export interface SymbolLink {
+  id: string;
+  link_type: string;
+  bidirectional: boolean;
+}
+
 export interface SymbolDef {
   id: string;
   name: string;
@@ -115,7 +121,7 @@ export interface SymbolDef {
   symbol_tag: string;
   facets: SymbolFacet;
   failure_mode: string;
-  linked_patterns: string[];
+  linked_patterns: SymbolLink[];
   [key: string]: any;
 }
 
