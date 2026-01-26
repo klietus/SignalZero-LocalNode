@@ -570,12 +570,30 @@ export const toolDeclarations: ChatCompletionTool[] = [
         }
       }
     }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'symbol_transaction',
+      description: 'Manage a batch of symbol operations. When a transaction is active, all upsert_symbols and delete_symbols calls are queued until committed.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['start', 'commit', 'rollback'],
+            description: 'The transaction action to perform.'
+          }
+        },
+        required: ['action']
+      }
+    }
   }
 ];
 
 // 2. Define the execution logic
 export const createToolExecutor = (getApiKey: () => string | null, contextSessionId?: string) => {
-  return async (name: string, args: any): Promise<any> => {
+  const executor = async (name: string, args: any): Promise<any> => {
     console.log(`[ToolExecutor] Executing ${name} with`, args);
 
     const writeAllowed = await contextService.isWriteAllowed(contextSessionId, name);
@@ -715,7 +733,21 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
       }
 
       case 'upsert_symbols': {
-          const { symbols } = args;
+          const { symbols, _internal_bypass_queue } = args;
+
+          // Transaction Queueing
+          if (contextSessionId && !_internal_bypass_queue) {
+              const active = await redisService.request(['GET', `transaction:active:${contextSessionId}`]);
+              if (active) {
+                  const queueKey = `transaction:queue:${contextSessionId}`;
+                  const queueRaw = await redisService.request(['GET', queueKey]);
+                  const queue = queueRaw ? JSON.parse(queueRaw) : [];
+                  queue.push({ name: 'upsert_symbols', args });
+                  await redisService.request(['SET', queueKey, JSON.stringify(queue), 'EX', '3600']);
+                  return { status: "Queued for transaction.", queue_index: queue.length - 1 };
+              }
+          }
+
           // IMPORTANT: bypass_validation is intentionally removed from the AI tool interface to enforce integrity.
           // It defaults to false here.
           const bypass_validation = false;
@@ -838,7 +870,21 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
       }
 
       case 'delete_symbols': {
-          const { symbol_ids, symbol_domain, cascade = true } = args;
+          const { symbol_ids, symbol_domain, cascade = true, _internal_bypass_queue } = args;
+
+          // Transaction Queueing
+          if (contextSessionId && !_internal_bypass_queue) {
+              const active = await redisService.request(['GET', `transaction:active:${contextSessionId}`]);
+              if (active) {
+                  const queueKey = `transaction:queue:${contextSessionId}`;
+                  const queueRaw = await redisService.request(['GET', queueKey]);
+                  const queue = queueRaw ? JSON.parse(queueRaw) : [];
+                  queue.push({ name: 'delete_symbols', args });
+                  await redisService.request(['SET', queueKey, JSON.stringify(queue), 'EX', '3600']);
+                  return { status: "Queued for transaction.", queue_index: queue.length - 1 };
+              }
+          }
+
           if (!symbol_ids || !Array.isArray(symbol_ids) || symbol_ids.length === 0) return { error: "Missing symbol_ids" };
 
           const domainMap: Record<string, string[]> = {};
@@ -1370,8 +1416,61 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           return info;
       }
 
+      case 'symbol_transaction': {
+          const { action } = args;
+          if (!contextSessionId) return { error: "Transaction requires contextSessionId" };
+          const queueKey = `transaction:queue:${contextSessionId}`;
+
+          if (action === 'start') {
+              await redisService.request(['DEL', queueKey]);
+              await redisService.request(['SET', `transaction:active:${contextSessionId}`, 'true', 'EX', '3600']);
+              return { status: "Transaction started. Subsequent upsert/delete calls will be queued." };
+          }
+
+          if (action === 'commit') {
+              const active = await redisService.request(['GET', `transaction:active:${contextSessionId}`]);
+              if (!active) return { error: "No active transaction to commit" };
+
+              const queueRaw = await redisService.request(['GET', queueKey]);
+              const queue = queueRaw ? JSON.parse(queueRaw) : [];
+
+              if (queue.length === 0) {
+                  await redisService.request(['DEL', `transaction:active:${contextSessionId}`]);
+                  return { status: "Transaction committed (0 operations)." };
+              }
+
+              // Execute all operations
+              const results = [];
+              for (const op of queue) {
+                  try {
+                      // We must re-invoke the logic without queueing
+                      // To do this reliably, we'll call the tool logic directly but with an internal flag
+                      const res = await executor(op.name, { ...op.args, _internal_bypass_queue: true });
+                      results.push({ name: op.name, status: "success", result: res });
+                  } catch (e: any) {
+                      results.push({ name: op.name, status: "failed", error: e.message || String(e) });
+                  }
+              }
+
+              await redisService.request(['DEL', queueKey]);
+              await redisService.request(['DEL', `transaction:active:${contextSessionId}`]);
+
+              return { status: "Transaction committed.", operations: results.length, details: results };
+          }
+
+          if (action === 'rollback') {
+              await redisService.request(['DEL', queueKey]);
+              await redisService.request(['DEL', `transaction:active:${contextSessionId}`]);
+              return { status: "Transaction rolled back. Queue cleared." };
+          }
+
+          return { error: `Invalid action: ${action}` };
+      }
+
       default:
         return { error: `Function ${name} not found.` };
     }
   };
+
+  return executor;
 };
