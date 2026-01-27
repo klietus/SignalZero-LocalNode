@@ -16,6 +16,7 @@ import { documentMeaningService } from "./documentMeaningService.js";
 import { runSignalZeroTest } from "./inferenceService.js";
 import os from 'os';
 import fs from 'fs';
+import path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 
@@ -490,6 +491,31 @@ export const toolDeclarations: ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
+      name: 'store_secret',
+      description: 'Create or update a secret in Google Secret Manager. If the secret does not exist, it creates it. Then it adds a new version with the provided value.',
+      parameters: {
+        type: 'object',
+        properties: {
+          secret_id: {
+            type: 'string',
+            description: 'The ID of the secret to create or update (e.g., "my-api-key").'
+          },
+          value: {
+            type: 'string',
+            description: 'The string value of the secret to store.'
+          },
+          project_id: {
+            type: 'string',
+            description: 'Optional GCP project ID override.'
+          }
+        },
+        required: ['secret_id', 'value']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
       name: 'list_secrets',
       description: 'List secrets from Google Secret Manager using the configured service account credentials.',
       parameters: {
@@ -568,6 +594,81 @@ export const toolDeclarations: ChatCompletionTool[] = [
             description: 'List of information categories to retrieve. Defaults to all if omitted.'
           }
         }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'sys_exec',
+      description: 'Execute a shell command on the system. CAUTION: This runs with the permissions of the container user.',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: {
+            type: 'string',
+            description: 'The shell command to execute.'
+          }
+        },
+        required: ['command']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'speak',
+      description: 'Convert text to speech using the local espeak-ng engine. Saves the audio to a wav file on the container filesystem.',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: {
+            type: 'string',
+            description: 'The text to speak.'
+          },
+          voice: {
+            type: 'string',
+            description: 'Voice/language code (e.g., "en-us", "en-gb", "fr"). Defaults to "en-us".'
+          },
+          speed: {
+            type: 'integer',
+            description: 'Speed in words per minute (default 175).'
+          },
+          pitch: {
+            type: 'integer',
+            description: 'Pitch adjustment (0-99, default 50).'
+          },
+          play: {
+            type: 'boolean',
+            description: 'If true, play the audio immediately using the system sound device (PulseAudio). Defaults to true.'
+          },
+          device: {
+            type: 'string',
+            description: 'Optional: The PulseAudio sink name or index to use. If omitted, uses the system default sink.'
+          }
+        },
+        required: ['text']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'write_file',
+      description: 'Write text content to a file on the local filesystem. Overwrites existing files.',
+      parameters: {
+        type: 'object',
+        properties: {
+          file_path: {
+            type: 'string',
+            description: 'The path to the file to write (e.g., "./data/output.txt" or "/app/logs/test.log").'
+          },
+          content: {
+            type: 'string',
+            description: 'The text content to write to the file.'
+          }
+        },
+        required: ['file_path', 'content']
       }
     }
   },
@@ -1303,6 +1404,27 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           return { batch_results: results };
       }
 
+      case 'store_secret': {
+          const { secret_id, value, project_id } = args || {};
+          if (!secret_id || typeof secret_id !== 'string') {
+              return { error: "Missing secret_id argument" };
+          }
+          if (!value || typeof value !== 'string') {
+              return { error: "Missing value argument" };
+          }
+
+          try {
+              const result = await secretManagerService.storeSecret(
+                  secret_id,
+                  value,
+                  typeof project_id === 'string' && project_id.trim() ? project_id.trim() : undefined
+              );
+              return { status: 'success', result };
+          } catch (error) {
+              return { error: `Failed to store secret: ${String(error)}` };
+          }
+      }
+
       case 'list_secrets': {
           const { project_id, page_size, page_token } = args || {};
           try {
@@ -1414,6 +1536,82 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           }
 
           return info;
+      }
+
+      case 'sys_exec': {
+          const { command } = args;
+          if (!command) return { error: "Missing command" };
+
+          try {
+              // Increase buffer to 1MB to handle larger outputs like logs
+              const { stdout, stderr } = await execAsync(command, { maxBuffer: 1024 * 1024 });
+              return { 
+                  status: 'success', 
+                  stdout: stdout ? stdout.trim() : '', 
+                  stderr: stderr ? stderr.trim() : '' 
+              };
+          } catch (error: any) {
+              return { 
+                  status: 'error', 
+                  error: error.message, 
+                  code: error.code, 
+                  stdout: error.stdout ? String(error.stdout).trim() : undefined, 
+                  stderr: error.stderr ? String(error.stderr).trim() : undefined
+              };
+          }
+      }
+
+      case 'speak': {
+          const { text, voice = 'mb-us1', speed = 150, pitch = 50, play = true, device = 'Channel_1__Channel_2.2' } = args;
+          if (!text) return { error: "Missing text" };
+
+          // If play=false, we might still want to generate the file, but the new architecture relies on the service.
+          // For now, we only support play=true fully or we let the service handle file generation.
+          
+          try {
+              const response = await fetch('http://voiceservice:8000/speak', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                      text,
+                      voice,
+                      speed,
+                      pitch,
+                      device: play ? device : undefined
+                  })
+              });
+              
+              if (!response.ok) {
+                  const errText = await response.text();
+                  throw new Error(`Voice Service Error: ${response.status} ${errText}`);
+              }
+              
+              const result = await response.json();
+              return { 
+                  status: 'success', 
+                  message: 'Speech request routed to Voice Service',
+                  service_response: result
+              };
+          } catch (error: any) {
+              return { error: `Speech generation failed: ${error.message}` };
+          }
+      }
+
+      case 'write_file': {
+          const { file_path, content } = args;
+          if (!file_path || typeof file_path !== 'string') return { error: "Missing file_path" };
+          if (content === undefined || typeof content !== 'string') return { error: "Missing content" };
+
+          try {
+              // Ensure directory exists
+              const dir = path.dirname(file_path);
+              await fs.promises.mkdir(dir, { recursive: true });
+              
+              await fs.promises.writeFile(file_path, content, 'utf-8');
+              return { status: 'success', file_path, size: content.length };
+          } catch (error: any) {
+              return { error: `Failed to write file: ${error.message}` };
+          }
       }
 
       case 'symbol_transaction': {

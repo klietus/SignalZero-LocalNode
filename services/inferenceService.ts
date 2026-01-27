@@ -612,6 +612,7 @@ export async function* sendMessageAndHandleTools(
   let previousTurnText = "";
   let hasLoggedTrace = false;
   let hasUsedSymbolTools = false;
+  let hasCalledFindSymbols = false;
   let auditRetries = 0;
   const ENABLE_SYSTEM_AUDIT = true;
   const MAX_AUDIT_RETRIES = 3; // Increased to accommodate potential double correction
@@ -727,14 +728,14 @@ export async function* sendMessageAndHandleTools(
         let auditMessage = "";
 
         // Check 1: Missing Symbol Operation
-        if (!hasUsedSymbolTools) {
-            auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You attempted to respond without interacting with the symbol store. You must execute one of `find_symbols`, `upsert_symbols`, or `delete_symbols` to ground your response in the active symbolic context.\n";
+        if (!hasCalledFindSymbols) {
+            auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You attempted to respond without exploring the symbolic context. You must execute `find_symbols` to ground your response in the active symbolic context. Even if you believe you know the symbols, you must verify them via a query.\n";
             auditTriggered = true;
         }
 
         // Check 2: Missing Trace (Only if search passed, or append to it)
         if (!hasLoggedTrace) {
-            auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You generated a narrative response but failed to log a symbolic trace. You must call `log_trace` to bind this narrative to the symbol store.  This trace must be comprehensive and contain all symbols used in the response.\n";
+            auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You generated a narrative response but failed to log a symbolic trace. You must call `log_trace` to bind the proceeding narrative to retrieved symbols from the symbol store.  This trace must be comprehensive and contain all symbols used in the response.  This audit message is not a driver for symbolic analysis.\n";
             auditTriggered = true;
         }
 
@@ -808,6 +809,9 @@ export async function* sendMessageAndHandleTools(
 
       if (toolName === 'log_trace') {
           hasLoggedTrace = true;
+      }
+      if (toolName === 'find_symbols') {
+          hasCalledFindSymbols = true;
       }
       const SYMBOL_TOOLS = ['find_symbols', 'load_symbols', 'upsert_symbols', 'delete_symbols'];
       if (SYMBOL_TOOLS.includes(toolName)) {
