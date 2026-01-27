@@ -292,7 +292,111 @@ async function accessSecretVersion(secretId: string, version: string = 'latest',
     };
 }
 
+function setServiceAccountKey(key: ServiceAccountKey) {
+    if (!key.client_email || !key.private_key) {
+        throw new Error('Service account key must include client_email and private_key fields.');
+    }
+    cachedServiceAccount = key;
+    cachedToken = null; // Clear cached token to force refresh with new credentials
+    loggerService.info('SecretManagerService: Service account key updated programmatically.');
+}
+
+async function storeSecret(secretId: string, value: string, projectIdOverride?: string) {
+    const accessToken = await getAccessToken();
+    const projectId = await resolveProjectId(projectIdOverride);
+    
+    if (!projectId) {
+        throw new Error('Missing project id for Secret Manager.');
+    }
+
+    const encodedSecretId = encodeURIComponent(secretId);
+
+    // 1. Check if secret exists (by trying to get it)
+    const getUrl = new URL(`${API_BASE_URL}/projects/${projectId}/secrets/${encodedSecretId}`);
+    const getResponse = await fetch(getUrl, { headers: buildHeaders(accessToken) });
+
+    if (getResponse.status === 404) {
+        // 2. Create secret if it doesn't exist
+        loggerService.info(`SecretManagerService: Secret ${secretId} not found, creating new secret.`);
+        const createUrl = new URL(`${API_BASE_URL}/projects/${projectId}/secrets`);
+        createUrl.searchParams.set('secretId', secretId);
+
+        const createBody = {
+            replication: {
+                automatic: {}
+            }
+        };
+
+        const createResponse = await fetch(createUrl, {
+            method: 'POST',
+            headers: {
+                ...buildHeaders(accessToken),
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(createBody)
+        });
+
+        if (!createResponse.ok) {
+            const errorText = await createResponse.text();
+            loggerService.error('SecretManagerService: Failed to create secret', { status: createResponse.status, body: errorText });
+            throw new Error(`Failed to create secret ${secretId}: ${createResponse.statusText}`);
+        }
+    } else if (!getResponse.ok) {
+        // Handle other errors
+        const errorText = await getResponse.text();
+        loggerService.error('SecretManagerService: Failed to check secret existence', { status: getResponse.status, body: errorText });
+        throw new Error(`Failed to access secret ${secretId}: ${getResponse.statusText}`);
+    }
+
+    // 3. Add new version
+    const addVersionUrl = new URL(`${API_BASE_URL}/projects/${projectId}/secrets/${encodedSecretId}:addVersion`);
+    const payload = base64UrlEncode(value).replace(/-/g, '+').replace(/_/g, '/'); // Google expects standard Base64 here, not URL-safe? 
+    // Actually, API documentation says "data": string (byte). JSON strings are usually base64. 
+    // The base64UrlEncode helper creates URL-safe base64. Standard base64 is safer for the API if it doesn't specify URL-safe.
+    // Let's use standard Buffer base64.
+    
+    const standardBase64 = Buffer.from(value).toString('base64');
+
+    const versionBody = {
+        payload: {
+            data: standardBase64
+        }
+    };
+
+    const versionResponse = await fetch(addVersionUrl, {
+        method: 'POST',
+        headers: {
+            ...buildHeaders(accessToken),
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(versionBody)
+    });
+
+    const bodyText = await versionResponse.text();
+
+    if (!versionResponse.ok) {
+        loggerService.error('SecretManagerService: Failed to add secret version', { status: versionResponse.status, body: bodyText });
+        throw new Error(`Failed to add version to secret ${secretId}: ${versionResponse.statusText}`);
+    }
+
+    let json: any;
+    try {
+        json = JSON.parse(bodyText);
+    } catch (error) {
+         throw new Error('Secret Manager addVersion returned invalid JSON');
+    }
+
+    return {
+        project_id: projectId,
+        secret_id: secretId,
+        version: parseSecretName(json.name).id, // extract version id from full name
+        create_time: json.createTime
+    };
+}
+
 export const secretManagerService = {
     listSecrets,
-    accessSecretVersion
+    accessSecretVersion,
+    setServiceAccountKey,
+    storeSecret
 };

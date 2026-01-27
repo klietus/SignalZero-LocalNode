@@ -40,12 +40,14 @@ export class ContextWindowService {
       content: `[KERNEL]\n${stableContext}`
     });
 
+    // Calculate tokens used by static context
+    let currentTokens = messages.reduce((sum, m) => sum + this.estimateTokens(JSON.stringify(m)), 0);
+
     // 3. Sliding History Window (Token based)
     const rawHistory = await contextService.getUnfilteredHistory(contextSessionId);
     const historyMessages: ChatCompletionMessageParam[] = [];
-    let currentTokens = 0;
-
-    // Group into rounds (reverse chronological)
+    
+    // Group into rounds (reverse chronological: Newest -> Oldest)
     const rounds: ContextMessage[][] = [];
     let currentRound: ContextMessage[] = [];
 
@@ -71,25 +73,62 @@ export class ContextWindowService {
         let round = rounds[index];
 
         // Strip tools from older rounds (index > 0)
+        // For the latest round (index 0), we keep them initially to show execution results
         if (index > 0) {
             round = this.stripTools(round);
         }
 
         if (round.length === 0) continue;
 
-        const roundMessages = round.map(msg => this.mapToOpenAIMessage(msg));
-        const roundTokens = roundMessages.reduce((sum, msg) => sum + this.estimateTokens(JSON.stringify(msg)), 0);
+        let roundMessages = round.map(msg => this.mapToOpenAIMessage(msg));
+        let roundTokens = roundMessages.reduce((sum, msg) => sum + this.estimateTokens(JSON.stringify(msg)), 0);
 
+        // Check if adding this round exceeds limit
         if (currentTokens + roundTokens > this.TOKEN_LIMIT) {
-            loggerService.info(`Context window limit reached for ${contextSessionId}. Included ${historyMessages.length} messages.`);
-            break;
+            if (index === 0) {
+                // Critical: The LATEST round is too big. We must try to squeeze it in.
+                loggerService.warn(`Latest round too big (${roundTokens} tokens). Stripping tools to fit.`);
+                
+                // Try stripping tools from latest round
+                round = this.stripTools(round);
+                roundMessages = round.map(msg => this.mapToOpenAIMessage(msg));
+                roundTokens = roundMessages.reduce((sum, msg) => sum + this.estimateTokens(JSON.stringify(msg)), 0);
+
+                if (currentTokens + roundTokens > this.TOKEN_LIMIT) {
+                    // Still too big. We must truncate the largest content to prevent "0 messages" error.
+                    // This ensures the model at least sees the user's prompt.
+                    loggerService.warn(`Latest round STILL too big (${roundTokens} tokens). Truncating content.`);
+                    
+                    // Simple truncation strategy: limit all string content to 10k chars
+                    roundMessages.forEach(m => {
+                        if (typeof m.content === 'string' && m.content.length > 20000) {
+                            m.content = m.content.substring(0, 20000) + "...[TRUNCATED]";
+                        }
+                    });
+                    // Re-calculate not strictly needed if we accept it, but for safety:
+                    roundTokens = roundMessages.reduce((sum, msg) => sum + this.estimateTokens(JSON.stringify(msg)), 0);
+                }
+            } else {
+                // Older rounds: just drop them
+                loggerService.info(`Context window limit reached for ${contextSessionId}. Included ${historyMessages.length} messages.`);
+                break;
+            }
         }
 
         // Prepend round messages to history (maintaining order within round)
         historyMessages.unshift(...roundMessages);
         currentTokens += roundTokens;
     }
-    historyMessages.unshift({ role: 'user', content: `[DYNAMIC_CONTENT]` });
+    
+    // Inject Dynamic Content marker if history exists
+    if (historyMessages.length > 0) {
+        // Find the first user message and prepend marker? 
+        // Actually, we just want to ensure the model knows where dynamic content starts.
+        // But historyMessages[0] is the oldest user message in the window.
+        // The original code unshifted a separate message.
+        historyMessages.unshift({ role: 'user', content: `[DYNAMIC_CONTENT_START]` });
+    }
+    
     messages.push(...historyMessages);
 
     // 4. Dynamic Symbolic Context (Volatile)
@@ -121,7 +160,7 @@ export class ContextWindowService {
         type,
         historyRounds: rounds.length,
         historyMessages: historyMessages.length,
-        historyTokens: currentTokens,
+        historyTokens: currentTokens, // This is cumulative context size now
         totalMessages: messages.length,
         totalTokens
     });
