@@ -106,8 +106,12 @@ describe('ContextWindowService', () => {
 
         const window = await service.constructContextWindow('sess-1', 'Prompt');
         
-        // Find the tool message in the constructed window
+        // Find the tool message in the constructed window - should be GONE
         const toolMsg = window.find(m => (m as any).tool_call_id === 'tc1');
-        expect(toolMsg?.content).toContain('[System: No symbols found]');
+        expect(toolMsg).toBeUndefined();
+
+        // Verify the assistant message lost its tool_calls
+        const assistantMsg = window.find(m => m.role === 'assistant' && m.content === 'Thinking');
+        expect((assistantMsg as any).tool_calls).toBeUndefined();
     });
 });

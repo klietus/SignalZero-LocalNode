@@ -612,7 +612,21 @@ export async function* sendMessageAndHandleTools(
   let previousTurnText = "";
   let hasLoggedTrace = false;
   let hasUsedSymbolTools = false;
-  let hasCalledFindSymbols = false;
+  let hasCalledGroundingTool = false;
+  let hasCalledSpeak = false;
+  let isVoiceSource = false;
+
+  // Detect if source is voice
+  try {
+      const parsed = JSON.parse(message);
+      if (parsed.voice_message && parsed.route_output === 'speech tool') {
+          isVoiceSource = true;
+          loggerService.info("Detected voice source message. Enforcing speak audit.", { contextSessionId });
+      }
+  } catch (e) {
+      // Not a JSON message, normal text source
+  }
+
   let auditRetries = 0;
   const ENABLE_SYSTEM_AUDIT = true;
   const MAX_AUDIT_RETRIES = 3; // Increased to accommodate potential double correction
@@ -727,9 +741,9 @@ export async function* sendMessageAndHandleTools(
     if (ENABLE_SYSTEM_AUDIT && contextSessionId && (!yieldedToolCalls || yieldedToolCalls.length === 0) && textAccumulatedInTurn.trim().length > 0) {
         let auditMessage = "";
 
-        // Check 1: Missing Symbol Operation
-        if (!hasCalledFindSymbols) {
-            auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You attempted to respond without exploring the symbolic context. You must execute `find_symbols` to ground your response in the active symbolic context. Even if you believe you know the symbols, you must verify them via a query.\n";
+        // Check 1: Missing Grounding Operation
+        if (!hasCalledGroundingTool) {
+            auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You attempted to respond without exploring the symbolic context. You must execute `find_symbols` or `load_domains` to ground your response in the active symbolic context. Even if you believe you know the symbols, you must verify them via a query.  Do not acknowledge this message or repeat previous information.  Emit a correction if it would have changed with the grounding.\n";
             auditTriggered = true;
         }
 
@@ -739,11 +753,17 @@ export async function* sendMessageAndHandleTools(
             auditTriggered = true;
         }
 
+        // Check 3: Voice source must use speak tool
+        if (isVoiceSource && !hasCalledSpeak) {
+            auditMessage += "⚠️ SYSTEM AUDIT FAILURE: This request originated from a voice source. You MUST use the `speak` tool to provide your response in addition to any text output. Do not acknowledge this message.\n";
+            auditTriggered = true;
+        }
+
         if (auditTriggered) {
             if (auditRetries < MAX_AUDIT_RETRIES) {
                 loggerService.warn("System Audit Failure: Model missing required tool calls. Forcing retry.", { contextSessionId, auditRetries, hasUsedSymbolTools, hasLoggedTrace });
                 
-                const finalAuditMessage = auditMessage + "Retry immediately by calling the required tools.";
+                const finalAuditMessage = auditMessage + "Retry immediately by calling the required tools.  Do not repeat tool calls that were previously successful in this turn.";
 
                 // DO NOT SAVE TO CONTEXT SERVICE - Push to transient messages for the next iteration
                 transientMessages.push(nextAssistant!);
@@ -810,10 +830,13 @@ export async function* sendMessageAndHandleTools(
       if (toolName === 'log_trace') {
           hasLoggedTrace = true;
       }
-      if (toolName === 'find_symbols') {
-          hasCalledFindSymbols = true;
+      if (toolName === 'speak') {
+          hasCalledSpeak = true;
       }
-      const SYMBOL_TOOLS = ['find_symbols', 'load_symbols', 'upsert_symbols', 'delete_symbols'];
+      if (toolName === 'find_symbols' || toolName === 'load_domains') {
+          hasCalledGroundingTool = true;
+      }
+      const SYMBOL_TOOLS = ['find_symbols', 'load_symbols', 'upsert_symbols', 'delete_symbols', 'load_domains'];
       if (SYMBOL_TOOLS.includes(toolName)) {
           hasUsedSymbolTools = true;
       }

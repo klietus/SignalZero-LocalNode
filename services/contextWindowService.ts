@@ -86,28 +86,9 @@ export class ContextWindowService {
         // Check if adding this round exceeds limit
         if (currentTokens + roundTokens > this.TOKEN_LIMIT) {
             if (index === 0) {
-                // Critical: The LATEST round is too big. We must try to squeeze it in.
-                loggerService.warn(`Latest round too big (${roundTokens} tokens). Stripping tools to fit.`);
-                
-                // Try stripping tools from latest round
-                round = this.stripTools(round);
-                roundMessages = round.map(msg => this.mapToOpenAIMessage(msg));
-                roundTokens = roundMessages.reduce((sum, msg) => sum + this.estimateTokens(JSON.stringify(msg)), 0);
-
-                if (currentTokens + roundTokens > this.TOKEN_LIMIT) {
-                    // Still too big. We must truncate the largest content to prevent "0 messages" error.
-                    // This ensures the model at least sees the user's prompt.
-                    loggerService.warn(`Latest round STILL too big (${roundTokens} tokens). Truncating content.`);
-                    
-                    // Simple truncation strategy: limit all string content to 10k chars
-                    roundMessages.forEach(m => {
-                        if (typeof m.content === 'string' && m.content.length > 20000) {
-                            m.content = m.content.substring(0, 20000) + "...[TRUNCATED]";
-                        }
-                    });
-                    // Re-calculate not strictly needed if we accept it, but for safety:
-                    roundTokens = roundMessages.reduce((sum, msg) => sum + this.estimateTokens(JSON.stringify(msg)), 0);
-                }
+                // Critical: The LATEST round is NEVER truncated. 
+                // We allow it to exceed the limit to ensure model sees the full prompt/execution.
+                loggerService.info(`Latest round preserved despite size (${roundTokens} tokens).`);
             } else {
                 // Older rounds: just drop them
                 loggerService.info(`Context window limit reached for ${contextSessionId}. Included ${historyMessages.length} messages.`);
@@ -170,45 +151,27 @@ export class ContextWindowService {
 
   private stripTools(round: ContextMessage[]): ContextMessage[] {
       return round.map(msg => {
-          // 1. Collapse tool response messages but MAINTAIN STRUCTURE
-          // We must keep role='tool' and the toolCallId so the LLM API knows the call was resolved.
+          // 1. Collapse tool response messages
+          // In older rounds, we remove the detailed tool output but keep a placeholder
           if (msg.role === 'tool') {
-              let collapsedContent = `[System: Tool output collapsed]`;
+              return null; // We filter these out below
+          }
 
-              // Enhanced retention for symbol loading tools
-              if (msg.toolName === 'find_symbols' || msg.toolName === 'load_symbols') {
-                  try {
-                      const result = JSON.parse(msg.content || '{}');
-                      if (result && Array.isArray(result.symbols)) {
-                          const symbolList = result.symbols as SymbolDef[];
-                          if (symbolList.length > 0) {
-                              const reduced = this.formatSymbols(symbolList); // Reuse existing formatter
-                              collapsedContent = `[System: Retained Symbol Context]\n${reduced}`;
-                          } else {
-                              collapsedContent = `[System: No symbols found]`;
-                          }
-                      }
-                  } catch (e) {
-                      // Fallback if parsing fails
-                  }
-              }
-
+          // 2. Remove tool call metadata from assistant messages
+          // This keeps the text response but removes the function call definitions
+          if ((msg.role === 'assistant' || msg.role === 'model') && msg.toolCalls) {
               return {
                   ...msg,
-                  content: collapsedContent,
+                  toolCalls: undefined
               } as ContextMessage;
           }
 
-          // 2. Retain tool calls in assistant messages (do not strip)
-          // The previous logic stripped them; now we keep them so the model sees what it asked for.
-          // We only filter out empty messages if they truly have no content AND no tool calls.
           return msg;
-      }).filter(msg => {
-          // 3. Remove assistant messages that have become empty (no content AND no tool calls)
+      }).filter((msg): msg is ContextMessage => {
+          if (!msg) return false;
+          // Remove assistant messages that have no content after stripping tools
           if ((msg.role === 'assistant' || msg.role === 'model')) {
-              const hasContent = msg.content && msg.content.trim().length > 0;
-              const hasTools = msg.toolCalls && msg.toolCalls.length > 0;
-              return hasContent || hasTools;
+              return !!(msg.content && msg.content.trim().length > 0);
           }
           return true;
       });

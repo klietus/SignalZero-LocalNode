@@ -63,6 +63,37 @@ export const authService = {
     },
 
     /**
+     * Changes the admin password.
+     */
+    changePassword: (oldPassword: string, newPassword: string): void => {
+        const admin = settingsService.getAdminUser();
+        if (!admin) {
+            throw new Error('System not initialized');
+        }
+
+        // Verify old password
+        const oldHashed = scryptSync(oldPassword, admin.salt, 64);
+        const storedPassword = Buffer.from(admin.passwordHash, 'hex');
+
+        if (!timingSafeEqual(oldHashed, storedPassword)) {
+            throw new Error('Invalid current password');
+        }
+
+        // Hash new password
+        const newSalt = randomBytes(16).toString('hex');
+        const newHash = scryptSync(newPassword, newSalt, 64).toString('hex');
+
+        const updatedAdmin: AdminUser = {
+            username: admin.username,
+            passwordHash: newHash,
+            salt: newSalt
+        };
+
+        settingsService.setAdminUser(updatedAdmin);
+        loggerService.info(`Admin password changed.`);
+    },
+
+    /**
      * Verifies a session token.
      */
     verifySession: (token: string): boolean => {
