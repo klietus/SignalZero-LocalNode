@@ -207,7 +207,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'find_symbols',
-      description: 'Unified symbol finder that accepts multiple search queries at once. Supports semantic vector search and structured metadata filtering. Results from all queries are aggregated and deduplicated.',
+      description: 'Unified symbol finder that accepts multiple search queries at once. Supports semantic vector search and structured metadata filtering. Results from all queries are aggregated and deduplicated. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {
@@ -237,7 +237,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'load_symbols',
-      description: 'Retrieve multiple symbols at once by their IDs. Useful for expanding a list of linked patterns.',
+      description: 'Retrieve multiple symbols at once by their IDs. Useful for expanding a list of linked patterns. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {
@@ -255,7 +255,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'delete_symbols',
-      description: 'Permanently remove one or more symbols from the registry. CAUTION: Only use this tool when explicitly instructed by the user, or when completing a merge/refactor operation where a new replacement symbol has successfully been created.',
+      description: 'Permanently remove one or more symbols from the registry. This tool can be used in parallel with any other tool. CAUTION: Only use this tool when explicitly instructed by the user, or when completing a merge/refactor operation where a new replacement symbol has successfully been created.',
       parameters: {
         type: 'object',
         properties: {
@@ -271,7 +271,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'upsert_symbols',
-      description: 'Upsert multiple symbols at once. Supports updates, renames (with old_id), and new symbol additions.',
+      description: 'Upsert multiple symbols at once. Supports updates, renames (with old_id), and new symbol additions. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {
@@ -297,7 +297,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'create_domain',
-      description: 'Create a new SignalZero domain. When only a domain id and description are provided, the tool infers invariants using semantic similarity to the root domain and the two closest domains before saving.',
+      description: 'Create a new SignalZero domain. When only a domain id and description are provided, the tool infers invariants using semantic similarity to the root domain and the two closest domains before saving. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {
@@ -314,7 +314,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'list_domains',
-      description: 'List all available symbol domains in the local registry. Returns name, id, description, invariant constraints, list of symbol_ids, and full definitions for persona symbols.',
+      description: 'List all available symbol domains in the local registry. Returns name, id, description, invariant constraints, list of symbol_ids, and full definitions for persona symbols. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {},
@@ -325,7 +325,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'upsert_loop',
-      description: 'Create or update a background loop definition, adjusting its schedule, prompt, and enabled status.',
+      description: 'Create or update a background loop definition, adjusting its schedule, prompt, and enabled status. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {
@@ -342,7 +342,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'list_loops',
-      description: 'List configured background loops with their schedules, prompts, and status flags.',
+      description: 'List configured background loops with their schedules, prompts, and status flags. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {},
@@ -353,7 +353,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'list_loop_executions',
-      description: 'List recent loop execution logs. Optionally filter by loop id and include symbolic traces.',
+      description: 'List recent loop execution logs. Optionally filter by loop id and include symbolic traces. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {
@@ -368,7 +368,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'list_test_runs',
-      description: 'Retrieve a list of all historical and active test runs with their summary metadata.',
+      description: 'Retrieve a list of all historical and active test runs with their summary metadata. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {}
@@ -379,7 +379,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'list_test_failures',
-      description: 'Get a detailed report of failed test cases for a specific test run.',
+      description: 'Get a detailed report of failed test cases for a specific test run. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {
@@ -393,7 +393,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
       type: 'function',
       function: {
         name: 'reindex_vector_store',
-      description: 'Reset the ChromaDB collection and rebuild the vector index from the current symbol store.',
+      description: 'Reset the ChromaDB collection and rebuild the vector index from the current symbol store. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {
@@ -409,7 +409,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'web_fetch',
-      description: 'Fetch a URL over HTTP(S) and return the response body for downstream analysis.',
+      description: 'Fetch a URL over HTTP(S) and return the response body for downstream analysis. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {
@@ -431,7 +431,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'web_post',
-      description: 'Submit data to a web URL (POST, PUT, DELETE, etc.) and return the response. Supports JSON bodies and form data.',
+      description: 'Submit data to a web URL (POST, PUT, DELETE, etc.) and return the response. Supports JSON bodies and form data. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {
@@ -460,7 +460,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'web_search',
-      description: 'Perform a Google Custom Search for a query and return structured JSON results.',
+      description: 'Perform a Google Custom Search for a query and return structured JSON results. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {
@@ -492,7 +492,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'store_secret',
-      description: 'Create or update a secret in Google Secret Manager. If the secret does not exist, it creates it. Then it adds a new version with the provided value.',
+      description: 'Create or update a secret in Google Secret Manager. If the secret does not exist, it creates it. Then it adds a new version with the provided value. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {
@@ -517,7 +517,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'list_secrets',
-      description: 'List secrets from Google Secret Manager using the configured service account credentials.',
+      description: 'List secrets from Google Secret Manager using the configured service account credentials. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {
@@ -542,7 +542,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'get_secret',
-      description: 'Retrieve a secret value from Google Secret Manager using the configured service account credentials.',
+      description: 'Retrieve a secret value from Google Secret Manager using the configured service account credentials. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {
@@ -567,7 +567,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'log_trace',
-      description: 'Log a symbolic reasoning trace. This must be called for every symbolic operation or deduction chain to maintain the recursive log.',
+      description: 'Log a symbolic reasoning trace. This must be called for every symbolic operation or deduction chain to maintain the recursive log. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {
@@ -581,7 +581,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'sys_info',
-      description: 'Query information about the host system including time, CPU load, memory, disk space, and running processes.',
+      description: 'Query information about the host system including time, CPU load, memory, disk space, and running processes. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {
@@ -601,7 +601,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'sys_exec',
-      description: 'Execute a shell command on the system. CAUTION: This runs with the permissions of the container user.',
+      description: 'Execute a shell command on the system. This tool can be used in parallel with any other tool. CAUTION: This runs with the permissions of the container user.',
       parameters: {
         type: 'object',
         properties: {
@@ -618,7 +618,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'speak',
-      description: 'Convert text to speech using the local espeak-ng engine. Saves the audio to a wav file on the container filesystem.',
+      description: 'Convert text to speech. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {
@@ -628,23 +628,13 @@ export const toolDeclarations: ChatCompletionTool[] = [
           },
           voice: {
             type: 'string',
-            description: 'Voice/language code (e.g., "en-us", "en-gb", "fr"). Defaults to "en-us".'
-          },
-          speed: {
-            type: 'integer',
-            description: 'Speed in words per minute (default 175).'
-          },
-          pitch: {
-            type: 'integer',
-            description: 'Pitch adjustment (0-99, default 50).'
-          },
-          play: {
-            type: 'boolean',
-            description: 'If true, play the audio immediately using the system sound device (PulseAudio). Defaults to true.'
-          },
-          device: {
-            type: 'string',
-            description: 'Optional: The PulseAudio sink name or index to use. If omitted, uses the system default sink.'
+            enum: [
+                'af_heart', 'af_alloy', 'af_aoede', 'af_bella', 'af_jessica', 
+                'af_kore', 'af_nicole', 'af_nova', 'af_river', 'af_sarah', 
+                'af_sky', 'am_adam', 'am_echo', 'am_eric', 'am_fenrir', 
+                'am_liam', 'am_michael', 'am_onyx', 'am_puck', 'am_santa'
+            ],
+            description: 'The voice to use for speech generation. Defaults to af_sarah.'
           }
         },
         required: ['text']
@@ -655,7 +645,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'write_file',
-      description: 'Write text content to a file on the local filesystem. Overwrites existing files.',
+      description: 'Write text content to a file on the local filesystem. Overwrites existing files. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {
@@ -676,7 +666,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'symbol_transaction',
-      description: 'Manage a batch of symbol operations. When a transaction is active, all upsert_symbols and delete_symbols calls are queued until committed.',
+      description: 'Manage a batch of symbol operations. When a transaction is active, all upsert_symbols and delete_symbols calls are queued until committed. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {
@@ -1562,22 +1552,19 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
       }
 
       case 'speak': {
-          const { text, voice = 'mb-us1', speed = 150, pitch = 50, play = true, device = 'Channel_1__Channel_2.2' } = args;
+          const { text, voice } = args;
           if (!text) return { error: "Missing text" };
 
-          // If play=false, we might still want to generate the file, but the new architecture relies on the service.
-          // For now, we only support play=true fully or we let the service handle file generation.
-          
           try {
               const response = await fetch('http://voiceservice:8000/speak', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
                       text,
-                      voice,
-                      speed,
-                      pitch,
-                      device: play ? device : undefined
+                      voice: voice || 'af_sarah', // Default voice
+                      speed: 1.0,
+                      pitch: 50,
+                      device: 'Channel_1__Channel_2.2' // Auto-detected Bose or default by service
                   })
               });
               

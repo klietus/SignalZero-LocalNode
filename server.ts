@@ -127,6 +127,20 @@ app.post('/api/auth/login', (req, res) => {
     }
 });
 
+app.post('/api/auth/change-password', (req, res) => {
+    const { oldPassword, newPassword } = req.body;
+    if (!oldPassword || !newPassword) {
+        return res.status(400).json({ error: 'Missing current or new password' });
+    }
+
+    try {
+        authService.changePassword(oldPassword, newPassword);
+        res.json({ success: true, message: 'Password changed successfully' });
+    } catch (error: any) {
+        res.status(401).json({ error: error.message });
+    }
+});
+
 // Upload Endpoint
 app.post('/api/upload', upload.single('file'), async (req, res) => {
     if (!req.file) {
@@ -1007,6 +1021,28 @@ app.post('/api/voice/mic/toggle', async (req, res) => {
         const { enabled } = req.body;
         const endpoint = enabled ? 'on' : 'off';
         const resp = await fetch(`http://voiceservice:8000/mic/${endpoint}`, { method: 'POST' });
+        const data = await resp.json();
+        res.json({ enabled });
+    } catch (e) {
+        res.status(500).json({ error: 'Voice service unreachable' });
+    }
+});
+
+app.get('/api/voice/story/status', async (req, res) => {
+    try {
+        const resp = await fetch('http://voiceservice:8000/story/status');
+        const data = await resp.json();
+        res.json(data);
+    } catch (e) {
+        res.status(500).json({ error: 'Voice service unreachable' });
+    }
+});
+
+app.post('/api/voice/story/toggle', async (req, res) => {
+    try {
+        const { enabled } = req.body;
+        const endpoint = enabled ? 'on' : 'off';
+        const resp = await fetch(`http://voiceservice:8000/story/${endpoint}`, { method: 'POST' });
         const data = await resp.json();
         res.json({ enabled });
     } catch (e) {
