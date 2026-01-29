@@ -23,7 +23,6 @@ const AGENT_TOKEN_LIMIT = 500_000;
 class AgentService {
     private scheduler: NodeJS.Timeout | null = null;
     private sweeper: NodeJS.Timeout | null = null;
-    private isAnyAgentExecuting = false;
 
     validateSchedule(schedule: string): Date {
         const interval = CronExpressionParser.parse(schedule);
@@ -46,7 +45,7 @@ class AgentService {
     }
 
     private async persistAgent(agent: AgentDefinition): Promise<void> {
-        await redisService.request(['SADD', LOOP_INDEX_KEY, agent.id]); // Reusing key for backward compat or migrate later
+        await redisService.request(['SADD', LOOP_INDEX_KEY, agent.id]);
         await redisService.request(['SET', getLoopKey(agent.id), JSON.stringify(agent)]);
     }
 
@@ -81,7 +80,7 @@ class AgentService {
 
     async upsertAgent(id: string, prompt: string, enabled: boolean, schedule?: string): Promise<AgentDefinition> {
         const existing = await this.getAgent(id);
-        const agent = this.createAgentPayload(id, schedule, prompt, enabled, existing || undefined);
+        const agent = this.createAgentPayload(id, prompt, enabled, schedule, existing || undefined);
 
         await this.persistAgent(agent);
         loggerService.info('AgentService: Upserted agent', { id, enabled, schedule: schedule || 'event-driven' });
@@ -96,7 +95,7 @@ class AgentService {
     }
 
     private getNextRun(agent: AgentDefinition, reference: Date): Date | null {
-        if (!agent.schedule) return null; // Event-driven agents have no next run
+        if (!agent.schedule) return null;
         try {
             const baseDate = agent.lastRunAt
                 ? new Date(agent.lastRunAt)
@@ -130,47 +129,23 @@ class AgentService {
         return filePath;
     }
 
-    private async buildSystemInstruction(prompt: string): Promise<string> {
-        const basePrompt = await systemPromptService.loadPrompt(ACTIVATION_PROMPT);
-        return `${basePrompt}\n\n[Agent Prompt]\n${prompt}`;
-    }
-
     private async captureNewTraces(existingIds: Set<string>): Promise<TraceData[]> {
         const traces = await traceService.getTraces();
         return (traces as TraceData[]).filter((trace) => !existingIds.has(trace.id));
     }
 
     private async getOrCreateAgentContext(agent: AgentDefinition): Promise<string> {
-        // Deterministic context ID for the agent to maintain state across runs
-        const contextId = `agent-${agent.id}`;
-        let session = await contextService.getSession(contextId);
+        const sessions = await contextService.listSessions();
+        const existing = sessions.find(s => s.metadata?.agentId === agent.id && s.status === 'open');
+        if (existing) return existing.id;
         
-        if (!session || session.status === 'closed') {
-            // Re-create if missing or closed (e.g. from token limit cleanup)
-            // Use 'agent' type (mapped from 'loop' or new type)
-            session = await contextService.createSession('agent', { agentId: agent.id }, `Agent: ${agent.id}`);
-            // Force the ID to be the deterministic one (createSession generates random ID)
-            // Actually, we should probably stick to the generated ID and map it?
-            // But requirement implies "persistent context".
-            // Let's rely on createSession logic but maybe store the active context ID in the agent def?
-            // Simpler: Just search for an open context with metadata.agentId = agent.id
-            // If none, create one.
-            const sessions = await contextService.listSessions();
-            const existing = sessions.find(s => s.metadata?.agentId === agent.id && s.status === 'open');
-            if (existing) return existing.id;
-            
-            // Create new
-            const newSession = await contextService.createSession('agent', { agentId: agent.id }, `Agent: ${agent.id}`);
-            return newSession.id;
-        }
-        return session.id;
+        const newSession = await contextService.createSession('agent', { agentId: agent.id }, `Agent: ${agent.id}`);
+        return newSession.id;
     }
 
     private async checkTokenLimit(contextSessionId: string): Promise<void> {
-        // This is expensive, so maybe we only do it if the history is long?
-        // contextWindowService calculates total tokens.
         const window = await contextWindowService.constructContextWindow(contextSessionId, "");
-        const totalTokens = window.reduce((sum, m) => sum + (m.content ? m.content.length / 4 : 0), 0); // Rough est.
+        const totalTokens = window.reduce((sum, m) => sum + (m.content ? m.content.length / 4 : 0), 0);
         
         if (totalTokens > AGENT_TOKEN_LIMIT) {
             loggerService.warn(`AgentService: Token limit exceeded (${totalTokens} > ${AGENT_TOKEN_LIMIT}). Closing context.`, { contextSessionId });
@@ -180,33 +155,45 @@ class AgentService {
 
     async executeAgent(agentId: string, triggerMessage?: string): Promise<void> {
         const agent = await this.getAgent(agentId);
-        if (!agent) {
-            loggerService.error("Agent execution failed: Agent not found", { agentId });
+        if (!agent) return;
+
+        if (!agent.enabled && !triggerMessage) return;
+
+        const contextSessionId = await this.getOrCreateAgentContext(agent);
+        
+        // Ensure prompt is current in metadata
+        await contextService.updateMetadata(contextSessionId, { agentPrompt: agent.prompt });
+
+        if (triggerMessage) {
+            await contextService.enqueueMessage(contextSessionId, triggerMessage, 'external-trigger');
+        }
+
+        if (await contextService.hasActiveMessage(contextSessionId)) {
+            loggerService.info("Agent context busy, message queued.", { agentId, contextSessionId });
             return;
         }
 
-        if (!agent.enabled && !triggerMessage) {
-             // Scheduled run but disabled
-             return;
-        }
+        this.drainQueue(agentId, contextSessionId).catch(err => loggerService.error("Queue drain error", err));
+    }
 
-        // Lock handling?
-        // If we want multiple agents running in parallel, we remove the global lock.
-        // But let's keep it safe for now or allow per-agent locking.
-        // The requirement implies message queue execution "one at a time" for context.
-        // contextService handles the context lock. Here we guard the "Agent Execution Logic".
+    private async drainQueue(agentId: string, contextSessionId: string): Promise<void> {
+        const agent = await this.getAgent(agentId);
+        if (!agent) return;
+
+        const nextItem = await contextService.popNextMessage(contextSessionId);
+        const inputMessage = nextItem?.message || (agent.schedule ? "Wake up and execute your scheduled task." : null);
         
+        if (!inputMessage) return;
+
+        const lockId = `agent-exec-${Date.now()}`;
+        await contextService.setActiveMessage(contextSessionId, lockId);
+
         const executionId = `${agent.id}-${Date.now()}`;
         const startedAt = new Date().toISOString();
-        const contextSessionId = await this.getOrCreateAgentContext(agent);
-        
-        // If context is busy, we should queue?
-        // But executeAgent is called by scheduler or by "send_message" (which queues).
-        // If this is a direct execution, we might hit a lock.
-        
         const baselineTraces = await traceService.getTraces();
         const baselineTraceIds = new Set<string>(baselineTraces.map((t: TraceData) => t.id));
-        loggerService.info('AgentService: Executing agent', { agentId: agent.id, executionId, contextSessionId });
+        
+        loggerService.info('AgentService: Starting execution turn', { agentId: agent.id, executionId, contextSessionId });
 
         await this.updateLastRun(agent, startedAt);
 
@@ -217,28 +204,12 @@ class AgentService {
         let errorMessage: string | undefined;
 
         try {
-            const systemInstruction = await this.buildSystemInstruction(agent.prompt);
+            const baseSystemPrompt = await systemPromptService.loadPrompt(ACTIVATION_PROMPT);
             const { loopModel } = settingsService.getInferenceSettings();
-            
-            // Reuse existing chat session or create fresh if needed
-            // Ideally, getChatSession handles this.
-            // But we need to ensure the system instruction is updated if the agent prompt changed?
-            const chat = createFreshChatSession(systemInstruction, contextSessionId, loopModel);
-
+            const chat = createFreshChatSession(baseSystemPrompt, contextSessionId, loopModel);
             const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), contextSessionId);
             
-            const inputMessage = triggerMessage || "Wake up and execute your scheduled task.";
-            
-            const stream = sendMessageAndHandleTools(chat, inputMessage, toolExecutor, systemInstruction, contextSessionId);
-            
-            // Record system/trigger message
-            await contextService.recordMessage(contextSessionId, {
-                id: randomUUID(),
-                role: "user", // Trigger acts as user input
-                content: inputMessage,
-                metadata: { kind: "agent_trigger", agentId: agent.id, executionId }
-            });
-            
+            const stream = sendMessageAndHandleTools(chat, inputMessage, toolExecutor, baseSystemPrompt, contextSessionId, lockId);
             const toolCalls: any[] = [];
 
             for await (const chunk of stream) {
@@ -258,14 +229,11 @@ class AgentService {
                 traces,
             });
             status = 'completed';
-            
-            // Check token limit AFTER execution
             await this.checkTokenLimit(contextSessionId);
-
         } catch (error: any) {
             status = 'failed';
             errorMessage = String(error);
-            loggerService.error('AgentService: Execution failed', { agentId: agent.id, executionId, error });
+            loggerService.error('AgentService: Turn failed', { agentId: agent.id, executionId, error });
         } finally {
             const finishedAt = new Date().toISOString();
             const executionLog: AgentExecutionLog = {
@@ -281,7 +249,9 @@ class AgentService {
             };
 
             await this.persistExecution(executionLog, traces);
-            loggerService.info('AgentService: Execution recorded', { agentId: agent.id, executionId, status });
+            await contextService.clearActiveMessage(contextSessionId);
+            
+            this.drainQueue(agentId, contextSessionId);
         }
     }
 
@@ -289,29 +259,15 @@ class AgentService {
         try {
             const agents = (await this.listAgents()).filter((a) => a.enabled && a.schedule);
             const now = new Date();
-            const dueAgents: AgentDefinition[] = [];
-
             for (const agent of agents) {
                 const nextRun = this.getNextRun(agent, now);
-                if (!nextRun) continue;
-                if (nextRun.getTime() <= now.getTime()) {
-                    dueAgents.push(agent);
+                if (nextRun && nextRun.getTime() <= now.getTime()) {
+                    this.executeAgent(agent.id).catch(e => loggerService.error("Scheduled execution error", e));
                 }
-            }
-
-            for (const agent of dueAgents) {
-                loggerService.info('AgentService: Triggering scheduled execution', { agentId: agent.id });
-                // We don't await here to allow parallel starts, but we should manage concurrency
-                this.executeAgent(agent.id).catch(e => loggerService.error("Scheduled execution error", e));
             }
         } catch (error: any) {
             loggerService.error('AgentService: Scheduler tick failed', { error });
         }
-    }
-
-    private async sweeperTick() {
-        // ... (cleanup logic same as before, just renaming logs)
-        // Ignoring implementation for brevity, assuming standard cleanup
     }
 
     async startBackgroundThreads() {
@@ -319,7 +275,6 @@ class AgentService {
             loggerService.info('AgentService: Starting scheduler thread');
             this.scheduler = setInterval(() => this.schedulerTick(), ONE_MINUTE_MS);
         }
-        // Sweeper logic...
     }
 
     async getExecutionLogs(agentId?: string, limit: number = 20, includeTraces: boolean = false): Promise<(AgentExecutionLog & { traces?: TraceData[] })[]> {
@@ -332,21 +287,15 @@ class AgentService {
             if (!payload) continue;
             try {
                 const parsed = JSON.parse(payload);
-                // Handle backward compatibility (loopId vs agentId)
                 const recordAgentId = parsed.agentId || parsed.loopId;
-                
                 if (!agentId || recordAgentId === agentId) {
                     if (includeTraces) {
                         const tracePayload = await redisService.request(['GET', getTraceKey(id)]);
-                        if (tracePayload) {
-                            parsed.traces = JSON.parse(tracePayload);
-                        }
+                        if (tracePayload) parsed.traces = JSON.parse(tracePayload);
                     }
                     results.push(parsed);
                 }
-            } catch (error) {
-                // ignore
-            }
+            } catch (error) {}
         }
         return results;
     }

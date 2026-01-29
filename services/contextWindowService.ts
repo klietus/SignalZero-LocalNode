@@ -31,7 +31,11 @@ export class ContextWindowService {
     const type = session?.type || 'conversation';
 
     // 1. System Prompt
-    messages.push({ role: 'system', content: systemPrompt });
+    let effectiveSystemPrompt = systemPrompt;
+    if (type === 'agent' && session?.metadata?.agentPrompt) {
+        effectiveSystemPrompt = `${systemPrompt}\n\n[Agent Prompt]\n${session.metadata.agentPrompt}`;
+    }
+    messages.push({ role: 'system', content: effectiveSystemPrompt });
 
     // 2. Stable Symbolic Context (Cache Anchor)
     const stableContext = await this.buildStableContext();
