@@ -385,6 +385,35 @@ app.post('/api/contexts/:id/trigger', async (req, res) => {
     }
 });
 
+// Send Assistant Message to Latest Conversational Context
+app.post('/api/contexts/latest/assistant-message', async (req, res) => {
+    const { message } = req.body;
+    try {
+        const contexts = await contextService.listSessions();
+        const conversations = contexts
+            .filter(c => c.type === 'conversation' && c.status === 'open')
+            .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+
+        const latest = conversations[0];
+        if (!latest) {
+            res.status(404).json({ error: 'No active conversational context found' });
+            return;
+        }
+
+        await contextService.recordMessage(latest.id, {
+            id: randomUUID(),
+            role: 'assistant',
+            content: message,
+            metadata: { kind: 'agent_update' }
+        });
+
+        res.json({ status: 'sent', contextId: latest.id });
+    } catch (e) {
+        loggerService.error('Error sending message to latest context', { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
 // System Prompt
 app.get('/api/system/prompt', (req, res) => {
     res.json({ prompt: activeSystemPrompt });

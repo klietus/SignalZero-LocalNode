@@ -606,7 +606,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'send_message',
+      name: 'send_agent_message',
       description: 'Send a message to an autonomous agent. If the agent context does not exist, it will be created using the agent\'s prompt. Queues the message for execution.',
       parameters: {
         type: 'object',
@@ -621,6 +621,23 @@ export const toolDeclarations: ChatCompletionTool[] = [
           }
         },
         required: ['agent_id', 'message']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'send_user_message',
+      description: 'Send an update or notification to the user\'s primary chat context. This message appears as an assistant response but does not trigger further processing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          message: {
+            type: 'string',
+            description: 'The message content to display to the user.'
+          }
+        },
+        required: ['message']
       }
     }
   },
@@ -1547,18 +1564,16 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           }
       }
 
-      case 'send_message': {
+      case 'send_agent_message': {
           const { agent_id, message } = args;
           if (!agent_id || !message) return { error: "Missing agent_id or message" };
-          
           if (!contextSessionId) return { error: "Cannot send message from unknown context" };
 
           try {
               const apiUrl = `http://localhost:${process.env.PORT || 3001}/api/agents/${agent_id}/trigger`;
-              
               fetch(apiUrl, {
                   method: 'POST',
-                  headers: {
+                  headers: { 
                       'Content-Type': 'application/json',
                       'x-internal-key': process.env.INTERNAL_SERVICE_KEY || ''
                   },
@@ -1567,7 +1582,28 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
 
               return { status: "queued", target_agent: agent_id };
           } catch (e: any) {
-              return { error: `Failed to send message: ${e.message}` };
+              return { error: `Failed to send agent message: ${e.message}` };
+          }
+      }
+
+      case 'send_user_message': {
+          const { message } = args;
+          if (!message) return { error: "Missing message" };
+
+          try {
+              const apiUrl = `http://localhost:${process.env.PORT || 3001}/api/contexts/latest/assistant-message`;
+              fetch(apiUrl, {
+                  method: 'POST',
+                  headers: { 
+                      'Content-Type': 'application/json',
+                      'x-internal-key': process.env.INTERNAL_SERVICE_KEY || ''
+                  },
+                  body: JSON.stringify({ message })
+              }).catch(e => console.error("Failed to send user message", e));
+
+              return { status: "sent", target: "user_primary_context" };
+          } catch (e: any) {
+              return { error: `Failed to send user message: ${e.message}` };
           }
       }
 
