@@ -219,9 +219,9 @@ export interface DomainImportStat {
     symbolCount: number;
 }
 
-export interface LoopDefinition {
+export interface AgentDefinition {
     id: string;
-    schedule: string;
+    schedule?: string;
     prompt: string;
     enabled: boolean;
     createdAt: string;
@@ -229,9 +229,9 @@ export interface LoopDefinition {
     lastRunAt?: string;
 }
 
-export interface LoopExecutionLog {
+export interface AgentExecutionLog {
     id: string;
-    loopId: string;
+    agentId: string;
     startedAt: string;
     finishedAt?: string;
     status: 'running' | 'completed' | 'failed';
@@ -244,13 +244,13 @@ export interface LoopExecutionLog {
 export interface ProjectImportStats {
     meta: ProjectMeta;
     testCaseCount: number;
-    loopCount: number;
+    agentCount: number;
     domains: DomainImportStat[];
     totalSymbols: number;
 }
 
 // Context Sessions
-export type ContextKind = 'conversation' | 'loop';
+export type ContextKind = 'conversation' | 'agent';
 export type ContextStatus = 'open' | 'closed';
 
 export interface ContextMessage {
