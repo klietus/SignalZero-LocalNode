@@ -46,17 +46,42 @@ export interface SystemSettings {
   inference?: Partial<InferenceSettings>;
   voice?: VoiceSettings;
   adminUser?: AdminUser;
+  googleSearch?: {
+    apiKey?: string;
+    cx?: string;
+  };
+}
 
-
-// ... existing interfaces ...
+// In-memory store for saved configs, loaded from file
+let _savedInferenceConfigs: Record<string, InferenceConfiguration> = {};
+let _adminUser: AdminUser | null = null;
 
 const loadPersistedSettings = () => {
   if (fs.existsSync(SETTINGS_FILE)) {
     try {
       const data = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
-      if (data.redis) { /* ... */ }
-      if (data.chroma) { /* ... */ }
-      if (data.inference) { /* ... */ }
+      if (data.redis) {
+        if (data.redis.server) process.env.REDIS_SERVER = data.redis.server;
+        if (data.redis.port) process.env.REDIS_PORT = String(data.redis.port);
+        if (data.redis.password) process.env.REDIS_PASSWORD = data.redis.password;
+      }
+      if (data.chroma) {
+        if (data.chroma.url) process.env.CHROMA_URL = data.chroma.url;
+        if (data.chroma.collection) process.env.CHROMA_COLLECTION = data.chroma.collection;
+        if (data.chroma.useExternal !== undefined) process.env.USE_EXTERNAL_VECTOR_DB = String(data.chroma.useExternal);
+      }
+      if (data.inference) {
+        if (data.inference.provider) process.env.INFERENCE_PROVIDER = data.inference.provider;
+        if (data.inference.apiKey) process.env.INFERENCE_API_KEY = data.inference.apiKey;
+        if (data.inference.endpoint) process.env.INFERENCE_ENDPOINT = data.inference.endpoint;
+        if (data.inference.model) process.env.INFERENCE_MODEL = data.inference.model;
+        if (data.inference.loopModel) process.env.INFERENCE_LOOP_MODEL = data.inference.loopModel;
+        if (data.inference.visionModel) process.env.INFERENCE_VISION_MODEL = data.inference.visionModel;
+        
+        if (data.inference.savedConfigs) {
+           _savedInferenceConfigs = data.inference.savedConfigs;
+        }
+      }
       if (data.googleSearch) {
         if (data.googleSearch.apiKey) process.env.GOOGLE_CUSTOM_SEARCH_KEY = data.googleSearch.apiKey;
         if (data.googleSearch.cx) process.env.GOOGLE_CSE_ID = data.googleSearch.cx;
@@ -74,9 +99,25 @@ const loadPersistedSettings = () => {
   }
 };
 
+const savePersistedSettings = (settings: any) => {
+  try {
+    // Merge current savedConfigs into the object being saved
+    const payload = {
+      ...settings,
+      inference: {
+        ...settings.inference,
+        savedConfigs: _savedInferenceConfigs
+      },
+      adminUser: _adminUser
+    };
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(payload, null, 2));
+  } catch (e) {
+    console.error('Failed to save settings file', e);
+  }
+};
+
 // Load settings on initialization
 loadPersistedSettings();
-
 export const settingsService = {
   // --- Core Identity ---
   getApiKey: (): string => {
