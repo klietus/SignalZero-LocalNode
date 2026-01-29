@@ -22,9 +22,6 @@ COPY --from=builder /app/package-lock.json /app/package-lock.json
 COPY --from=builder /app/node_modules /app/node_modules
 COPY --from=builder /app .
 
-# Enable non-free and contrib for mbrola
-RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources
-
 # Install runtime utilities, GitHub CLI, Google Cloud CLI, and Gemini CLI
 RUN apt-get update && apt-get install -y \
     curl \
@@ -33,14 +30,6 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     apt-transport-https \
     lsb-release \
-    espeak-ng \
-    lame \
-    sox \
-    libsox-fmt-all \
-    pulseaudio-utils \
-    libpulse0 \
-    mbrola \
-    mbrola-us1 \
     && \
     # GitHub CLI Setup
     mkdir -p -m 755 /etc/apt/keyrings && \

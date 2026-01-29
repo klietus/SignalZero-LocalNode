@@ -278,6 +278,14 @@ export const contextService = {
       return !!session?.metadata?.cancellationRequested;
   },
 
+  async updateMetadata(sessionId: string, metadata: Record<string, any>): Promise<void> {
+      const session = await loadSession(sessionId);
+      if (!session) return;
+      session.metadata = { ...(session.metadata || {}), ...metadata };
+      session.updatedAt = new Date().toISOString();
+      await persistSession(session);
+  },
+
   async isWriteAllowed(sessionId: string | undefined, toolName: string): Promise<boolean> {
     if (!sessionId) return true;
     const session = await loadSession(sessionId);
