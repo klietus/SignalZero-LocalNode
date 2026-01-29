@@ -51,7 +51,13 @@ const buildReadOnlyResponse = (error: any) => ({
 
 // Request Logging Middleware
 app.use((req, res, next) => {
-    const isPolling = req.method === 'GET' && (req.url.startsWith('/api/contexts') || req.url.includes('/history') || req.url.startsWith('/api/traces'));
+    const isPolling = req.method === 'GET' && (
+        req.url.startsWith('/api/contexts') || 
+        req.url.includes('/history') || 
+        req.url.startsWith('/api/traces') ||
+        req.url === '/api/voice/mic/status' ||
+        req.url === '/api/voice/story/status'
+    );
     
     if (!isPolling) {
         loggerService.info(`Request: ${req.method} ${req.url}`, {
@@ -1003,7 +1009,82 @@ app.get('/api/traces/:id', async (req, res) => {
 });
 
 // Loop Management
-// ... existing loop routes ...
+app.get('/api/loops', async (req, res) => {
+    try {
+        const loops = await loopService.listLoops();
+        res.json({ loops });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+app.get('/api/loops/logs', async (req, res) => {
+    const { loopId, limit, includeTraces } = req.query;
+    try {
+        const logs = await loopService.getExecutionLogs(
+            loopId as string,
+            limit ? Number(limit) : 20,
+            includeTraces === 'true'
+        );
+        res.json({ logs });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+app.get('/api/loops/:id', async (req, res) => {
+    try {
+        const loop = await loopService.getLoop(req.params.id);
+        if (!loop) return res.status(404).json({ error: 'Loop not found' });
+        res.json(loop);
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+app.post('/api/loops', async (req, res) => {
+    const { id, schedule, prompt, enabled } = req.body;
+    if (!id || !schedule || !prompt) {
+        res.status(400).json({ error: 'id, schedule, and prompt are required' });
+        return;
+    }
+    try {
+        const loop = await loopService.upsertLoop(id, schedule, prompt, enabled ?? true);
+        res.json(loop);
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+app.put('/api/loops/:id', async (req, res) => {
+    const { schedule, prompt, enabled } = req.body;
+    const { id } = req.params;
+    if (!schedule || !prompt) {
+        res.status(400).json({ error: 'schedule and prompt are required' });
+        return;
+    }
+    try {
+        const loop = await loopService.upsertLoop(id, schedule, prompt, enabled ?? true);
+        res.json(loop);
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+app.delete('/api/loops/:id', async (req, res) => {
+    try {
+        await loopService.deleteLoop(req.params.id);
+        res.json({ status: 'success' });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
 
 // Voice Service Control
 app.get('/api/voice/mic/status', async (req, res) => {
