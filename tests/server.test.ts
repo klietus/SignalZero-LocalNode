@@ -8,12 +8,14 @@ import { testService } from '../services/testService.ts';
 import { projectService } from '../services/projectService.ts';
 import { contextService } from '../services/contextService.ts';
 import { authService } from '../services/authService.ts';
+import { loopService } from '../services/loopService.ts';
 
 // Mock Services
 vi.mock('../services/domainService');
 vi.mock('../services/traceService');
 vi.mock('../services/testService');
 vi.mock('../services/projectService');
+vi.mock('../services/loopService');
 vi.mock('../services/authService', () => ({
     authService: {
         verifySession: vi.fn().mockReturnValue(true),
@@ -198,5 +200,42 @@ describe('Server API Endpoints', () => {
         const res = await request(app).post('/api/project/export').set('x-auth-token', AUTH_TOKEN);
         expect(res.status).toBe(200);
         expect(res.header['content-type']).toBe('application/zip');
+    });
+
+    // --- Loop Management Tests ---
+    it('GET /api/loops should list loops', async () => {
+        vi.mocked(loopService.listLoops).mockResolvedValue([{ id: 'l1' } as any]);
+        const res = await request(app).get('/api/loops').set('x-auth-token', AUTH_TOKEN);
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ loops: [{ id: 'l1' }] });
+    });
+
+    it('POST /api/loops should upsert loop', async () => {
+        vi.mocked(loopService.upsertLoop).mockResolvedValue({ id: 'l1' } as any);
+        const res = await request(app).post('/api/loops').set('x-auth-token', AUTH_TOKEN).send({ id: 'l1', schedule: '* * * * *', prompt: 'p' });
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ id: 'l1' });
+    });
+
+    it('PUT /api/loops/:id should upsert loop', async () => {
+        vi.mocked(loopService.upsertLoop).mockResolvedValue({ id: 'l1' } as any);
+        const res = await request(app).put('/api/loops/l1').set('x-auth-token', AUTH_TOKEN).send({ schedule: '* * * * *', prompt: 'p' });
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ id: 'l1' });
+        expect(loopService.upsertLoop).toHaveBeenCalledWith('l1', '* * * * *', 'p', true);
+    });
+
+    it('DELETE /api/loops/:id should delete loop', async () => {
+        vi.mocked(loopService.deleteLoop).mockResolvedValue(true);
+        const res = await request(app).delete('/api/loops/l1').set('x-auth-token', AUTH_TOKEN);
+        expect(res.status).toBe(200);
+        expect(loopService.deleteLoop).toHaveBeenCalledWith('l1');
+    });
+
+    it('GET /api/loops/logs should return execution logs', async () => {
+        vi.mocked(loopService.getExecutionLogs).mockResolvedValue([{ id: 'e1' } as any]);
+        const res = await request(app).get('/api/loops/logs?loopId=l1').set('x-auth-token', AUTH_TOKEN);
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ logs: [{ id: 'e1' }] });
     });
 });
