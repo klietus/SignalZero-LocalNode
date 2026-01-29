@@ -1,24 +1,21 @@
-
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import { domainService } from "./domainService.ts";
 import { domainInferenceService } from "./domainInferenceService.ts";
-import { loopService } from "./loopService.ts";
+import { agentService } from "./agentService.js";
 import { testService } from "./testService.ts";
 import { traceService } from "./traceService.ts";
-import { LoopDefinition, LoopExecutionLog, SymbolDef, TraceData } from "../types.ts";
+import { AgentDefinition, AgentExecutionLog, SymbolDef, TraceData } from "../types.ts";
 import { indexingService } from "./indexingService.ts";
 import { loggerService } from "./loggerService.ts";
-import { EXECUTION_ZSET_KEY, LOOP_INDEX_KEY, getExecutionKey, getLoopKey, getTraceKey } from "./loopStorage.js";
 import { redisService } from "./redisService.js";
 import { secretManagerService } from "./secretManagerService.ts";
 import { contextService } from "./contextService.js";
 import { documentMeaningService } from "./documentMeaningService.js";
-import { runSignalZeroTest } from "./inferenceService.js";
-import os from 'os';
 import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import os from 'os';
 
 const execAsync = promisify(exec);
 
@@ -58,10 +55,10 @@ const SYMBOL_DATA_SCHEMA = {
                 source: { type: 'string', description: "Origin of the data." },
                 verification: { type: 'string', description: "Verification status or method." },
                 status: { type: 'string', description: "Current status of the data." },
-                payload: { 
-                    type: 'object', 
-                    additionalProperties: true, 
-                    description: "Key-value store for arbitrary data." 
+                payload: {
+                    type: 'object',
+                    additionalProperties: true,
+                    description: "Key-value store for arbitrary data."
                 }
             }
         },
@@ -73,14 +70,14 @@ const SYMBOL_DATA_SCHEMA = {
                 topology: { type: 'string' },
                 commit: { type: 'string' },
                 gate: { type: 'array', items: { type: 'string' } },
-                substrate: { 
-                    type: 'array', 
-                    items: { 
+                substrate: {
+                    type: 'array',
+                    items: {
                         type: 'string',
                         enum: [
-                            'text', 'code', 'image', 'audio', 'video', 'data', 'event', 'signal', 
+                            'text', 'code', 'image', 'audio', 'video', 'data', 'event', 'signal',
                             'state', 'process', 'concept', 'relation',
-                            'cognitive', 'symbolic', 'temporal', 'social', 'biological', 
+                            'cognitive', 'symbolic', 'temporal', 'social', 'biological',
                             'physical', 'digital', 'virtual', 'abstract', 'meta'
                         ]
                     },
@@ -94,9 +91,9 @@ const SYMBOL_DATA_SCHEMA = {
         symbol_domain: { type: 'string' },
         symbol_tag: { type: 'string' },
         failure_mode: { type: 'string' },
-        linked_patterns: { 
-            type: 'array', 
-            items: { 
+        linked_patterns: {
+            type: 'array',
+            items: {
                 type: 'object',
                 properties: {
                     id: { type: 'string', description: "The ID of the linked symbol." },
@@ -105,7 +102,7 @@ const SYMBOL_DATA_SCHEMA = {
                 },
                 required: ['id', 'link_type', 'bidirectional']
             },
-            description: "Structured links to other symbols." 
+            description: "Structured links to other symbols."
         }
     },
     required: ['id', 'kind', 'triad', 'macro', 'role', 'name', 'activation_conditions', 'facets', 'symbol_domain', 'failure_mode', 'linked_patterns']
@@ -142,62 +139,6 @@ const TRACE_DATA_SCHEMA = {
         status: { type: 'string' }
     },
     required: ['entry_node', 'activated_by', 'activation_path', 'source_context', 'output_node', 'status']
-};
-
-type LoopExecutionLogWithTraces = LoopExecutionLog & { traces?: TraceData[] };
-
-const fetchLoopDefinitions = async (): Promise<LoopDefinition[]> => {
-    const ids = await redisService.request(['SMEMBERS', LOOP_INDEX_KEY]);
-    if (!Array.isArray(ids) || ids.length === 0) return [];
-
-    const loops: LoopDefinition[] = [];
-    for (const id of ids) {
-        const payload = await redisService.request(['GET', getLoopKey(id)]);
-        if (!payload) continue;
-        try {
-            loops.push(JSON.parse(payload));
-        } catch (error) {
-            loggerService.error('ToolsService: Failed to parse loop payload', { id, error });
-        }
-    }
-    return loops;
-};
-
-const fetchLoopExecutions = async (
-    loopId?: string,
-    limit: number = 20,
-    includeTraces: boolean = false
-): Promise<LoopExecutionLogWithTraces[]> => {
-    const ids: string[] = await redisService.request(['ZRANGEBYSCORE', EXECUTION_ZSET_KEY, '-inf', '+inf']);
-    const ordered = Array.isArray(ids) ? ids.slice().reverse() : [];
-    const results: LoopExecutionLogWithTraces[] = [];
-
-    for (const id of ordered) {
-        if (results.length >= limit) break;
-        const payload = await redisService.request(['GET', getExecutionKey(id)]);
-        if (!payload) continue;
-
-        try {
-            const parsed: LoopExecutionLogWithTraces = JSON.parse(payload);
-            if (!loopId || parsed.loopId === loopId) {
-                if (includeTraces) {
-                    const tracePayload = await redisService.request(['GET', getTraceKey(id)]);
-                    if (tracePayload) {
-                        try {
-                            parsed.traces = JSON.parse(tracePayload) as TraceData[];
-                        } catch (error) {
-                            loggerService.error('ToolsService: Failed to parse execution traces', { id, error });
-                        }
-                    }
-                }
-                results.push(parsed);
-            }
-        } catch (error) {
-            loggerService.error('ToolsService: Failed to parse loop execution', { id, error });
-        }
-    }
-
-    return results;
 };
 
 // 1. Define the Schema for the tools
@@ -282,7 +223,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
               type: 'object',
               properties: {
                 old_id: { type: 'string', description: 'Optional existing ID for rename or update. If omitted, a new symbol will be added.' },
-                // Explicitly reuse the full schema here so the model doesn't send empty objects
+                // Explicitly reuse the full schema here so the model doesn\'t send empty objects
                 symbol_data: SYMBOL_DATA_SCHEMA
               },
               required: ['symbol_data']
@@ -324,25 +265,25 @@ export const toolDeclarations: ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'upsert_loop',
-      description: 'Create or update a background loop definition, adjusting its schedule, prompt, and enabled status. This tool can be used in parallel with any other tool.',
+      name: 'upsert_agent',
+      description: 'Create or update an autonomous agent definition. Agents can be scheduled or event-driven (using send_message).',
       parameters: {
         type: 'object',
         properties: {
-          loop_id: { type: 'string', description: 'Unique identifier for the loop. Will be created if it does not exist.' },
-          schedule: { type: 'string', description: 'Cron expression defining how often the loop should run.' },
-          prompt: { type: 'string', description: 'Loop prompt that will be appended to the activation prompt before execution.' },
-          enabled: { type: 'boolean', description: 'Set to true to enable the loop or false to disable it.' },
+          agent_id: { type: 'string', description: 'Unique identifier for the agent.' },
+          prompt: { type: 'string', description: "System prompt defining the agent's behavior." },
+          schedule: { type: 'string', description: 'Optional cron expression for scheduled agents.' },
+          enabled: { type: 'boolean', description: 'Set to true to enable the agent.' },
         },
-        required: ['loop_id', 'schedule', 'prompt'],
+        required: ['agent_id', 'prompt'],
       },
     },
   },
   {
     type: 'function',
     function: {
-      name: 'list_loops',
-      description: 'List configured background loops with their schedules, prompts, and status flags. This tool can be used in parallel with any other tool.',
+      name: 'list_agents',
+      description: 'List configured autonomous agents with their schedules, prompts, and status flags.',
       parameters: {
         type: 'object',
         properties: {},
@@ -352,12 +293,12 @@ export const toolDeclarations: ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'list_loop_executions',
-      description: 'List recent loop execution logs. Optionally filter by loop id and include symbolic traces. This tool can be used in parallel with any other tool.',
+      name: 'list_agent_executions',
+      description: 'List recent agent execution logs.',
       parameters: {
         type: 'object',
         properties: {
-          loop_id: { type: 'string', description: 'Filter executions to a specific loop id.' },
+          agent_id: { type: 'string', description: 'Filter executions to a specific agent id.' },
           limit: { type: 'integer', description: 'Maximum number of executions to return (default 20).' },
           include_traces: { type: 'boolean', description: 'Include symbolic traces captured during each execution.' }
         },
@@ -587,9 +528,9 @@ export const toolDeclarations: ChatCompletionTool[] = [
         properties: {
           categories: {
             type: 'array',
-            items: { 
-                type: 'string', 
-                enum: ['time', 'cpu', 'memory', 'disk', 'processes', 'network', 'os'] 
+            items: {
+                type: 'string',
+                enum: ['time', 'cpu', 'memory', 'disk', 'processes', 'network', 'os']
             },
             description: 'List of information categories to retrieve. Defaults to all if omitted.'
           }
@@ -629,9 +570,9 @@ export const toolDeclarations: ChatCompletionTool[] = [
           voice: {
             type: 'string',
             enum: [
-                'af_heart', 'af_alloy', 'af_aoede', 'af_bella', 'af_jessica', 
-                'af_kore', 'af_nicole', 'af_nova', 'af_river', 'af_sarah', 
-                'af_sky', 'am_adam', 'am_echo', 'am_eric', 'am_fenrir', 
+                'af_heart', 'af_alloy', 'af_aoede', 'af_bella', 'af_jessica',
+                'af_kore', 'af_nicole', 'af_nova', 'af_river', 'af_sarah',
+                'af_sky', 'am_adam', 'am_echo', 'am_eric', 'am_fenrir',
                 'am_liam', 'am_michael', 'am_onyx', 'am_puck', 'am_santa'
             ],
             description: 'The voice to use for speech generation. Defaults to af_sarah.'
@@ -666,20 +607,20 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'send_message',
-      description: 'Send a message to another context. This queues the message for the target context to process when it becomes idle.',
+      description: 'Send a message to an autonomous agent. If the agent context does not exist, it will be created using the agent\'s prompt. Queues the message for execution.',
       parameters: {
         type: 'object',
         properties: {
-          target_context_id: {
+          agent_id: {
             type: 'string',
-            description: 'The ID of the context to send the message to.'
+            description: 'The ID of the target agent.'
           },
           message: {
             type: 'string',
             description: 'The content of the message to send.'
           }
         },
-        required: ['target_context_id', 'message']
+        required: ['agent_id', 'message']
       }
     }
   },
@@ -707,8 +648,8 @@ export const toolDeclarations: ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'list_contexts',
-      description: 'List all available context sessions with their IDs and names.',
+      name: 'list_agent_contexts',
+      description: 'List all available agent context sessions.',
       parameters: {
         type: 'object',
         properties: {}
@@ -892,12 +833,10 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
               }
           }
 
-          // IMPORTANT: bypass_validation is intentionally removed from the AI tool interface to enforce integrity.
-          // It defaults to false here.
           const bypass_validation = false;
 
-          loggerService.info(`upsert_symbols called with ${symbols?.length || 0} symbols`, { 
-              symbolIds: Array.isArray(symbols) ? symbols.map((s: any) => s.symbol_data?.id) : [] 
+          loggerService.info(`upsert_symbols called with ${symbols?.length || 0} symbols`, {
+              symbolIds: Array.isArray(symbols) ? symbols.map((s: any) => s.symbol_data?.id) : []
           });
 
           if (!symbols || !Array.isArray(symbols) || symbols.length === 0) {
@@ -918,7 +857,6 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
 
               const s = symbol_data;
 
-              // Only perform strict schema validation if NOT bypassing
               if (!bypass_validation) {
                   const missingFields = [];
                   if (!s.id) missingFields.push('id');
@@ -938,7 +876,6 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                       return { error: errorMsg };
                   }
 
-                  // Validate nested facets
                   const f = s.facets;
                   const missingFacets = [];
                   if (!f.function) missingFacets.push('function');
@@ -956,7 +893,6 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                   }
               }
 
-              // Validate and default symbol kind
               const validKinds = ['pattern', 'persona', 'lattice', 'data'];
               if (!s.kind || !validKinds.includes(s.kind)) {
                   s.kind = 'pattern';
@@ -1016,7 +952,6 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
       case 'delete_symbols': {
           const { symbol_ids, symbol_domain, cascade = true, _internal_bypass_queue } = args;
 
-          // Transaction Queueing
           if (contextSessionId && !_internal_bypass_queue) {
               const active = await redisService.request(['GET', `transaction:active:${contextSessionId}`]);
               if (active) {
@@ -1108,75 +1043,60 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
 
       case 'list_domains': {
         try {
-          // Pure local list with metadata
           const metaList = await domainService.getMetadata();
-
-          // Map to simpler format for the model, sorting alphabetically
-          // ENRICHMENT: Include full persona objects per domain
-          // Since getMetadata is async, metaList is the array result
           const domainResponsePromises = metaList
             .sort((a, b) => a.name.localeCompare(b.name))
             .map(async d => {
-              const allSymbols = await domainService.getSymbols(d.id);
-              // Filter for full symbol definitions where kind is 'persona'
-              const personas = allSymbols.filter(s => s.kind === 'persona');
-
               return {
                 id: d.id,
                 name: d.name,
                 description: d.description || "No description provided.",
                 invariants: d.invariants || [],
                 readOnly: d.readOnly === true
-                //personas: personas
               };
             });
 
           const domainResponse = await Promise.all(domainResponsePromises);
-
           return { domains: domainResponse };
         } catch (error) {
           console.error("Tool execution failed:", error);
           return { error: `Failed to list domains: ${String(error)}` };
-      }
-      }
-
-      case 'list_loops': {
-          const loops = await fetchLoopDefinitions();
-          return { loops };
+        }
       }
 
-      case 'upsert_loop': {
-          const { loop_id, schedule, prompt, enabled } = args || {};
+      case 'list_agents': {
+          const agents = await agentService.listAgents();
+          return { agents };
+      }
 
-          if (!loop_id || !schedule || !prompt) {
-              return { error: "Missing required 'loop_id', 'schedule', or 'prompt' argument." };
-          }
+      case 'upsert_agent': {
+          const { agent_id, schedule, prompt, enabled } = args || {};
 
-          if (enabled !== undefined && typeof enabled !== 'boolean') {
-              return { error: "Invalid 'enabled' flag. Expected a boolean value." };
+          if (!agent_id || !prompt) {
+              return { error: "Missing required 'agent_id' or 'prompt' argument." };
           }
 
           try {
-              const loop = await loopService.upsertLoop(
-                  String(loop_id),
-                  String(schedule),
+              const agent = await agentService.upsertAgent(
+                  String(agent_id),
                   String(prompt),
-                  enabled === undefined ? true : enabled
+                  enabled === undefined ? true : enabled,
+                  schedule ? String(schedule) : undefined
               );
               return {
-                  status: 'Loop upserted successfully.',
-                  loop,
+                  status: 'Agent upserted successfully.',
+                  agent,
               };
           } catch (error) {
-              return { error: `Failed to upsert loop: ${String(error)}` };
+              return { error: `Failed to upsert agent: ${String(error)}` };
           }
       }
 
-      case 'list_loop_executions': {
-          const { loop_id, limit, include_traces } = args || {};
+      case 'list_agent_executions': {
+          const { agent_id, limit, include_traces } = args || {};
           const parsedLimit = Number.isFinite(limit) ? Math.min(Math.max(Number(limit), 1), 100) : 20;
-          const logs = await fetchLoopExecutions(
-              typeof loop_id === 'string' ? loop_id : undefined,
+          const logs = await agentService.getExecutionLogs(
+              typeof agent_id === 'string' ? agent_id : undefined,
               parsedLimit,
               include_traces === true
           );
@@ -1275,7 +1195,6 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
               const buffer = await response.arrayBuffer();
               const contentType = response.headers.get('content-type') || '';
               
-              // Use DocumentMeaningService to normalize content
               const parsed = await documentMeaningService.parse(Buffer.from(buffer), contentType, url);
 
               return {
@@ -1314,13 +1233,9 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                   params.append(key, String(value));
               }
               requestBody = params;
-              // URLSearchParams automatically sets Content-Type to application/x-www-form-urlencoded usually,
-              // but explicit header doesn't hurt if fetch doesn't do it automatically in this env.
-              // Actually, passing URLSearchParams to fetch body usually handles it.
           } else if (body) {
               requestBody = typeof body === 'string' ? body : JSON.stringify(body);
               if (!requestHeaders['Content-Type']) {
-                   // Try to infer JSON
                    try {
                        JSON.parse(requestBody);
                        requestHeaders['Content-Type'] = 'application/json';
@@ -1366,7 +1281,6 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
       case 'web_search': {
           const { query, queries, image_search } = args;
           
-          // Normalize input to a list of queries
           let queryList: string[] = [];
           if (Array.isArray(queries) && queries.length > 0) {
               queryList = queries.map((q: any) => typeof q === 'string' ? q : q.query).filter((q: any) => typeof q === 'string' && q.trim().length > 0);
@@ -1383,13 +1297,6 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
 
           const apiKey = process.env.API_KEY || process.env.GOOGLE_CUSTOM_SEARCH_KEY || process.env.GOOGLE_SEARCH_KEY;
           const searchEngineId = process.env.GOOGLE_CSE_ID || process.env.GOOGLE_SEARCH_ENGINE_ID || process.env.GOOGLE_CUSTOM_SEARCH_CX;
-
-          loggerService.info("web_search config check", {
-              hasApiKey: !!apiKey,
-              apiKeyLength: apiKey ? apiKey.length : 0,
-              hasSearchEngineId: !!searchEngineId,
-              searchEngineIdLength: searchEngineId ? searchEngineId.length : 0
-          });
 
           if (!apiKey) return { error: 'Google Custom Search failed: Missing GOOGLE_API_KEY environment variable.' };
           if (!searchEngineId) return { error: 'Google Custom Search failed: Missing search engine ID.' };
@@ -1435,14 +1342,6 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
 
           const results = await Promise.all(queryList.map(executeSearch));
           
-          const errors = results.filter(r => r.error);
-          loggerService.info(`web_search completed ${results.length} searches`, { 
-              successCount: results.filter(r => !r.error).length,
-              errorCount: errors.length,
-              errors: errors.map(e => ({ query: e.query, error: e.error }))
-          });
-
-          // Flatten results if single query for backward compatibility, or return list structure
           if (results.length === 1) return results[0];
           return { batch_results: results };
       }
@@ -1505,9 +1404,9 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           const { trace } = args;
           if (!trace) return { error: "Missing trace argument" };
 
-          await traceService.addTrace({ 
-              ...trace, 
-              sessionId: contextSessionId 
+          await traceService.addTrace({
+              ...trace,
+              sessionId: contextSessionId
           } as TraceData);
           return { status: "Trace logged successfully." };
       }
@@ -1566,9 +1465,6 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
 
           if (categories.includes('processes')) {
               try {
-                  // limit to top 20 by memory to avoid massive output
-                  // Note: Alpine (busybox) and Debian have different ps flags.
-                  // Try a safe common one first or check platform.
                   const isAlpine = os.platform() === 'linux' && fs.existsSync('/etc/alpine-release');
                   const cmd = isAlpine ? 'ps -o pid,user,comm,vsz | head -n 21' : 'ps aux --sort=-%mem | head -n 21';
                   const { stdout } = await execAsync(cmd);
@@ -1586,19 +1482,18 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           if (!command) return { error: "Missing command" };
 
           try {
-              // Increase buffer to 1MB to handle larger outputs like logs
               const { stdout, stderr } = await execAsync(command, { maxBuffer: 1024 * 1024 });
-              return { 
-                  status: 'success', 
-                  stdout: stdout ? stdout.trim() : '', 
-                  stderr: stderr ? stderr.trim() : '' 
+              return {
+                  status: 'success',
+                  stdout: stdout ? stdout.trim() : '',
+                  stderr: stderr ? stderr.trim() : ''
               };
           } catch (error: any) {
-              return { 
-                  status: 'error', 
-                  error: error.message, 
-                  code: error.code, 
-                  stdout: error.stdout ? String(error.stdout).trim() : undefined, 
+              return {
+                  status: 'error',
+                  error: error.message,
+                  code: error.code,
+                  stdout: error.stdout ? String(error.stdout).trim() : undefined,
                   stderr: error.stderr ? String(error.stderr).trim() : undefined
               };
           }
@@ -1617,7 +1512,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                       voice: voice || 'af_sarah', // Default voice
                       speed: 1.0,
                       pitch: 50,
-                      device: 'Channel_1__Channel_2.2' // Auto-detected Bose or default by service
+                      device: 'Channel_1__Channel_2.2'
                   })
               });
               
@@ -1627,8 +1522,8 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
               }
               
               const result = await response.json();
-              return { 
-                  status: 'success', 
+              return {
+                  status: 'success',
                   message: 'Speech request routed to Voice Service',
                   service_response: result
               };
@@ -1637,93 +1532,40 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           }
       }
 
+      case 'write_file': {
+          const { file_path, content } = args;
+          if (!file_path || typeof file_path !== 'string') return { error: "Missing file_path" };
+          if (content === undefined || typeof content !== 'string') return { error: "Missing content" };
+
+          try {
+              const dir = path.dirname(file_path);
+              await fs.promises.mkdir(dir, { recursive: true });
+              await fs.promises.writeFile(file_path, content, 'utf-8');
+              return { status: 'success', file_path, size: content.length };
+          } catch (error: any) {
+              return { error: `Failed to write file: ${error.message}` };
+          }
+      }
+
       case 'send_message': {
-          const { target_context_id, message } = args;
-          if (!target_context_id || !message) return { error: "Missing target_context_id or message" };
+          const { agent_id, message } = args;
+          if (!agent_id || !message) return { error: "Missing agent_id or message" };
           
           if (!contextSessionId) return { error: "Cannot send message from unknown context" };
 
           try {
-              const target = await contextService.getSession(target_context_id);
-              if (!target) return { error: `Target context ${target_context_id} not found` };
+              const apiUrl = `http://localhost:${process.env.PORT || 3001}/api/agents/${agent_id}/trigger`;
               
-              await contextService.enqueueMessage(target_context_id, message, contextSessionId);
-              
-              // Trigger draining if target is idle
-              if (!await contextService.hasActiveMessage(target_context_id)) {
-                  // We can't call processMessageAsync directly here due to circular dep, 
-                  // but enqueueMessage sets up the state. 
-                  // The system relies on the queue check logic we added to inferenceService.
-                  // However, if the target is completely idle, we need to kickstart it.
-                  // Since we are in tool execution, we are inside inferenceService scope.
-                  // But we can't import it.
-                  // We can rely on the fact that if it's idle, *nothing* is running.
-                  // We need a way to poke it.
-                  // Let's use a "poke" mechanism or just accept it might wait until next interaction?
-                  // No, the requirement says "executed as if I sent them".
-                  // We'll trust the modified clearActiveMessage/processMessageAsync loop to pick it up if it was busy.
-                  // If it was idle, we need to start it.
-                  // The only way to start it without circular deps is via an event or loosely coupled call.
-                  // OR, we can use the server's API itself (loopback).
-                  
-                  fetch(`http://localhost:${process.env.PORT || 3001}/api/chat`, {
-                      method: 'POST',
-                      headers: { 
-                          'Content-Type': 'application/json',
-                          'x-auth-token': getApiKey() || '',
-                          'x-internal-key': process.env.INTERNAL_SERVICE_KEY || ''
-                      },
-                      body: JSON.stringify({
-                          contextSessionId: target_context_id,
-                          message: message, // Direct message injection, bypassing queue for the kickstart?
-                          // No, if we send it via API, it will lock the context.
-                          // But we already enqueued it.
-                          // If we use the API, we shouldn't enqueue it manually first, or the API should handle it.
-                          // Actually, the API calls processMessageAsync.
-                          // Let's just use the API and NOT enqueue manually if we use the API.
-                          // But wait, the requirement was "creates a queue... drained... one at a time".
-                          // If we use API, we rely on the API's concurrency check (409) which rejects.
-                          // So we MUST enqueue manually and then try to trigger processing.
-                          // If the API sees it's locked, it returns 409.
-                          // We want queueing.
-                          // So: Enqueue. Then check if idle. If idle, start processing the queue.
-                          // How to start processing queue? Call processMessageAsync with the popped message.
-                          // But we can't import it.
-                          // We can use a special "trigger_queue" endpoint or just send a dummy request that triggers the queue check?
-                          // Or simply use the API to send "trigger_queue" which is ignored but triggers the finally block? No.
-                          
-                          // Correct approach: The API endpoint should support a "run_queue" mode or we just rely on `processMessageAsync`.
-                          // Actually, if we send the message via API, and the API checks for lock:
-                          // If locked -> 409.
-                          // We want: If locked -> Queue.
-                          // The `send_message` tool is running inside the context of `sourceContextId`.
-                          
-                          // Let's stick to: Enqueue in Redis. Then try to poke via a dedicated internal-only endpoint?
-                          // Or, move `processMessageAsync` to a shared service or inject it?
-                          // `createToolExecutor` is called by `processMessageAsync`.
-                      })
-                  }).catch(e => console.error("Failed to trigger context", e));
-                  
-                  // Wait, if we use fetch /api/chat, it will execute the message.
-                  // If we already enqueued it, we might double process.
-                  // Let's NOT enqueue manually here if we use /api/chat.
-                  // BUT /api/chat returns 409 if busy.
-                  // So we should try /api/chat. If 409, THEN enqueue?
-                  // No, race conditions.
-                  
-                  // Revised logic:
-                  // Always enqueue.
-                  // Then call an endpoint `/api/contexts/:id/trigger` which checks queue and runs if idle.
-              }
-              
-              // We'll need to add that trigger endpoint to server.ts.
-              // For now, let's assume we add it.
-              fetch(`http://localhost:${process.env.PORT || 3001}/api/contexts/${target_context_id}/trigger`, {
+              fetch(apiUrl, {
                   method: 'POST',
-                  headers: { 'x-internal-key': process.env.INTERNAL_SERVICE_KEY || '' }
-              }).catch(() => {}); // Fire and forget
+                  headers: {
+                      'Content-Type': 'application/json',
+                      'x-internal-key': process.env.INTERNAL_SERVICE_KEY || ''
+                  },
+                  body: JSON.stringify({ message })
+              }).catch(e => console.error("Failed to trigger agent", e));
 
-              return { status: "queued", target: target_context_id };
+              return { status: "queued", target_agent: agent_id };
           } catch (e: any) {
               return { error: `Failed to send message: ${e.message}` };
           }
@@ -1743,7 +1585,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           }
       }
 
-      case 'list_contexts': {
+      case 'list_agent_contexts': {
           try {
               const sessions = await contextService.listSessions();
               return {
@@ -1752,28 +1594,12 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                       name: s.name || 'Untitled',
                       type: s.type,
                       status: s.status,
-                      created: s.createdAt
+                      created: s.createdAt,
+                      agentId: s.metadata?.agentId
                   }))
               };
           } catch (e: any) {
               return { error: `Failed to list contexts: ${e.message}` };
-          }
-      }
-
-      case 'write_file': {
-          const { file_path, content } = args;
-          if (!file_path || typeof file_path !== 'string') return { error: "Missing file_path" };
-          if (content === undefined || typeof content !== 'string') return { error: "Missing content" };
-
-          try {
-              // Ensure directory exists
-              const dir = path.dirname(file_path);
-              await fs.promises.mkdir(dir, { recursive: true });
-              
-              await fs.promises.writeFile(file_path, content, 'utf-8');
-              return { status: 'success', file_path, size: content.length };
-          } catch (error: any) {
-              return { error: `Failed to write file: ${error.message}` };
           }
       }
 
@@ -1800,12 +1626,9 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                   return { status: "Transaction committed (0 operations)." };
               }
 
-              // Execute all operations
               const results = [];
               for (const op of queue) {
                   try {
-                      // We must re-invoke the logic without queueing
-                      // To do this reliably, we'll call the tool logic directly but with an internal flag
                       const res = await executor(op.name, { ...op.args, _internal_bypass_queue: true });
                       if (res && typeof res === 'object' && res.error) {
                           results.push({ name: op.name, status: "failed", error: res.error });

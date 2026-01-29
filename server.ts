@@ -16,7 +16,7 @@ import { ProjectMeta } from './types.js';
 import { loggerService } from './services/loggerService.js';
 import { systemPromptService } from './services/systemPromptService.js';
 import { fileURLToPath } from 'url';
-import { loopService } from './services/loopService.js';
+import { agentService } from './services/agentService.js';
 import { contextService } from './services/contextService.js';
 import { documentMeaningService } from './services/documentMeaningService.js';
 import { redisService } from './services/redisService.js';
@@ -1038,22 +1038,22 @@ app.get('/api/traces/:id', async (req, res) => {
     }
 });
 
-// Loop Management
-app.get('/api/loops', async (req, res) => {
+// Agent Management
+app.get('/api/agents', async (req, res) => {
     try {
-        const loops = await loopService.listLoops();
-        res.json({ loops });
+        const agents = await agentService.listAgents();
+        res.json({ agents });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
 
-app.get('/api/loops/logs', async (req, res) => {
-    const { loopId, limit, includeTraces } = req.query;
+app.get('/api/agents/logs', async (req, res) => {
+    const { agentId, limit, includeTraces } = req.query;
     try {
-        const logs = await loopService.getExecutionLogs(
-            loopId as string,
+        const logs = await agentService.getExecutionLogs(
+            agentId as string,
             limit ? Number(limit) : 20,
             includeTraces === 'true'
         );
@@ -1064,54 +1064,68 @@ app.get('/api/loops/logs', async (req, res) => {
     }
 });
 
-app.get('/api/loops/:id', async (req, res) => {
+app.get('/api/agents/:id', async (req, res) => {
     try {
-        const loop = await loopService.getLoop(req.params.id);
-        if (!loop) return res.status(404).json({ error: 'Loop not found' });
-        res.json(loop);
+        const agent = await agentService.getAgent(req.params.id);
+        if (!agent) return res.status(404).json({ error: 'Agent not found' });
+        res.json(agent);
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
 
-app.post('/api/loops', async (req, res) => {
+app.post('/api/agents', async (req, res) => {
     const { id, schedule, prompt, enabled } = req.body;
-    if (!id || !schedule || !prompt) {
-        res.status(400).json({ error: 'id, schedule, and prompt are required' });
+    if (!id || !prompt) {
+        res.status(400).json({ error: 'id and prompt are required' });
         return;
     }
     try {
-        const loop = await loopService.upsertLoop(id, schedule, prompt, enabled ?? true);
-        res.json(loop);
+        const agent = await agentService.upsertAgent(id, prompt, enabled ?? true, schedule);
+        res.json(agent);
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
 
-app.put('/api/loops/:id', async (req, res) => {
+app.put('/api/agents/:id', async (req, res) => {
     const { schedule, prompt, enabled } = req.body;
     const { id } = req.params;
-    if (!schedule || !prompt) {
-        res.status(400).json({ error: 'schedule and prompt are required' });
+    if (!prompt) {
+        res.status(400).json({ error: 'prompt is required' });
         return;
     }
     try {
-        const loop = await loopService.upsertLoop(id, schedule, prompt, enabled ?? true);
-        res.json(loop);
+        const agent = await agentService.upsertAgent(id, prompt, enabled ?? true, schedule);
+        res.json(agent);
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
 
-app.delete('/api/loops/:id', async (req, res) => {
+app.delete('/api/agents/:id', async (req, res) => {
     try {
-        await loopService.deleteLoop(req.params.id);
+        await agentService.deleteAgent(req.params.id);
         res.json({ status: 'success' });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+// Trigger Agent Execution (Message Injection)
+app.post('/api/agents/:id/trigger', async (req, res) => {
+    const { id } = req.params;
+    const { message } = req.body;
+    try {
+        // executeAgent handles context creation and execution logic
+        await agentService.executeAgent(id, message);
+        res.json({ status: 'triggered' });
+    } catch (e) {
+        loggerService.error(`Error triggering agent ${id}`, { error: e });
         res.status(500).json({ error: String(e) });
     }
 });
@@ -1264,6 +1278,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             loggerService.error("Context recovery failed", { error });
         }
 
-        await loopService.startBackgroundThreads();
+        await agentService.startBackgroundThreads();
     });
 }
