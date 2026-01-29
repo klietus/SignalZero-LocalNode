@@ -27,6 +27,11 @@ export interface AdminUser {
   salt: string;
 }
 
+export interface VoiceSettings {
+  pulseServer?: string;
+  wakeWord?: string;
+}
+
 export interface SystemSettings {
   redis?: {
     server?: string;
@@ -39,81 +44,26 @@ export interface SystemSettings {
     useExternal?: boolean;
   };
   inference?: Partial<InferenceSettings>;
+  voice?: VoiceSettings;
   adminUser?: AdminUser;
-  googleSearch?: {
-    apiKey?: string;
-    cx?: string;
-  };
-}
 
-export interface InferenceConfiguration {
-  apiKey: string;
-  endpoint: string;
-  model: string;
-  loopModel: string;
-  visionModel: string;
-}
 
-export interface InferenceSettings {
-  provider: 'local' | 'openai' | 'gemini';
-  apiKey: string;
-  endpoint: string;
-  model: string;
-  loopModel: string;
-  visionModel: string;
-  savedConfigs?: Record<string, InferenceConfiguration>;
-}
-
-// In-memory store for saved configs, loaded from file
-let _savedInferenceConfigs: Record<string, InferenceConfiguration> = {};
-let _adminUser: AdminUser | null = null;
-
-const savePersistedSettings = (settings: any) => {
-  try {
-    // Merge current savedConfigs into the object being saved
-    const payload = {
-      ...settings,
-      inference: {
-        ...settings.inference,
-        savedConfigs: _savedInferenceConfigs
-      },
-      adminUser: _adminUser
-    };
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(payload, null, 2));
-  } catch (e) {
-    console.error('Failed to save settings file', e);
-  }
-};
+// ... existing interfaces ...
 
 const loadPersistedSettings = () => {
   if (fs.existsSync(SETTINGS_FILE)) {
     try {
       const data = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
-      if (data.redis) {
-        if (data.redis.server) process.env.REDIS_SERVER = data.redis.server;
-        if (data.redis.port) process.env.REDIS_PORT = String(data.redis.port);
-        if (data.redis.password) process.env.REDIS_PASSWORD = data.redis.password;
-      }
-      if (data.chroma) {
-        if (data.chroma.url) process.env.CHROMA_URL = data.chroma.url;
-        if (data.chroma.collection) process.env.CHROMA_COLLECTION = data.chroma.collection;
-        if (data.chroma.useExternal !== undefined) process.env.USE_EXTERNAL_VECTOR_DB = String(data.chroma.useExternal);
-      }
-      if (data.inference) {
-        if (data.inference.provider) process.env.INFERENCE_PROVIDER = data.inference.provider;
-        if (data.inference.apiKey) process.env.INFERENCE_API_KEY = data.inference.apiKey;
-        if (data.inference.endpoint) process.env.INFERENCE_ENDPOINT = data.inference.endpoint;
-        if (data.inference.model) process.env.INFERENCE_MODEL = data.inference.model;
-        if (data.inference.loopModel) process.env.INFERENCE_LOOP_MODEL = data.inference.loopModel;
-        if (data.inference.visionModel) process.env.INFERENCE_VISION_MODEL = data.inference.visionModel;
-        
-        if (data.inference.savedConfigs) {
-           _savedInferenceConfigs = data.inference.savedConfigs;
-        }
-      }
+      if (data.redis) { /* ... */ }
+      if (data.chroma) { /* ... */ }
+      if (data.inference) { /* ... */ }
       if (data.googleSearch) {
         if (data.googleSearch.apiKey) process.env.GOOGLE_CUSTOM_SEARCH_KEY = data.googleSearch.apiKey;
         if (data.googleSearch.cx) process.env.GOOGLE_CSE_ID = data.googleSearch.cx;
+      }
+      if (data.voice) {
+          if (data.voice.pulseServer) process.env.PULSE_SERVER = data.voice.pulseServer;
+          if (data.voice.wakeWord) process.env.WAKE_WORD = data.voice.wakeWord;
       }
       if (data.adminUser) {
           _adminUser = data.adminUser;
@@ -294,6 +244,10 @@ export const settingsService = {
         apiKey: process.env.GOOGLE_CUSTOM_SEARCH_KEY || '',
         cx: process.env.GOOGLE_CSE_ID || ''
       },
+      voice: {
+          pulseServer: process.env.PULSE_SERVER || '',
+          wakeWord: process.env.WAKE_WORD || 'axiom'
+      },
       adminUser: _adminUser || undefined
     };
   },
@@ -337,6 +291,26 @@ export const settingsService = {
     if (settings.googleSearch) {
         if (settings.googleSearch.apiKey !== undefined) process.env.GOOGLE_CUSTOM_SEARCH_KEY = settings.googleSearch.apiKey;
         if (settings.googleSearch.cx !== undefined) process.env.GOOGLE_CSE_ID = settings.googleSearch.cx;
+    }
+
+    if (settings.voice) {
+        if (settings.voice.pulseServer !== undefined) process.env.PULSE_SERVER = settings.voice.pulseServer;
+        if (settings.voice.wakeWord !== undefined) process.env.WAKE_WORD = settings.voice.wakeWord;
+        
+        // Push config to Voice Server
+        const voiceUrl = 'http://voiceservice:8000';
+        // Note: fetch is available globally in Node 18+ (which we are using)
+        fetch(`${voiceUrl}/config`, {
+            method: 'POST',
+            headers: { 
+                'Content-Type': 'application/json',
+                'x-internal-key': process.env.INTERNAL_SERVICE_KEY || ''
+            },
+            body: JSON.stringify({
+                pulse_server: settings.voice.pulseServer,
+                wake_word: settings.voice.wakeWord
+            })
+        }).catch(err => console.error("Failed to push config to Voice Server", err));
     }
 
     if (settings.adminUser) {

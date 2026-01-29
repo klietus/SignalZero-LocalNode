@@ -77,6 +77,12 @@ const requireAuth = (req: express.Request, res: express.Response, next: express.
     const publicPaths = ['/api/health', '/api/auth/status', '/api/auth/setup', '/api/auth/login'];
     if (publicPaths.includes(req.path)) return next();
 
+    // Check for Internal Service Key
+    const internalKey = req.headers['x-internal-key'];
+    if (internalKey && internalKey === process.env.INTERNAL_SERVICE_KEY) {
+        return next();
+    }
+
     const authHeader = req.headers['authorization'] || req.headers['x-auth-token'];
     const token = typeof authHeader === 'string' ? authHeader.replace('Bearer ', '') : null;
 
