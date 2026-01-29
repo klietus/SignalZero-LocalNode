@@ -965,6 +965,20 @@ export const processMessageAsync = async (
       await contextService.clearCancellation(contextSessionId);
       await contextService.clearActiveMessage(contextSessionId);
       loggerService.info(`finished with message id ${userMessageId || 'unknown'}`);
+
+      // Drain Message Queue
+      const nextItem = await contextService.popNextMessage(contextSessionId);
+      if (nextItem) {
+          loggerService.info(`Draining queued message for ${contextSessionId}`, { sourceId: nextItem.sourceId });
+          // Re-lock the context
+          const queueMsgId = `queued-${Date.now()}`;
+          await contextService.setActiveMessage(contextSessionId, queueMsgId);
+          
+          // Execute next message (Fire & Forget to avoid stack overflow on long queues)
+          // We reuse the same toolExecutor and systemInstruction
+          processMessageAsync(contextSessionId, nextItem.message, toolExecutor, systemInstruction, queueMsgId)
+              .catch(err => loggerService.error("Error processing queued message", { error: err }));
+      }
   }
 };
 

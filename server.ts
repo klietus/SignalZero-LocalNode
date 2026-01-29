@@ -361,6 +361,30 @@ app.post('/api/chat/stop', async (req, res) => {
     }
 });
 
+// Trigger Context Processing (Queue Drain)
+app.post('/api/contexts/:id/trigger', async (req, res) => {
+    const { id } = req.params;
+    try {
+        if (!await contextService.hasActiveMessage(id) && await contextService.hasQueuedMessages(id)) {
+            const nextItem = await contextService.popNextMessage(id);
+            if (nextItem) {
+                loggerService.info(`Triggering queued message for ${id}`, { sourceId: nextItem.sourceId });
+                const queueMsgId = `queued-${Date.now()}`;
+                await contextService.setActiveMessage(id, queueMsgId);
+                
+                const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), id);
+                processMessageAsync(id, nextItem.message, toolExecutor, activeSystemPrompt, queueMsgId);
+                res.json({ status: 'triggered' });
+                return;
+            }
+        }
+        res.json({ status: 'idle' });
+    } catch (e) {
+        loggerService.error(`Error triggering context ${id}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
 // System Prompt
 app.get('/api/system/prompt', (req, res) => {
     res.json({ prompt: activeSystemPrompt });

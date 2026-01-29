@@ -273,6 +273,7 @@ export interface ContextMessage {
 
 export interface ContextSession {
   id: string;
+  name?: string;
   type: ContextKind;
   status: ContextStatus;
   createdAt: string;

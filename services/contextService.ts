@@ -5,6 +5,7 @@ import { ContextMessage, ContextSession, ContextHistoryGroup } from '../types.js
 const CONTEXT_INDEX_KEY = 'context:index';
 const sessionKey = (id: string) => `context:session:${id}`;
 const historyKey = (id: string) => `context:history:${id}`;
+const queueKey = (id: string) => `context:queue:${id}`;
 
 const generateId = () => `ctx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -64,10 +65,11 @@ const writeToolNames = new Set([
 ]);
 
 export const contextService = {
-  async createSession(type: ContextSession['type'], metadata?: Record<string, any>): Promise<ContextSession> {
+  async createSession(type: ContextSession['type'], metadata?: Record<string, any>, name?: string): Promise<ContextSession> {
     const now = new Date().toISOString();
     const session: ContextSession = {
       id: generateId(),
+      name: name || `Context ${new Date().toLocaleTimeString()}`,
       type,
       status: 'open',
       createdAt: now,
@@ -94,6 +96,35 @@ export const contextService = {
 
   async getSession(id: string): Promise<ContextSession | null> {
     return loadSession(id);
+  },
+
+  async renameSession(id: string, name: string): Promise<ContextSession | null> {
+      const session = await loadSession(id);
+      if (!session) return null;
+      session.name = name;
+      session.updatedAt = new Date().toISOString();
+      await persistSession(session);
+      return session;
+  },
+
+  async enqueueMessage(targetId: string, message: string, sourceId: string): Promise<void> {
+      const payload = JSON.stringify({ message, sourceId, timestamp: Date.now() });
+      await redisService.request(['RPUSH', queueKey(targetId), payload]);
+  },
+
+  async popNextMessage(targetId: string): Promise<{ message: string, sourceId: string } | null> {
+      const payload = await redisService.request(['LPOP', queueKey(targetId)]);
+      if (!payload) return null;
+      try {
+          return JSON.parse(payload);
+      } catch {
+          return null;
+      }
+  },
+
+  async hasQueuedMessages(targetId: string): Promise<boolean> {
+      const len = await redisService.request(['LLEN', queueKey(targetId)]);
+      return (len as number) > 0;
   },
 
   async getHistory(id: string, since?: string): Promise<ContextMessage[]> {
