@@ -289,6 +289,11 @@ class DocumentMeaningService {
                 let client: OpenAI;
                 if (settings.provider === 'openai') {
                     client = new OpenAI({ apiKey });
+                } else if (settings.provider === 'kimi2') {
+                    client = new OpenAI({ 
+                        baseURL: 'https://api.moonshot.ai/v1',
+                        apiKey: apiKey 
+                    });
                 } else {
                      client = new OpenAI({ 
                          baseURL: settings.endpoint, 

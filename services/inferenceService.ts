@@ -32,11 +32,52 @@ const MAX_TOOL_LOOPS = 15;
 
 export const getClient = () => {
   const { endpoint, provider, apiKey } = settingsService.getInferenceSettings();
+
+  let effectiveEndpoint = endpoint;
+  if (provider === 'openai') effectiveEndpoint = 'https://api.openai.com/v1';
+  if (provider === 'kimi2') effectiveEndpoint = 'https://api.moonshot.ai/v1';
+
+  loggerService.info(`getClient called`, { 
+      provider, 
+      effectiveEndpoint,
+      originalEndpoint: endpoint,
+      hasApiKey: !!apiKey, 
+      apiKeyPreview: apiKey ? `${apiKey.slice(0, 4)}...${apiKey.slice(-4)}` : 'none' 
+  });
   
   if (provider === 'openai') {
       return new OpenAI({
         baseURL: 'https://api.openai.com/v1',
         apiKey: apiKey,
+      });
+  }
+
+  if (provider === 'kimi2') {
+      loggerService.info("Initializing Kimi/Moonshot Client", { baseURL: 'https://api.moonshot.ai/v1' });
+      return new OpenAI({
+        baseURL: 'https://api.moonshot.ai/v1',
+        apiKey: apiKey ? apiKey.trim() : apiKey,
+        fetch: async (url: any, init: any = {}) => {
+            // Normalize headers
+            const headers = init.headers || {};
+            let authHeader = headers['Authorization'] || headers['authorization'];
+            
+            loggerService.info("Kimi Request Debug", { 
+                url: url.toString(),
+                hasAuthHeader: !!authHeader,
+                authHeaderPreview: authHeader ? authHeader.substring(0, 20) + '...' : 'MISSING',
+                method: init.method
+            });
+
+            // Fallback: If missing, manually inject (Safe-guard)
+            if (!authHeader && apiKey) {
+                 loggerService.warn("Injecting missing Authorization header for Kimi");
+                 init.headers = { ...headers, 'Authorization': `Bearer ${apiKey}` };
+            }
+
+            // @ts-ignore
+            return fetch(url, init);
+        }
       });
   }
 

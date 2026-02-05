@@ -1046,6 +1046,10 @@ components:
     InferenceSettings:
       type: object
       properties:
+        provider:
+          type: string
+          enum: [local, openai, gemini, kimi2]
+          description: Inference provider backend
         endpoint:
           type: string
           description: OpenAI-compatible inference endpoint (LM Studio default http://localhost:1234/v1)
@@ -1055,6 +1059,9 @@ components:
     InferenceSettingsUpdate:
       type: object
       properties:
+        provider:
+          type: string
+          enum: [local, openai, gemini, kimi2]
         endpoint:
           type: string
         model:

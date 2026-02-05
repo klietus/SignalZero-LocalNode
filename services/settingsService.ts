@@ -221,7 +221,7 @@ export const settingsService = {
   // --- Inference Settings ---
   getInferenceSettings: (): InferenceSettings => {
     return {
-      provider: (process.env.INFERENCE_PROVIDER as 'local' | 'openai' | 'gemini') || 'local',
+      provider: (process.env.INFERENCE_PROVIDER as 'local' | 'openai' | 'gemini' | 'kimi2') || 'local',
       apiKey: process.env.INFERENCE_API_KEY || '',
       endpoint: process.env.INFERENCE_ENDPOINT || 'http://localhost:1234/v1',
       model: process.env.INFERENCE_MODEL || 'openai/gpt-oss-120b',
@@ -320,7 +320,7 @@ export const settingsService = {
       const currentInference = settingsService.getInferenceSettings();
       const inferenceInput = settings.inference as Record<string, unknown>;
       settingsService.setInferenceSettings({
-        provider: (inferenceInput.provider as 'local' | 'openai' | 'gemini' | undefined) ?? currentInference.provider,
+        provider: (inferenceInput.provider as 'local' | 'openai' | 'gemini' | 'kimi2' | undefined) ?? currentInference.provider,
         apiKey: (inferenceInput.apiKey as string | undefined) ?? currentInference.apiKey,
         endpoint: (inferenceInput.endpoint as string | undefined) ?? currentInference.endpoint,
         model: (inferenceInput.model as string | undefined) ?? currentInference.model,
