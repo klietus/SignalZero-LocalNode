@@ -1004,7 +1004,9 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
               const deleted: { domain: string, count: number }[] = [];
               for (const [domain, ids] of Object.entries(domainMap)) {
                   if (ids.length === 0) continue;
-                  await domainService.deleteSymbols(domain, ids, cascade);
+                  for (const id of ids) {
+                      await domainService.deleteSymbol(domain, id, cascade);
+                  }
                   deleted.push({ domain, count: ids.length });
               }
 

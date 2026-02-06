@@ -37,7 +37,7 @@ describe('ToolsService', () => {
         vi.spyOn(domainService, 'listDomains').mockResolvedValue(['root', 'dom']);
         vi.spyOn(domainService, 'findById').mockResolvedValue(null);
         vi.spyOn(domainService, 'bulkUpsert').mockResolvedValue(undefined as any);
-        vi.spyOn(domainService, 'deleteSymbols').mockResolvedValue(undefined);
+        vi.spyOn(domainService, 'deleteSymbol').mockResolvedValue(true);
         vi.spyOn(domainService, 'search').mockResolvedValue([]);
         vi.spyOn(domainService, 'getMetadata').mockResolvedValue([]);
         vi.spyOn(domainService, 'processRefactorOperation').mockResolvedValue({ count: 1, renamedIds: [] });
@@ -85,12 +85,12 @@ describe('ToolsService', () => {
         expect(domainService.processRefactorOperation).toHaveBeenCalledWith([{ old_id: 'old', symbol_data: sym }]);
     });
 
-    it('delete_symbols calls domainService.deleteSymbols', async () => {
+    it('delete_symbols calls domainService.deleteSymbol', async () => {
         // Needs to find symbol to infer domain
         vi.mocked(domainService.findById).mockResolvedValue({ id: 's1', symbol_domain: 'dom' } as any);
 
         await toolExecutor('delete_symbols', { symbol_ids: ['s1'] });
-        expect(domainService.deleteSymbols).toHaveBeenCalledWith('dom', ['s1'], true);
+        expect(domainService.deleteSymbol).toHaveBeenCalledWith('dom', 's1', true);
     });
 
     it('find_symbols supports structured filtering when no semantic query is provided', async () => {

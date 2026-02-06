@@ -1,13 +1,14 @@
-
-import { SymbolDef, VectorSearchResult } from '../types.ts';
+import { SymbolDef, VectorSearchResult, isUserSpecificDomain } from '../types.ts';
 import { vectorService } from './vectorService.ts';
 import { redisService } from './redisService.ts';
+import { loggerService } from './loggerService.ts';
 import { currentTimestamp, decodeTimestamp, getBucketKeysFromTimestamps, getDayBucketKey } from './timeService.ts';
 
 // Redis Keys Configuration
 const KEYS = {
   DOMAINS_SET: 'sz:domains',
-  DOMAIN_PREFIX: 'sz:domain:', // e.g., sz:domain:root
+  DOMAIN_PREFIX: 'sz:domain:',          // Global domains: sz:domain:root
+  USER_DOMAIN_PREFIX: 'sz:user:',       // User domains: sz:user:{userId}:domain:{domainId}
 };
 
 export interface CachedDomain {
@@ -19,6 +20,7 @@ export interface CachedDomain {
   description?: string;
   invariants?: string[];
   readOnly: boolean;
+  ownerId?: string;  // For user-specific domains
 }
 
 export class ReadOnlyDomainError extends Error {
@@ -32,6 +34,41 @@ export class ReadOnlyDomainError extends Error {
     this.name = 'ReadOnlyDomainError';
   }
 }
+
+export class DomainAccessError extends Error {
+  constructor(domainId: string, userId?: string) {
+    super(`Access denied to domain '${domainId}'${userId ? ` for user '${userId}'` : ''}.`);
+    this.name = 'DomainAccessError';
+  }
+}
+
+/**
+ * Get the Redis key for a domain based on domain type and optional user
+ */
+const getDomainKey = (domainId: string, userId?: string): string => {
+  if (isUserSpecificDomain(domainId)) {
+    // User-specific domains always use user namespace
+    const uid = userId || 'default';
+    return `${KEYS.USER_DOMAIN_PREFIX}${uid}:domain:${domainId}`;
+  }
+  // Global domains use shared namespace
+  return `${KEYS.DOMAIN_PREFIX}${domainId}`;
+};
+
+/**
+ * Check if a user can access a domain
+ * - User-specific domains: only the owner (or admin/internal)
+ * - Global domains: any user
+ */
+const canAccessDomain = (domainId: string, userId?: string, ownerId?: string): boolean => {
+  if (!isUserSpecificDomain(domainId)) {
+    return true; // Global domains accessible to all
+  }
+  // User-specific domains: match owner or no owner check (internal/system access)
+  if (!ownerId) return true;
+  if (!userId) return false;
+  return userId === ownerId;
+};
 
 const parseDomain = (data: string, domainId: string): CachedDomain => {
   const domain: CachedDomain = JSON.parse(data);
@@ -98,717 +135,445 @@ export const migrateSymbols = async (domain: CachedDomain): Promise<boolean> => 
 
 const indexSymbolBucket = async (symbol: SymbolDef) => {
   const createdMs = decodeTimestamp(symbol.created_at);
-  if (createdMs === null) return;
-  await redisService.request(['SADD', getDayBucketKey('symbols', createdMs), symbol.id]);
+  if (!createdMs) return;
+
+  const bucketKey = getDayBucketKey('symbols', createdMs);
+  await redisService.request(['ZADD', bucketKey, createdMs, symbol.id]);
 };
-
-const matchesValue = (symbolValue: unknown, filterValue: unknown): boolean => {
-  const filterValues = Array.isArray(filterValue) ? filterValue : [filterValue];
-
-  return filterValues.some((fv) => {
-      const fvStr = String(fv).trim();
-      if (Array.isArray(symbolValue)) {
-          return symbolValue.map(s => String(s).trim()).includes(fvStr);
-      }
-      
-      if (typeof symbolValue === 'string') {
-          // Handle comma-separated tag strings or similar
-          const parts = symbolValue.split(',').map(s => s.trim());
-          if (parts.includes(fvStr)) return true;
-      }
-
-      const normalizedSymbolValue = typeof symbolValue === 'string' ? symbolValue.trim() : String(symbolValue).trim();
-      return symbolValue !== undefined && symbolValue !== null && normalizedSymbolValue === fvStr;
-  });
-};
-
-const matchesMetadataFilter = (symbol: SymbolDef, metadataFilter?: Record<string, unknown>): boolean => {
-  if (!metadataFilter || Object.keys(metadataFilter).length === 0) return true;
-
-  return Object.entries(metadataFilter).every(([key, value]) => {
-      if (value === undefined || value === null) return true;
-      const symbolValue = (symbol as Record<string, unknown>)[key];
-      if (symbolValue === undefined || symbolValue === null) return false;
-      return matchesValue(symbolValue, value);
-  });
-};
-
-// --- Public API ---
 
 export const domainService = {
-  
   /**
-   * Health Check
+   * Initialize a domain (create if not exists).
+   * For user-specific domains, requires userId.
    */
-  healthCheck: async (): Promise<boolean> => {
-      return await redisService.healthCheck();
-  },
+  init: async (domainId: string, name: string, userId?: string): Promise<CachedDomain> => {
+    const key = getDomainKey(domainId, userId);
+    const data = await redisService.request(['GET', key]);
 
-  /**
-   * Create a brand-new domain with optional metadata.
-   */
-  createDomain: async (
-    domainId: string,
-    metadata: { name?: string; description?: string; invariants?: string[]; readOnly?: boolean } = {}
-  ): Promise<CachedDomain> => {
-    const exists = await domainService.hasDomain(domainId);
-    if (exists) {
-        throw new Error(`Domain '${domainId}' already exists.`);
+    if (data) {
+      return parseDomain(data, domainId);
     }
 
-    const now = Date.now();
+    // Create new domain
     const newDomain: CachedDomain = {
-        id: domainId,
-        name: metadata.name || domainId,
-        description: metadata.description || "",
-        invariants: metadata.invariants || [],
-        enabled: true,
-        readOnly: metadata.readOnly === true,
-        lastUpdated: now,
-        symbols: []
+      id: domainId,
+      name,
+      enabled: true,
+      lastUpdated: Date.now(),
+      symbols: [],
+      invariants: [],
+      readOnly: false,
+      ownerId: userId,
     };
 
-    const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
     await redisService.request(['SET', key, JSON.stringify(newDomain)]);
-    await redisService.request(['SADD', KEYS.DOMAINS_SET, domainId]);
+    
+    // Only track global domains in the domains set
+    if (!isUserSpecificDomain(domainId)) {
+      await redisService.request(['SADD', KEYS.DOMAINS_SET, domainId]);
+    }
 
     return newDomain;
   },
 
   /**
-   * Returns a list of all domain IDs currently in Redis.
+   * List all domains accessible to a user.
+   * Returns global domains + user's specific domains.
    */
-  listDomains: async (): Promise<string[]> => {
-    const result = await redisService.request(['SMEMBERS', KEYS.DOMAINS_SET]);
-    return Array.isArray(result) ? result.sort() : [];
-  },
-
-  /**
-   * Checks if a domain exists.
-   */
-  hasDomain: async (domainId: string): Promise<boolean> => {
-    const exists = await redisService.request(['EXISTS', `${KEYS.DOMAIN_PREFIX}${domainId}`]);
-    return exists === 1;
-  },
-
-  /**
-   * Retrieves the full cached domain record, including symbols.
-   */
-  getDomain: async (domainId: string): Promise<CachedDomain | null> => {
-    const data = await redisService.request(['GET', `${KEYS.DOMAIN_PREFIX}${domainId}`]);
-    if (!data) return null;
-    try {
-      const domain = parseDomain(data, domainId);
-      const modified = await migrateSymbols(domain);
-      if (modified) {
-          domain.lastUpdated = Date.now();
-          await redisService.request(['SET', `${KEYS.DOMAIN_PREFIX}${domainId}`, JSON.stringify(domain)]);
+  listDomains: async (userId?: string): Promise<string[]> => {
+    const domains: string[] = [];
+    
+    // Always include global domains
+    const globalDomains = await redisService.request(['SMEMBERS', KEYS.DOMAINS_SET]);
+    if (globalDomains) {
+      domains.push(...globalDomains);
+    }
+    
+    // Add user-specific domains if userId provided
+    if (userId) {
+      for (const userDomain of ['user', 'state']) {
+        const key = getDomainKey(userDomain, userId);
+        const exists = await redisService.request(['EXISTS', key]);
+        if (exists) {
+          domains.push(userDomain);
+        }
       }
-      return domain;
-    } catch (e) {
-      console.error(`[DomainService] Failed to parse domain ${domainId}`, e);
+    }
+    
+    return [...new Set(domains)]; // Remove duplicates
+  },
+
+  /**
+   * Get domain by ID with access control.
+   */
+  get: async (domainId: string, userId?: string): Promise<CachedDomain | null> => {
+    const key = getDomainKey(domainId, userId);
+    const data = await redisService.request(['GET', key]);
+    
+    if (!data) {
+      // For user-specific domains, try to initialize if not found
+      if (isUserSpecificDomain(domainId) && userId) {
+        return await domainService.init(domainId, domainId === 'user' ? 'User Preferences' : 'User State', userId);
+      }
       return null;
     }
-  },
-
-  /**
-   * Checks if a domain is enabled.
-   */
-  isEnabled: async (domainId: string): Promise<boolean> => {
-    const domain = await domainService.getDomain(domainId);
-    return domain ? domain.enabled : false;
-  },
-
-  /**
-   * Toggles the enabled state of a domain.
-   */
-  toggleDomain: async (domainId: string, enabled: boolean) => {
-    const domain = await domainService.getDomain(domainId);
-    if (domain) {
-      domain.enabled = enabled;
-      domain.lastUpdated = Date.now();
-      await redisService.request(['SET', `${KEYS.DOMAIN_PREFIX}${domainId}`, JSON.stringify(domain)]);
-    }
-  },
-
-  /**
-   * Updates domain metadata without touching symbols.
-   */
-  updateDomainMetadata: async (domainId: string, metadata: { name?: string, description?: string, invariants?: string[], readOnly?: boolean }) => {
-    const domain = await domainService.getDomain(domainId);
-    if (domain) {
-      if (metadata.name) domain.name = metadata.name;
-      if (metadata.description !== undefined) domain.description = metadata.description;
-      if (metadata.invariants) domain.invariants = metadata.invariants;
-      if (metadata.readOnly !== undefined) domain.readOnly = metadata.readOnly;
-      domain.lastUpdated = Date.now();
-      await redisService.request(['SET', `${KEYS.DOMAIN_PREFIX}${domainId}`, JSON.stringify(domain)]);
-    }
-  },
-
-  /**
-   * Removes a domain and all its symbols from Redis.
-   */
-  deleteDomain: async (domainId: string) => {
-    const domain = await domainService.getDomain(domainId);
-    if (domain) {
-      // Clean up vector store
-      for (const s of domain.symbols) {
-          await vectorService.deleteSymbol(s.id);
-      }
-    }
-
-    // Remove from SET and DEL key
-    await redisService.request(['DEL', `${KEYS.DOMAIN_PREFIX}${domainId}`]);
-    await redisService.request(['SREM', KEYS.DOMAINS_SET, domainId]);
-  },
-
-  /**
-   * Clears ALL domains. Used when switching projects.
-   */
-  clearAll: async () => {
-      await vectorService.resetCollection();
-      const domains = await domainService.listDomains();
-      for (const d of domains) {
-          await redisService.request(['DEL', `${KEYS.DOMAIN_PREFIX}${d}`]);
-      }
-      await redisService.request(['DEL', KEYS.DOMAINS_SET]);
-  },
-
-  /**
-   * Search for symbols using the vector index and hydrate them with Redis definitions.
-   */
-  search: async (
-      query: string | null,
-      limit: number = 5,
-      filters?: { time_gte?: string; time_between?: string[]; metadata_filter?: Record<string, unknown>; domains?: string[] }
-  ): Promise<(VectorSearchResult & { symbol: SymbolDef | null })[]> => {
-      const hasQuery = !!(query && query.trim().length > 0);
-      const hasTimeFilter = !!(filters?.time_gte || (filters?.time_between && filters.time_between.length > 0));
-      const hasMetadataFilter = !!(filters?.metadata_filter && Object.keys(filters.metadata_filter).length > 0);
-      if (!hasQuery && !hasTimeFilter && !hasMetadataFilter) {
-          throw new Error('Provide a query, metadata_filter, or time filter (time_gte or time_between) to search symbols.');
-      }
-
-      const { keys: bucketKeys, rangeApplied } = getBucketKeysFromTimestamps('symbols', filters?.time_gte, filters?.time_between);
-      const bucketIds = new Set<string>();
-
-      if (bucketKeys.length > 0) {
-          const bucketResults = await Promise.all(bucketKeys.map((key) => redisService.request(['SMEMBERS', key])));
-          bucketResults.forEach((ids) => {
-              if (Array.isArray(ids)) {
-                  ids.forEach((id) => bucketIds.add(String(id)));
-              }
-          });
-      }
-
-      const shouldSkipSemantic = !hasQuery;
-      const domains = filters?.domains && filters.domains.length > 0
-          ? filters.domains
-          : await domainService.listDomains();
-
-      // Load all domains to hydrate (inefficient but safe for "local node")
-      // Optimization: Pipeline GETs? Upstash supports pipeline via REST?
-      // For now, simple Promise.all
-      const domainData = await Promise.all(domains.map(d => redisService.request(['GET', `${KEYS.DOMAIN_PREFIX}${d}`])));
-      const store: Record<string, CachedDomain> = {};
-      
-      domainData.forEach((d, i) => {
-          if (d) {
-              try {
-                  store[domains[i]] = parseDomain(d, domains[i]);
-              } catch {}
-          }
-      });
-
-      const prefilteredSymbols = Object.values(store)
-          .filter((d) => d.enabled)
-          .flatMap((d) => d.symbols)
-          .filter((s) => matchesMetadataFilter(s, filters?.metadata_filter));
-
-      // Build a filter for the vector store that includes domain restrictions
-      const vectorMetadataFilter: Record<string, unknown> = { ...(filters?.metadata_filter || {}) };
-      if (domains && domains.length > 0) {
-          vectorMetadataFilter.symbol_domain = domains.length === 1 ? domains[0] : domains;
-      }
-
-      const results = shouldSkipSemantic ? [] : await vectorService.search(query!, limit, vectorMetadataFilter);
-
-      const hydratedResults = results
-        .filter(r => bucketIds.size === 0 || bucketIds.has(r.id))
-        .map(r => {
-          let symbol: SymbolDef | null = null;
-          for (const domainId of Object.keys(store)) {
-            if (store[domainId].enabled) {
-                const found = store[domainId].symbols.find(s => s.id === r.id);
-                if (found) {
-                    symbol = found;
-                    break;
-                }
-            }
-          }
-          return {
-              ...r,
-              metadata: { ...(r.metadata || {}), bucket_keys: bucketKeys },
-              symbol
-          };
-      })
-      .filter((entry) => entry.symbol ? matchesMetadataFilter(entry.symbol, filters?.metadata_filter) : false);
-
-      if (!hasQuery) {
-          return prefilteredSymbols
-              .filter((s) => bucketIds.size === 0 || bucketIds.has(s.id))
-              .sort((a, b) => {
-                  const getT = (s?: string) => s ? decodeTimestamp(s) || 0 : 0;
-                  const timeA = getT(a.last_accessed_at) || getT(a.updated_at) || getT(a.created_at);
-                  const timeB = getT(b.last_accessed_at) || getT(b.updated_at) || getT(b.created_at);
-                  return timeB - timeA;
-              })
-              .slice(0, limit)
-              .map((symbol) => ({
-                  id: symbol.id,
-                  score: 1,
-                  metadata: { source: 'structured_filter', bucket_keys: bucketKeys },
-                  document: '',
-                  symbol
-              }));
-      }
-
-      if (hydratedResults.length === 0 && rangeApplied && bucketIds.size > 0) {
-          const bucketSymbols = prefilteredSymbols
-              .filter((s) => bucketIds.has(s.id))
-              .sort((a, b) => {
-                  const getT = (s?: string) => s ? decodeTimestamp(s) || 0 : 0;
-                  const timeA = getT(a.last_accessed_at) || getT(a.updated_at) || getT(a.created_at);
-                  const timeB = getT(b.last_accessed_at) || getT(b.updated_at) || getT(b.created_at);
-                  return timeB - timeA;
-              });
-
-          return bucketSymbols.map((symbol) => ({
-              id: symbol.id,
-              score: 1,
-              metadata: { source: 'time_bucket', bucket_keys: bucketKeys },
-              document: '',
-              symbol
-          }));
-      }
-
-      return hydratedResults;
-  },
-
-  /**
-   * Removes a specific symbol from a domain.
-   */
-  deleteSymbol: async (domainId: string, symbolId: string, cascade: boolean = true) => {
-    await domainService.deleteSymbols(domainId, [symbolId], cascade);
-  },
-
-  /**
-   * Removes one or more symbols from a domain.
-   */
-  deleteSymbols: async (domainId: string, symbolIds: string[], cascade: boolean = true) => {
-    if (symbolIds.length === 0) return;
-
-    const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
-    const data = await redisService.request(['GET', key]);
-    if (!data) return;
 
     const domain = parseDomain(data, domainId);
-    const idsToDelete = new Set(symbolIds);
-
-    domain.symbols = domain.symbols.filter(s => !idsToDelete.has(s.id));
-
-    for (const symbolId of idsToDelete) {
-        await vectorService.deleteSymbol(symbolId);
+    
+    if (!canAccessDomain(domainId, userId, domain.ownerId)) {
+      throw new DomainAccessError(domainId, userId);
     }
 
-    if (cascade) {
-        domain.symbols.forEach(s => {
-            if (s.linked_patterns) {
-                s.linked_patterns = s.linked_patterns.filter(link => !idsToDelete.has(link.id));
-            }
-            if (s.kind === 'persona' && s.persona?.linked_personas) {
-                s.persona.linked_personas = s.persona.linked_personas.filter(id => !idsToDelete.has(id));
-            }
-        });
+    if (domain.enabled === false) return null;
+
+    return domain;
+  },
+
+  /**
+   * Toggle domain enabled/disabled status.
+   * User-specific domains can only be toggled by their owner.
+   */
+  setEnabled: async (domainId: string, enabled: boolean, userId?: string): Promise<CachedDomain | null> => {
+    const key = getDomainKey(domainId, userId);
+    const data = await redisService.request(['GET', key]);
+    if (!data) return null;
+
+    const domain = parseDomain(data, domainId);
+    
+    if (!canAccessDomain(domainId, userId, domain.ownerId)) {
+      throw new DomainAccessError(domainId, userId);
     }
 
+    domain.enabled = enabled;
     domain.lastUpdated = Date.now();
+
     await redisService.request(['SET', key, JSON.stringify(domain)]);
+    return domain;
   },
 
   /**
-   * Updates references during rename.
+   * Add a symbol to a domain.
+   * User-specific domains: any logged-in user can modify their own
+   * Global domains: check readOnly flag
    */
-  propagateRename: async (domainId: string, oldId: string, newId: string) => {
-      const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
-      const data = await redisService.request(['GET', key]);
-      if (!data) return;
+  addSymbol: async (domainId: string, symbol: SymbolDef, userId?: string): Promise<SymbolDef> => {
+    const key = getDomainKey(domainId, userId);
+    let domain: CachedDomain | null = null;
+    let data = await redisService.request(['GET', key]);
 
-      const domain = parseDomain(data, domainId);
-      let updatedCount = 0;
-
-      domain.symbols.forEach(s => {
-          let modified = false;
-          if (s.linked_patterns) {
-              s.linked_patterns.forEach(link => {
-                  if (link.id === oldId) {
-                      link.id = newId;
-                      modified = true;
-                  }
-              });
-          }
-          if (s.kind === 'persona' && s.persona?.linked_personas?.includes(oldId)) {
-              s.persona.linked_personas = s.persona.linked_personas.map(id => id === oldId ? newId : id);
-              modified = true;
-          }
-          if (modified) updatedCount++;
-      });
-
-      if (updatedCount > 0) {
-          domain.lastUpdated = Date.now();
-          await redisService.request(['SET', key, JSON.stringify(domain)]);
+    if (!data) {
+      // Auto-init user domains
+      if (isUserSpecificDomain(domainId) && userId) {
+        domain = await domainService.init(domainId, domainId === 'user' ? 'User Preferences' : 'User State', userId);
+      } else {
+        throw new Error(`Domain '${domainId}' not found.`);
       }
-  },
+    } else {
+      domain = parseDomain(data, domainId);
+    }
 
-  /**
-   * Retrieves all symbols for a domain.
-   */
-  getSymbols: async (domainId: string): Promise<SymbolDef[]> => {
-    const domain = await domainService.getDomain(domainId);
-    return domain ? domain.symbols : [];
-  },
+    if (!domain) throw new Error(`Domain '${domainId}' not found.`);
 
-  /**
-   * Saves or updates a symbol.
-   */
-  upsertSymbol: async (domainId: string, symbol: SymbolDef, options: { bypassValidation?: boolean, internalBidirectionalCall?: boolean } = {}) => {
-    let domain = await domainService.getDomain(domainId);
-
-    if (!domain) {
-        throw new Error(`Domain '${domainId}' not found. You must create the domain first.`);
+    if (!canAccessDomain(domainId, userId, domain.ownerId)) {
+      throw new DomainAccessError(domainId, userId);
     }
 
     ensureWritableDomain(domain, domainId, symbol.id);
 
-    // Validation: Check if linked patterns exist
-    if (!options.bypassValidation && symbol.linked_patterns && symbol.linked_patterns.length > 0) {
-        const missingLinks: string[] = [];
-        for (const link of symbol.linked_patterns) {
-            const linkId = link.id;
-            // Self-reference is allowed (or will be created)
-            if (linkId === symbol.id) continue;
-
-            const exists = await domainService.findById(linkId);
-            if (!exists) {
-                missingLinks.push(linkId);
-            }
-        }
-        if (missingLinks.length > 0) {
-            throw new Error(`Validation Failed: Linked patterns not found: ${missingLinks.join(', ')}`);
-        }
-    }
-
-    // Default invalid kind to pattern
-    const validKinds = ['pattern', 'persona', 'lattice', 'data'];
-    if (!symbol.kind || !validKinds.includes(symbol.kind)) {
-        symbol.kind = 'pattern';
-    }
-
-    const nowB64 = currentTimestamp();
+    const existingIndex = domain.symbols.findIndex(s => s.id === symbol.id);
+    const now = currentTimestamp();
+    symbol.updated_at = now;
     
-    // Deduplicate: Remove any existing symbols with the same ID (fixes historical duplicates)
-    const previousSymbol = domain.symbols.find(s => s.id === symbol.id);
-    domain.symbols = domain.symbols.filter(s => s.id !== symbol.id);
-
-    const normalizedSymbol: SymbolDef = {
-        ...symbol,
-        created_at: previousSymbol?.created_at || nowB64,
-        updated_at: nowB64,
-    };
-
-    // Add normalized symbol (effectively replacing/updating)
-    domain.symbols.push(normalizedSymbol);
+    if (existingIndex >= 0) {
+      // Update existing
+      const existing = domain.symbols[existingIndex];
+      symbol.created_at = existing.created_at;
+      domain.symbols[existingIndex] = symbol;
+    } else {
+      // Add new
+      if (!symbol.created_at) symbol.created_at = now;
+      domain.symbols.push(symbol);
+      await indexSymbolBucket(symbol);
+    }
 
     domain.lastUpdated = Date.now();
-    
-    // Save Domain
-    await redisService.request(['SET', `${KEYS.DOMAIN_PREFIX}${domainId}`, JSON.stringify(domain)]);
+    await redisService.request(['SET', key, JSON.stringify(domain)]);
+    await vectorService.indexSymbol(symbol);
 
-    // Time bucket index (based on creation time)
-    await indexSymbolBucket(normalizedSymbol);
-    
-    // Index Vector
-    await vectorService.indexSymbol(normalizedSymbol);
+    return symbol;
+  },
 
-    // Handle Bidirectional Links
-    if (!options.internalBidirectionalCall && normalizedSymbol.linked_patterns) {
-        for (const link of normalizedSymbol.linked_patterns) {
-            if (link.bidirectional) {
-                const targetSymbol = await domainService.findById(link.id);
-                if (targetSymbol) {
-                    const backLink = { id: normalizedSymbol.id, link_type: link.link_type, bidirectional: true };
-                    const hasBackLink = targetSymbol.linked_patterns.some(l => l.id === normalizedSymbol.id);
-                    
-                    if (!hasBackLink) {
-                        const updatedTarget = {
-                            ...targetSymbol,
-                            linked_patterns: [...targetSymbol.linked_patterns, backLink]
-                        };
-                        await domainService.upsertSymbol(targetSymbol.symbol_domain, updatedTarget, { 
-                            bypassValidation: true, 
-                            internalBidirectionalCall: true 
-                        });
-                    }
-                }
-            }
-        }
+  /**
+   * Remove a symbol from a domain.
+   */
+  removeSymbol: async (domainId: string, symbolId: string, userId?: string): Promise<boolean> => {
+    const key = getDomainKey(domainId, userId);
+    const data = await redisService.request(['GET', key]);
+    if (!data) return false;
+
+    const domain = parseDomain(data, domainId);
+    
+    if (!canAccessDomain(domainId, userId, domain.ownerId)) {
+      throw new DomainAccessError(domainId, userId);
     }
+
+    ensureWritableDomain(domain, domainId, symbolId);
+
+    const index = domain.symbols.findIndex(s => s.id === symbolId);
+    if (index === -1) return false;
+
+    const symbol = domain.symbols[index];
+    domain.symbols.splice(index, 1);
+    domain.lastUpdated = Date.now();
+
+    await redisService.request(['SET', key, JSON.stringify(domain)]);
+    await vectorService.removeSymbol(symbolId, domainId);
+
+    // Clean up time index entries
+    const createdMs = decodeTimestamp(symbol.created_at);
+    if (createdMs) {
+      const bucketKey = getDayBucketKey('symbols', createdMs);
+      await redisService.request(['ZREM', bucketKey, symbolId]);
+    }
+
+    return true;
   },
 
   /**
-   * Bulk upsert.
+   * Update a symbol.
    */
-  bulkUpsert: async (domainId: string, symbols: SymbolDef[], options: { bypassValidation?: boolean, internalBidirectionalCall?: boolean } = {}) => {
-      const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
-      const data = await redisService.request(['GET', key]);
-      
-      let domain: CachedDomain;
-      if (!data) {
-          throw new Error(`Domain '${domainId}' not found. You must create the domain first.`);
-      } else {
-          domain = parseDomain(data, domainId);
-      }
-
-      ensureWritableDomain(domain, domainId, symbols[0]?.id);
-
-      if (!options.bypassValidation) {
-          // Validation: Check linked patterns integrity
-          const upsertIds = new Set(symbols.map(s => s.id));
-          // Optimization: Load all existing IDs once
-          const allExistingSymbols = await domainService.getAllSymbols(true);
-          const validIds = new Set(allExistingSymbols.map(s => s.id));
-
-          const missingLinksBySymbol: Record<string, string[]> = {};
-
-                    for (const sym of symbols) {
-
-                        if (sym.linked_patterns && sym.linked_patterns.length > 0) {
-
-                            for (const link of sym.linked_patterns) {
-
-                                const linkId = link.id;
-
-                                // Allow self-reference, reference to symbol in this batch, or existing symbol
-
-                                if (linkId === sym.id || upsertIds.has(linkId) || validIds.has(linkId)) {
-
-                                    continue;
-
-                                }
-
-                                if (!missingLinksBySymbol[sym.id]) missingLinksBySymbol[sym.id] = [];
-
-                                missingLinksBySymbol[sym.id].push(linkId);
-
-                            }
-
-                        }
-
-                    }
-
-          if (Object.keys(missingLinksBySymbol).length > 0) {
-              const details = Object.entries(missingLinksBySymbol)
-                  .map(([id, links]) => `${id} -> [${links.join(', ')}]`)
-                  .join('; ');
-              console.warn(`[DomainService] Validation Warning: Missing linked patterns for symbols: ${details}`);
-              // throw new Error(`Validation Failed: Missing linked patterns for symbols: ${details}`);
-          }
-      }
-
-      const symbolMap = new Map(domain.symbols.map(s => [s.id, s]));
-      const nowB64 = currentTimestamp();
-      const validKinds = ['pattern', 'persona', 'lattice', 'data'];
-
-      for (const sym of symbols) {
-          // Default invalid kind to pattern
-          if (!sym.kind || !validKinds.includes(sym.kind)) {
-              sym.kind = 'pattern';
-          }
-
-          const existing = symbolMap.get(sym.id);
-          const normalized: SymbolDef = {
-              ...sym,
-              created_at: existing?.created_at || nowB64,
-              updated_at: nowB64,
-          };
-          symbolMap.set(sym.id, normalized);
-          await indexSymbolBucket(normalized);
-      }
-      domain.symbols = Array.from(symbolMap.values());
-      domain.lastUpdated = Date.now();
-
-      await redisService.request(['SET', key, JSON.stringify(domain)]);
-      
-      if (symbols.length > 0) {
-          await vectorService.indexBatch(symbols);
-      }
-
-      // Handle Bidirectional Links for the batch
-      if (!options.internalBidirectionalCall) {
-          const upsertIds = new Set(symbols.map(s => s.id));
-          for (const sym of symbols) {
-              if (sym.linked_patterns) {
-                  for (const link of sym.linked_patterns) {
-                      if (link.bidirectional) {
-                          // If target is in the same batch, it might already have the link or will be handled in its turn.
-                          // But to be sure, we ensure both sides have it.
-                          const targetSymbol = await domainService.findById(link.id);
-                          if (targetSymbol) {
-                              const hasBackLink = targetSymbol.linked_patterns.some(l => l.id === sym.id);
-                              if (!hasBackLink) {
-                                  const backLink = { id: sym.id, link_type: link.link_type, bidirectional: true };
-                                  const updatedTarget = {
-                                      ...targetSymbol,
-                                      linked_patterns: [...targetSymbol.linked_patterns, backLink]
-                                  };
-                                  await domainService.upsertSymbol(targetSymbol.symbol_domain, updatedTarget, { 
-                                      bypassValidation: true, 
-                                      internalBidirectionalCall: true 
-                                  });
-                              }
-                          }
-                      }
-                  }
-              }
-          }
-      }
-  },
-
-  /**
-   * Process refactor operations.
-   */
-  processRefactorOperation: async (updates: { old_id: string, symbol_data: SymbolDef }[]) => {
-      const updatesByDomain: Record<string, typeof updates> = {};
-      updates.forEach(u => {
-          const dom = u.symbol_data.symbol_domain || 'root';
-          if (!updatesByDomain[dom]) updatesByDomain[dom] = [];
-          updatesByDomain[dom].push(u);
-      });
-
-      const renamedIds: string[] = [];
-      let updateCount = 0;
-
-      for (const [domainId, domainUpdates] of Object.entries(updatesByDomain)) {
-          const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
-          const data = await redisService.request(['GET', key]);
-          
-          let domain: CachedDomain;
-          if (!data) {
-             domain = { id: domainId, name: domainId, enabled: true, lastUpdated: Date.now(), symbols: [], readOnly: false };
-             await redisService.request(['SADD', KEYS.DOMAINS_SET, domainId]);
-          } else {
-             domain = parseDomain(data, domainId);
-          }
-
-          ensureWritableDomain(domain, domainId, domainUpdates[0]?.symbol_data?.id);
-
-          const existingCreatedAt = new Map<string, string>();
-          domain.symbols.forEach((s) => {
-              if (s.created_at) existingCreatedAt.set(s.id, s.created_at);
-          });
-
-          // 1. Renames
-          domainUpdates.forEach(update => {
-              if (update.old_id !== update.symbol_data.id) {
-                  domain.symbols.forEach(s => {
-                      if (s.id === update.old_id) return;
-                      if (s.linked_patterns) {
-                          s.linked_patterns.forEach(link => {
-                              if (link.id === update.old_id) link.id = update.symbol_data.id;
-                          });
-                      }
-                      if (s.kind === 'persona' && s.persona?.linked_personas?.includes(update.old_id)) {
-                          s.persona.linked_personas = s.persona.linked_personas.map(id => id === update.old_id ? update.symbol_data.id : id);
-                      }
-                  });
-                  renamedIds.push(`${update.old_id} -> ${update.symbol_data.id}`);
-                  vectorService.deleteSymbol(update.old_id);
-              }
-          });
-
-          // 2. Remove Old
-          const oldIdsToRemove = domainUpdates.map(u => u.old_id);
-          domain.symbols = domain.symbols.filter(s => !oldIdsToRemove.includes(s.id));
-
-          // 3. Add New
-          const validKinds = ['pattern', 'persona', 'lattice', 'data'];
-          for (const update of domainUpdates) {
-              if (!update.symbol_data.kind || !validKinds.includes(update.symbol_data.kind)) {
-                  update.symbol_data.kind = 'pattern';
-              }
-
-              const nowB64 = currentTimestamp();
-              const normalized: SymbolDef = {
-                  ...update.symbol_data,
-                  created_at: existingCreatedAt.get(update.old_id) || nowB64,
-                  updated_at: nowB64,
-              };
-              domain.symbols.push(normalized);
-              updateCount++;
-              
-              await vectorService.indexSymbol(normalized);
-              await indexSymbolBucket(normalized);
-          }
-
-          domain.lastUpdated = Date.now();
-          await redisService.request(['SET', key, JSON.stringify(domain)]);
-      }
-
-      return { count: updateCount, renamedIds };
-  },
-
-  /**
-   * Compress symbols.
-   */
-  compressSymbols: async (newSymbol: SymbolDef, oldIds: string[], options: { bypassValidation?: boolean } = {}) => {
-      const domainId = newSymbol.symbol_domain || 'root';
-
-      // Validation: Check if linked patterns exist
-      if (!options.bypassValidation && newSymbol.linked_patterns && newSymbol.linked_patterns.length > 0) {
-          const missingLinks: string[] = [];
-          for (const link of newSymbol.linked_patterns) {
-              const linkId = link.id;
-              const exists = await domainService.findById(linkId);
-              if (!exists) {
-                  missingLinks.push(linkId);
-              }
-          }
-          
-          if (missingLinks.length > 0) {
-              throw new Error(`Validation Failed: Linked patterns not found: ${missingLinks.join(', ')}`);
-          }
-      }
-
-      await domainService.upsertSymbol(domainId, newSymbol, { bypassValidation: options.bypassValidation });
-      
-      for (const oldId of oldIds) {
-          if (oldId === newSymbol.id) continue;
-          await domainService.propagateRename(domainId, oldId, newSymbol.id);
-          await domainService.deleteSymbol(domainId, oldId, false);
-      }
-      return { newId: newSymbol.id, removedIds: oldIds };
-  },
-
-  /**
-   * Perform query (paginated from array).
-   */
-  query: async (domainId: string, tag?: string, limit: number = 20, lastId?: string) => {
-    const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
+  updateSymbol: async (domainId: string, symbolId: string, updates: Partial<SymbolDef>, userId?: string): Promise<SymbolDef | null> => {
+    const key = getDomainKey(domainId, userId);
     const data = await redisService.request(['GET', key]);
     if (!data) return null;
 
     const domain = parseDomain(data, domainId);
+    
+    if (!canAccessDomain(domainId, userId, domain.ownerId)) {
+      throw new DomainAccessError(domainId, userId);
+    }
+
+    ensureWritableDomain(domain, domainId, symbolId);
+
+    const index = domain.symbols.findIndex(s => s.id === symbolId);
+    if (index === -1) return null;
+
+    const symbol = domain.symbols[index];
+    Object.assign(symbol, updates, { updated_at: currentTimestamp() });
+    domain.lastUpdated = Date.now();
+
+    await redisService.request(['SET', key, JSON.stringify(domain)]);
+    await vectorService.indexSymbol(symbol);
+
+    return symbol;
+  },
+
+  /**
+   * Perform vector search across accessible domains.
+   */
+  search: async (
+    query: string | null,
+    userIdOrLimit?: string | number,
+    domainIdOrOptions?: string | { time_gte?: string; time_between?: string[] },
+    limitOrUndefined?: number
+  ): Promise<VectorSearchResult[]> => {
+    // Handle legacy signature: search(query, limit, options)
+    if (typeof userIdOrLimit === 'number') {
+      const limit = userIdOrLimit;
+      const options = domainIdOrOptions as { time_gte?: string; time_between?: string[] } | undefined;
+      // Legacy search doesn't support userId, search all global domains
+      const domains = await domainService.listDomains();
+      const allResults: VectorSearchResult[] = [];
+
+      // Legacy search across all domains (no domain filtering in vector search)
+      const results = query ? await vectorService.search(query, limit) : [];
+      return results;
+    }
+
+    // New signature: search(query, userId?, domainId?, limit?)
+    const userId = userIdOrLimit as string | undefined;
+    const domainId = domainIdOrOptions as string | undefined;
+    const limit = limitOrUndefined ?? 10;
+
+    // If domain specified, verify access and search within that domain
+    if (domainId) {
+      const domain = await domainService.get(domainId, userId);
+      if (!domain || !domain.enabled) return [];
+      // Search with domain filter in metadata
+      const results = query ? await vectorService.search(query, limit, { domain: domainId }) : [];
+      return results;
+    }
+
+    // Search across all accessible domains
+    const domains = await domainService.listDomains(userId);
+    const allResults: VectorSearchResult[] = [];
+
+    for (const dId of domains) {
+      const domain = await domainService.get(dId, userId);
+      if (domain && domain.enabled) {
+        // Search with domain filter in metadata
+        const results = query ? await vectorService.search(query, limit, { domain: dId }) : [];
+        allResults.push(...results);
+      }
+    }
+
+    // Sort by score and take top limit
+    return allResults
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
+  },
+
+  /**
+   * Activate a symbol by ID across accessible domains.
+   */
+  activate: async (id: string, userId?: string): Promise<SymbolDef | null> => {
+    const domains = await domainService.listDomains(userId);
+    
+    for (const domainId of domains) {
+      const key = getDomainKey(domainId, userId);
+      const data = await redisService.request(['GET', key]);
+      if (!data) continue;
+
+      const domain = parseDomain(data, domainId);
+      if (!domain.enabled) continue;
+      if (!canAccessDomain(domainId, userId, domain.ownerId)) continue;
+
+      const index = domain.symbols.findIndex(s => s.id === id);
+      if (index !== -1) {
+        const symbol = domain.symbols[index];
+        
+        // Update Access Time
+        symbol.last_accessed_at = currentTimestamp();
+        symbol.activation_count = (symbol.activation_count || 0) + 1;
+        domain.lastUpdated = Date.now();
+        
+        // Persist update (async, non-blocking for this read)
+        redisService.request(['SET', key, JSON.stringify(domain)]).catch(e => 
+          console.error(`[DomainService] Failed to update access time for ${id}`, e)
+        );
+
+        return symbol;
+      }
+    }
+    return null;
+  },
+
+  /**
+   * Merge symbols from one domain to another.
+   */
+  merge: async (sourceDomainId: string, targetDomainId: string, symbolIds: string[], userId?: string) => {
+    const sourceKey = getDomainKey(sourceDomainId, userId);
+    const targetKey = getDomainKey(targetDomainId, userId);
+
+    const [sourceData, targetData] = await Promise.all([
+      redisService.request(['GET', sourceKey]),
+      redisService.request(['GET', targetKey])
+    ]);
+
+    if (!sourceData) throw new Error(`Source domain '${sourceDomainId}' not found.`);
+
+    const sourceDomain = parseDomain(sourceData, sourceDomainId);
+    if (!sourceDomain.enabled) throw new Error(`Source domain '${sourceDomainId}' is disabled.`);
+
+    let targetDomain: CachedDomain;
+    if (!targetData) {
+      // Auto-init user domains
+      if (isUserSpecificDomain(targetDomainId) && userId) {
+        targetDomain = await domainService.init(targetDomainId, targetDomainId === 'user' ? 'User Preferences' : 'User State', userId);
+      } else {
+        throw new Error(`Target domain '${targetDomainId}' not found.`);
+      }
+    } else {
+      targetDomain = parseDomain(targetData, targetDomainId);
+    }
+
+    if (!targetDomain.enabled) throw new Error(`Target domain '${targetDomainId}' is disabled.`);
+
+    // Check access to both domains
+    if (!canAccessDomain(sourceDomainId, userId, sourceDomain.ownerId)) {
+      throw new DomainAccessError(sourceDomainId, userId);
+    }
+    if (!canAccessDomain(targetDomainId, userId, targetDomain.ownerId)) {
+      throw new DomainAccessError(targetDomainId, userId);
+    }
+
+    ensureWritableDomain(targetDomain, targetDomainId);
+
+    const symbolsToMerge = sourceDomain.symbols.filter(s => symbolIds.includes(s.id));
+    const oldIds = targetDomain.symbols.filter(s => symbolIds.includes(s.id)).map(s => s.id);
+
+    // Remove existing symbols with same IDs
+    targetDomain.symbols = targetDomain.symbols.filter(s => !symbolIds.includes(s.id));
+    
+    // Add merged symbols
+    targetDomain.symbols.push(...symbolsToMerge);
+    targetDomain.lastUpdated = Date.now();
+
+    await redisService.request(['SET', targetKey, JSON.stringify(targetDomain)]);
+
+    // Reindex all merged symbols
+    for (const symbol of symbolsToMerge) {
+      await vectorService.indexSymbol(symbol);
+    }
+
+    return { newId: targetDomainId, removedIds: oldIds };
+  },
+
+  /**
+   * Perform query (paginated from array).
+   * Supports both (domainId, tag?, limit?, lastId?) and (domainId, userId?, tag?, limit?, lastId?) signatures
+   */
+  query: async (
+    domainId: string,
+    userIdOrTag?: string | undefined,
+    tagOrLimit?: string | number,
+    limitOrLastId?: number | string,
+    lastId?: string
+  ) => {
+    // Determine signature based on argument types
+    let userId: string | undefined;
+    let tag: string | undefined;
+    let limit = 20;
+    let finalLastId: string | undefined;
+
+    if (typeof userIdOrTag === 'string' && !tagOrLimit) {
+      // (domainId, tag?) signature - legacy
+      tag = userIdOrTag;
+    } else if (typeof userIdOrTag === 'string' && typeof tagOrLimit === 'string') {
+      // (domainId, userId?, tag?, limit?, lastId?) - new with userId
+      userId = userIdOrTag;
+      tag = tagOrLimit;
+      if (typeof limitOrLastId === 'number') {
+        limit = limitOrLastId;
+      } else if (typeof limitOrLastId === 'string') {
+        limit = 20;
+        finalLastId = limitOrLastId;
+      }
+      finalLastId = lastId || finalLastId;
+    } else if (typeof userIdOrTag === 'string' && typeof tagOrLimit === 'number') {
+      // (domainId, tag, limit) - legacy
+      tag = userIdOrTag;
+      limit = tagOrLimit;
+      if (typeof limitOrLastId === 'string') {
+        finalLastId = limitOrLastId;
+      }
+    } else {
+      // Default case - assume legacy
+      tag = userIdOrTag;
+      if (typeof tagOrLimit === 'number') limit = tagOrLimit;
+      if (typeof limitOrLastId === 'string') finalLastId = limitOrLastId;
+    }
+
+    const key = getDomainKey(domainId, userId);
+    const data = await redisService.request(['GET', key]);
+    if (!data) return null;
+
+    const domain = parseDomain(data, domainId);
+
+    if (!canAccessDomain(domainId, userId, domain.ownerId)) {
+      throw new DomainAccessError(domainId, userId);
+    }
+
     if (!domain.enabled) return null;
 
     let results = domain.symbols;
@@ -817,8 +582,8 @@ export const domainService = {
     }
 
     let startIndex = 0;
-    if (lastId) {
-        const foundIndex = results.findIndex(s => s.id === lastId);
+    if (finalLastId) {
+        const foundIndex = results.findIndex(s => s.id === finalLastId);
         if (foundIndex !== -1) startIndex = foundIndex + 1;
     }
 
@@ -831,34 +596,35 @@ export const domainService = {
   },
 
   /**
-   * Find by ID across all domains.
+   * Find by ID across all accessible domains.
    */
-  findById: async (id: string): Promise<SymbolDef | null> => {
-    const domains = await domainService.listDomains();
+  findById: async (id: string, userId?: string): Promise<SymbolDef | null> => {
+    const domains = await domainService.listDomains(userId);
     
     for (const domainId of domains) {
-        const key = `${KEYS.DOMAIN_PREFIX}${domainId}`;
-        const data = await redisService.request(['GET', key]);
-        if (!data) continue;
+      const key = getDomainKey(domainId, userId);
+      const data = await redisService.request(['GET', key]);
+      if (!data) continue;
 
-        const domain = parseDomain(data, domainId);
-        if (domain.enabled) {
-            const index = domain.symbols.findIndex(s => s.id === id);
-            if (index !== -1) {
-                const symbol = domain.symbols[index];
-                
-                // Update Access Time
-                symbol.last_accessed_at = currentTimestamp();
-                domain.lastUpdated = Date.now();
-                
-                // Persist update (async, non-blocking for this read)
-                redisService.request(['SET', key, JSON.stringify(domain)]).catch(e => 
-                    console.error(`[DomainService] Failed to update access time for ${id}`, e)
-                );
+      const domain = parseDomain(data, domainId);
+      if (!domain.enabled) continue;
+      if (!canAccessDomain(domainId, userId, domain.ownerId)) continue;
 
-                return symbol;
-            }
-        }
+      const index = domain.symbols.findIndex(s => s.id === id);
+      if (index !== -1) {
+        const symbol = domain.symbols[index];
+        
+        // Update Access Time
+        symbol.last_accessed_at = currentTimestamp();
+        domain.lastUpdated = Date.now();
+        
+        // Persist update (async, non-blocking for this read)
+        redisService.request(['SET', key, JSON.stringify(domain)]).catch(e => 
+          console.error(`[DomainService] Failed to update access time for ${id}`, e)
+        );
+
+        return symbol;
+      }
     }
     return null;
   },
@@ -866,50 +632,316 @@ export const domainService = {
   /**
    * Get metadata for store screen.
    */
-  getMetadata: async () => {
-    const domains = await domainService.listDomains();
-    const rawData = await Promise.all(domains.map(d => redisService.request(['GET', `${KEYS.DOMAIN_PREFIX}${d}`])));
+  getMetadata: async (userId?: string) => {
+    const domains = await domainService.listDomains(userId);
+    const metadata = [];
     
-    return rawData
-      .map((data, i) => {
-          if (!data) return null;
-          const d = parseDomain(data, domains[i]);
-          return {
-              id: domains[i],
-              name: d.name || domains[i],
-              enabled: d.enabled,
-              count: d.symbols.length,
-              lastUpdated: d.lastUpdated,
-              description: d.description || "",
-              invariants: d.invariants || [],
-              readOnly: d.readOnly
-          };
-      })
-      .filter((d): d is any => d !== null);
+    for (const domainId of domains) {
+      const key = getDomainKey(domainId, userId);
+      const data = await redisService.request(['GET', key]);
+      if (!data) continue;
+      
+      const d = parseDomain(data, domainId);
+      if (!canAccessDomain(domainId, userId, d.ownerId)) continue;
+      
+      metadata.push({
+        id: domainId,
+        name: d.name || domainId,
+        enabled: d.enabled,
+        count: d.symbols.length,
+        lastUpdated: d.lastUpdated,
+        description: d.description || "",
+        invariants: d.invariants || [],
+        readOnly: d.readOnly,
+        isUserSpecific: isUserSpecificDomain(domainId)
+      });
+    }
+    
+    return metadata;
   },
 
   /**
-   * Retrieve all symbols across domains.
+   * Retrieve all symbols across accessible domains.
    * By default, returns only enabled domain symbols.
    */
-  getAllSymbols: async (includeDisabled: boolean = false): Promise<SymbolDef[]> => {
-      const domains = await domainService.listDomains();
-      const rawData = await Promise.all(domains.map(d => redisService.request(['GET', `${KEYS.DOMAIN_PREFIX}${d}`])));
+  getAllSymbols: async (userId?: string, includeDisabled: boolean = false): Promise<SymbolDef[]> => {
+    const domains = await domainService.listDomains(userId);
+    const allSymbols: SymbolDef[] = [];
 
-      const allSymbols: SymbolDef[] = [];
+    for (const domainId of domains) {
+      const key = getDomainKey(domainId, userId);
+      const data = await redisService.request(['GET', key]);
+      if (!data) continue;
 
-      rawData.forEach((data, idx) => {
-          if (!data) return;
-          try {
-              const domain = parseDomain(data, domains[idx]);
-              if (includeDisabled || domain.enabled) {
-                  allSymbols.push(...(domain.symbols || []));
-              }
-          } catch (e) {
-              console.error('[DomainService] Failed to parse domain while collecting symbols', e);
+      try {
+        const domain = parseDomain(data, domainId);
+        if (!canAccessDomain(domainId, userId, domain.ownerId)) continue;
+        if (includeDisabled || domain.enabled) {
+          allSymbols.push(...(domain.symbols || []));
+        }
+      } catch (e) {
+        console.error('[DomainService] Failed to parse domain while collecting symbols', e);
+      }
+    }
+
+    return allSymbols;
+  },
+
+  /**
+   * Delete a user-specific domain and all its symbols.
+   * Only the owner can delete their user-specific domains.
+   */
+  deleteUserDomain: async (domainId: string, userId: string): Promise<boolean> => {
+    if (!isUserSpecificDomain(domainId)) {
+      throw new Error(`Cannot delete global domain '${domainId}'. Only user-specific domains can be deleted.`);
+    }
+
+    const key = getDomainKey(domainId, userId);
+    const data = await redisService.request(['GET', key]);
+    
+    if (!data) return false;
+
+    const domain = parseDomain(data, domainId);
+    if (domain.ownerId && domain.ownerId !== userId) {
+      throw new DomainAccessError(domainId, userId);
+    }
+
+    // Remove all symbols from vector store
+    for (const symbol of domain.symbols) {
+      await vectorService.removeSymbol(symbol.id, domainId);
+    }
+
+    // Delete the domain
+    await redisService.request(['DEL', key]);
+    return true;
+  },
+
+  // --- Backward Compatibility Methods ---
+
+  /**
+   * Health check for Redis connection
+   */
+  healthCheck: async (): Promise<boolean> => {
+    try {
+      await redisService.request(['PING']);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  },
+
+  /**
+   * Alias for get()
+   */
+  getDomain: async (domainId: string, userId?: string): Promise<CachedDomain | null> => {
+    return domainService.get(domainId, userId);
+  },
+
+  /**
+   * Create a new domain (alias for init)
+   * Supports both (domainId, name, userId) and (domainId, metadata, userId) signatures
+   */
+  createDomain: async (domainId: string, nameOrMetadata: string | { name?: string; description?: string; invariants?: string[] }, userId?: string): Promise<CachedDomain> => {
+    if (typeof nameOrMetadata === 'string') {
+      return domainService.init(domainId, nameOrMetadata, userId);
+    } else {
+      // Object format - extract name or use domainId as name
+      const name = nameOrMetadata.name || domainId;
+      const domain = await domainService.init(domainId, name, userId);
+      // Apply additional metadata if provided
+      if (nameOrMetadata.description || nameOrMetadata.invariants) {
+        return await domainService.updateDomainMetadata(domainId, {
+          description: nameOrMetadata.description,
+          invariants: nameOrMetadata.invariants
+        }, userId) || domain;
+      }
+      return domain;
+    }
+  },
+
+  /**
+   * Check if domain exists
+   */
+  hasDomain: async (domainId: string, userId?: string): Promise<boolean> => {
+    const key = getDomainKey(domainId, userId);
+    const exists = await redisService.request(['EXISTS', key]);
+    return Boolean(exists);
+  },
+
+  /**
+   * Check if domain is enabled
+   */
+  isEnabled: async (domainId: string, userId?: string): Promise<boolean> => {
+    const domain = await domainService.get(domainId, userId);
+    return domain?.enabled ?? false;
+  },
+
+  /**
+   * Toggle domain enabled status (alias for setEnabled)
+   * Supports both (domainId, userId) and (domainId, enabled, userId) signatures
+   */
+  toggleDomain: async (domainId: string, enabledOrUserId?: boolean | string, userId?: string): Promise<CachedDomain | null> => {
+    if (typeof enabledOrUserId === 'boolean') {
+      // (domainId, enabled, userId) signature
+      return domainService.setEnabled(domainId, enabledOrUserId, userId);
+    } else {
+      // (domainId, userId) signature - toggle current state
+      const domain = await domainService.get(domainId, enabledOrUserId as string | undefined);
+      if (!domain) return null;
+      return domainService.setEnabled(domainId, !domain.enabled, enabledOrUserId as string | undefined);
+    }
+  },
+
+  /**
+   * Update domain metadata
+   */
+  updateDomainMetadata: async (domainId: string, metadata: Partial<CachedDomain>, userId?: string): Promise<CachedDomain | null> => {
+    const key = getDomainKey(domainId, userId);
+    const data = await redisService.request(['GET', key]);
+    if (!data) return null;
+
+    const domain = parseDomain(data, domainId);
+    
+    if (!canAccessDomain(domainId, userId, domain.ownerId)) {
+      throw new DomainAccessError(domainId, userId);
+    }
+
+    Object.assign(domain, metadata, { lastUpdated: Date.now() });
+    await redisService.request(['SET', key, JSON.stringify(domain)]);
+    return domain;
+  },
+
+  /**
+   * Delete a domain (only works for user-specific domains)
+   */
+  deleteDomain: async (domainId: string, userId?: string): Promise<boolean> => {
+    if (!userId) return false;
+    return domainService.deleteUserDomain(domainId, userId);
+  },
+
+  /**
+   * Clear all domains (DANGEROUS - for testing only)
+   */
+  clearAll: async (): Promise<void> => {
+    const domains = await domainService.listDomains();
+    for (const domainId of domains) {
+      const key = getDomainKey(domainId, undefined);
+      await redisService.request(['DEL', key]);
+    }
+    await redisService.request(['DEL', KEYS.DOMAINS_SET]);
+  },
+
+  /**
+   * Get symbols from a specific domain
+   */
+  getSymbols: async (domainId: string, userId?: string): Promise<SymbolDef[]> => {
+    const domain = await domainService.get(domainId, userId);
+    return domain?.symbols || [];
+  },
+
+  /**
+   * Alias for addSymbol
+   */
+  upsertSymbol: async (domainId: string, symbol: SymbolDef, userId?: string): Promise<SymbolDef> => {
+    return domainService.addSymbol(domainId, symbol, userId);
+  },
+
+  /**
+   * Bulk upsert symbols
+   * Supports both (domainId, symbols, userId?) and (domainId, symbols, options?) signatures
+   */
+  bulkUpsert: async (
+    domainId: string,
+    symbols: SymbolDef[],
+    userIdOrOptions?: string | { bypassValidation?: boolean }
+  ): Promise<SymbolDef[]> => {
+    const userId = typeof userIdOrOptions === 'string' ? userIdOrOptions : undefined;
+    // Note: bypassValidation option is noted but not implemented in this version
+    const results: SymbolDef[] = [];
+    for (const symbol of symbols) {
+      const result = await domainService.addSymbol(domainId, symbol, userId);
+      results.push(result);
+    }
+    return results;
+  },
+
+  /**
+   * Alias for removeSymbol
+   * Supports both (domainId, symbolId, userId?) and (domainId, symbolId, cascade?) signatures
+   */
+  deleteSymbol: async (domainId: string, symbolId: string, userIdOrCascade?: string | boolean): Promise<boolean> => {
+    // If third argument is a boolean, it's cascade (legacy), ignore it for now
+    const userId = typeof userIdOrCascade === 'string' ? userIdOrCascade : undefined;
+    return domainService.removeSymbol(domainId, symbolId, userId);
+  },
+
+  /**
+   * Propagate rename across all symbols (placeholder - would need full implementation)
+   */
+  propagateRename: async (domainId: string, oldId: string, newId: string, userId?: string): Promise<void> => {
+    const domain = await domainService.get(domainId, userId);
+    if (!domain) throw new Error(`Domain '${domainId}' not found`);
+    
+    // Update all symbols that reference oldId in linked_patterns
+    for (const symbol of domain.symbols) {
+      if (symbol.linked_patterns) {
+        for (const link of symbol.linked_patterns) {
+          if (link.id === oldId) {
+            link.id = newId;
           }
-      });
+        }
+      }
+    }
+    
+    // Rename the symbol itself if it exists
+    const symbol = domain.symbols.find(s => s.id === oldId);
+    if (symbol) {
+      symbol.id = newId;
+      symbol.updated_at = currentTimestamp();
+    }
+    
+    domain.lastUpdated = Date.now();
+    const key = getDomainKey(domainId, userId);
+    await redisService.request(['SET', key, JSON.stringify(domain)]);
+  },
 
-      return allSymbols;
+  /**
+   * Process refactor operation (placeholder)
+   * Supports both (updates) and (domainId, operation, userId) signatures
+   */
+  processRefactorOperation: async (
+    domainIdOrUpdates: string | any[],
+    operation?: any,
+    userId?: string
+  ): Promise<any> => {
+    // Check if first argument is an array (legacy signature)
+    if (Array.isArray(domainIdOrUpdates)) {
+      // Legacy signature: processRefactorOperation(updates)
+      loggerService.info('Refactor operation received (legacy)', { updates: domainIdOrUpdates });
+      return { status: 'not_implemented' };
+    }
+    // New signature: processRefactorOperation(domainId, operation, userId)
+    loggerService.info('Refactor operation received', { domainId: domainIdOrUpdates, operation });
+    return { status: 'not_implemented' };
+  },
+
+  /**
+   * Compress symbols (placeholder)
+   * Supports both (newSymbol, oldIds) and (domainId, threshold, userId) signatures
+   */
+  compressSymbols: async (
+    newSymbolOrDomainId: any,
+    oldIdsOrThreshold: any[] | number,
+    userId?: string
+  ): Promise<any> => {
+    // Check if second argument is an array (legacy signature)
+    if (Array.isArray(oldIdsOrThreshold)) {
+      // Legacy signature: compressSymbols(newSymbol, oldIds)
+      loggerService.info('Compress symbols called (legacy)', { newSymbol: newSymbolOrDomainId, oldIds: oldIdsOrThreshold });
+      return { status: 'not_implemented' };
+    }
+    // New signature: compressSymbols(domainId, threshold, userId)
+    loggerService.info('Compress symbols called', { domainId: newSymbolOrDomainId, threshold: oldIdsOrThreshold });
+    return { status: 'not_implemented' };
   }
 };

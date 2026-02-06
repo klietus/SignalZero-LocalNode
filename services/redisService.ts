@@ -27,6 +27,34 @@ const handleMockCommand = async (command: any[]): Promise<any> => {
         mockHashes.set(key, hash);
         return next;
     }
+    case 'HGET': {
+        const [key, field] = args;
+        const hash = mockHashes.get(key);
+        return hash?.get(field) ?? null;
+    }
+    case 'HSET': {
+        const key = args[0];
+        const hash = mockHashes.get(key) || new Map<string, string>();
+        let added = 0;
+        for (let i = 1; i < args.length; i += 2) {
+            const field = args[i];
+            const value = args[i + 1];
+            if (!hash.has(field)) added++;
+            hash.set(field, value);
+        }
+        mockHashes.set(key, hash);
+        return added;
+    }
+    case 'HDEL': {
+        const key = args[0];
+        const hash = mockHashes.get(key);
+        if (!hash) return 0;
+        let removed = 0;
+        for (let i = 1; i < args.length; i++) {
+            if (hash.delete(args[i])) removed++;
+        }
+        return removed;
+    }
     case 'HGETALL': {
         const key = args[0];
         const hash = mockHashes.get(key);
@@ -106,6 +134,10 @@ const handleMockCommand = async (command: any[]): Promise<any> => {
             if (set.delete(val)) removed++;
         });
         return removed;
+    }
+    case 'SCARD': {
+        const set = mockSets.get(args[0]);
+        return set?.size ?? 0;
     }
     case 'DEL': {
         let removed = 0;
