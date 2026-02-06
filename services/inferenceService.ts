@@ -612,7 +612,8 @@ export async function* sendMessageAndHandleTools(
 
   if (contextSessionId) {
     try {
-      const session = await contextService.getSession(contextSessionId);
+      // Use system/admin access for internal inference operations
+      const session = await contextService.getSession(contextSessionId, undefined, true);
       if (session) {
         const lifecycle = session.status === "closed" ? "zombie" : "live";
         contextMetadata = {
@@ -637,6 +638,7 @@ export async function* sendMessageAndHandleTools(
   }
 
   if (contextSessionId) {
+    // Use system/admin access for internal inference operations
     await contextService.recordMessage(contextSessionId, {
       id: correlationId,
       role: "user",
@@ -645,7 +647,7 @@ export async function* sendMessageAndHandleTools(
           kind: "user_prompt",
           ...(attachments.length > 0 ? { attachments } : {})
       },
-    });
+    }, undefined, true);
   }
 
   let loops = 0;
@@ -682,7 +684,7 @@ export async function* sendMessageAndHandleTools(
             return;
         }
 
-        const session = await contextService.getSession(contextSessionId);
+        const session = await contextService.getSession(contextSessionId, undefined, true);
         if (!session || session.status === 'closed') {
             loggerService.info("Context closed during inference, aborting.", { contextSessionId });
             yield { text: "\n[System] Context archived. Inference aborted." };
@@ -838,7 +840,7 @@ export async function* sendMessageAndHandleTools(
         })),
         metadata: { kind: "assistant_response" },
         correlationId: correlationId
-      });
+      }, undefined, true);
     }
 
     // Success or unrecoverable audit: clear transient messages
@@ -908,7 +910,7 @@ export async function* sendMessageAndHandleTools(
             toolArgs: { raw: call.function.arguments },
             metadata: { kind: "tool_error", type: "json_parse_error" },
             correlationId: correlationId
-          });
+          }, undefined, true);
         }
         continue;
       }
@@ -931,7 +933,7 @@ export async function* sendMessageAndHandleTools(
             toolArgs: args,
             metadata: { kind: "tool_result" },
             correlationId: correlationId
-          });
+          }, undefined, true);
         }
       } catch (err) {
         loggerService.error(`Error executing tool ${toolName}`, { err });
@@ -951,7 +953,7 @@ export async function* sendMessageAndHandleTools(
             toolArgs: args,
             metadata: { kind: "tool_error" },
             correlationId: correlationId
-          });
+          }, undefined, true);
         }
       }
     }
@@ -1001,19 +1003,19 @@ export const processMessageAsync = async (
         content: `Error processing message: ${error?.message || "Internal Error"}`,
         metadata: { kind: "error", ...errorDetails },
         correlationId: userMessageId
-    });
+    }, undefined, true);
   } finally {
-      await contextService.clearCancellation(contextSessionId);
-      await contextService.clearActiveMessage(contextSessionId);
+      await contextService.clearCancellation(contextSessionId, undefined, true);
+      await contextService.clearActiveMessage(contextSessionId, undefined, true);
       loggerService.info(`finished with message id ${userMessageId || 'unknown'}`);
 
       // Drain Message Queue
-      const nextItem = await contextService.popNextMessage(contextSessionId);
+      const nextItem = await contextService.popNextMessage(contextSessionId, undefined, true);
       if (nextItem) {
           loggerService.info(`Draining queued message for ${contextSessionId}`, { sourceId: nextItem.sourceId });
           // Re-lock the context
           const queueMsgId = `queued-${Date.now()}`;
-          await contextService.setActiveMessage(contextSessionId, queueMsgId);
+          await contextService.setActiveMessage(contextSessionId, queueMsgId, undefined, true);
           
           // Execute next message (Fire & Forget to avoid stack overflow on long queues)
           // We reuse the same toolExecutor and systemInstruction
@@ -1043,9 +1045,9 @@ export const runSignalZeroTest = async (
     }
   }
 
-  // Create a temporary context session for this test run
+  // Create a temporary context session for this test run (admin/system operation)
   // We use 'test_run' type if we want to differentiate, or 'conversation'
-  const session = await contextService.createSession('conversation', { source: 'test', temporary: true });
+  const session = await contextService.createSession('conversation', { source: 'test', temporary: true }, undefined, undefined);
   const contextSessionId = session.id;
 
   try {
@@ -1076,7 +1078,7 @@ export const runSignalZeroTest = async (
     });
 
     // Cleanup: Close/Archive the temporary session
-    await contextService.closeSession(contextSessionId);
+    await contextService.closeSession(contextSessionId, undefined, true);
 
     return {
       text: finalResponse,
@@ -1091,7 +1093,7 @@ export const runSignalZeroTest = async (
   } catch (error) {
     loggerService.error("SignalZero Test Run Failed:", { error });
     // Cleanup on error
-    await contextService.closeSession(contextSessionId);
+    await contextService.closeSession(contextSessionId, undefined, true);
     
     const endTime = Date.now();
     return {

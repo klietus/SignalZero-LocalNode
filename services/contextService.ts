@@ -3,15 +3,23 @@ import { loggerService } from './loggerService.js';
 import { ContextMessage, ContextSession, ContextHistoryGroup } from '../types.js';
 
 const CONTEXT_INDEX_KEY = 'context:index';
+const USER_CONTEXT_INDEX_PREFIX = 'context:user:'; // context:user:{userId} -> Set of context IDs
+
 const sessionKey = (id: string) => `context:session:${id}`;
 const historyKey = (id: string) => `context:history:${id}`;
 const queueKey = (id: string) => `context:queue:${id}`;
+const userIndexKey = (userId: string) => `${USER_CONTEXT_INDEX_PREFIX}${userId}`;
 
 const generateId = () => `ctx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 const persistSession = async (session: ContextSession) => {
   await redisService.request(['SADD', CONTEXT_INDEX_KEY, session.id]);
   await redisService.request(['SET', sessionKey(session.id), JSON.stringify(session)]);
+  
+  // Add to user-specific index if owned by a user
+  if (session.userId) {
+    await redisService.request(['SADD', userIndexKey(session.userId), session.id]);
+  }
 };
 
 const loadSession = async (id: string): Promise<ContextSession | null> => {
@@ -65,7 +73,12 @@ const writeToolNames = new Set([
 ]);
 
 export const contextService = {
-  async createSession(type: ContextSession['type'], metadata?: Record<string, any>, name?: string): Promise<ContextSession> {
+  async createSession(
+    type: ContextSession['type'], 
+    metadata?: Record<string, any>, 
+    name?: string,
+    userId?: string
+  ): Promise<ContextSession> {
     const now = new Date().toISOString();
     const session: ContextSession = {
       id: generateId(),
@@ -75,6 +88,7 @@ export const contextService = {
       createdAt: now,
       updatedAt: now,
       metadata,
+      userId: userId || null,
     };
 
     await persistSession(session);
@@ -82,257 +96,327 @@ export const contextService = {
     return session;
   },
 
-  async listSessions(): Promise<ContextSession[]> {
-    const ids: string[] = await redisService.request(['SMEMBERS', CONTEXT_INDEX_KEY]);
+  /**
+   * List sessions accessible to a user.
+   * - Regular users: only their own conversation contexts
+   * - Admins: all contexts including agent/loop contexts
+   */
+  async listSessions(userId?: string, isAdmin?: boolean): Promise<ContextSession[]> {
+    let ids: string[] = [];
+    
+    if (isAdmin) {
+      // Admins can see all contexts
+      ids = await redisService.request(['SMEMBERS', CONTEXT_INDEX_KEY]);
+    } else if (userId) {
+      // Regular users only see their own contexts
+      ids = await redisService.request(['SMEMBERS', userIndexKey(userId)]);
+    } else {
+      // No userId provided - return empty (shouldn't happen with proper auth)
+      return [];
+    }
+    
     const sessions: ContextSession[] = [];
 
     for (const id of ids || []) {
       const session = await loadSession(id);
-      if (session) sessions.push(session);
+      if (session) {
+        // Additional filter: non-admins should not see agent/loop contexts
+        if (!isAdmin && session.type === 'agent') {
+          continue;
+        }
+        sessions.push(session);
+      }
     }
 
     return sessions;
   },
 
-  async getSession(id: string): Promise<ContextSession | null> {
-    return loadSession(id);
-  },
-
-  async renameSession(id: string, name: string): Promise<ContextSession | null> {
-      const session = await loadSession(id);
-      if (!session) return null;
-      session.name = name;
-      session.updatedAt = new Date().toISOString();
-      await persistSession(session);
-      return session;
-  },
-
-  async enqueueMessage(targetId: string, message: string, sourceId: string): Promise<void> {
-      const payload = JSON.stringify({ message, sourceId, timestamp: Date.now() });
-      await redisService.request(['RPUSH', queueKey(targetId), payload]);
-  },
-
-  async popNextMessage(targetId: string): Promise<{ message: string, sourceId: string } | null> {
-      const payload = await redisService.request(['LPOP', queueKey(targetId)]);
-      if (!payload) return null;
-      try {
-          return JSON.parse(payload);
-      } catch {
-          return null;
-      }
-  },
-
-  async hasQueuedMessages(targetId: string): Promise<boolean> {
-      const len = await redisService.request(['LLEN', queueKey(targetId)]);
-      return (len as number) > 0;
-  },
-
-  async getHistory(id: string, since?: string): Promise<ContextMessage[]> {
-    const history = await loadHistory(id);
-    const filtered = history.filter(m => m.role !== 'tool');
-    if (since) {
-        const sinceTime = new Date(since).getTime();
-        return filtered.filter(m => new Date(m.timestamp).getTime() >= sinceTime);
-    }
-    return filtered;
-  },
-
-  async getUnfilteredHistory(id: string): Promise<ContextMessage[]> {
-    return loadHistory(id);
-  },
-
-  async getHistoryGrouped(id: string, since?: string): Promise<ContextHistoryGroup[]> {
-      const session = await loadSession(id);
-      const rawHistory = await loadHistory(id);
-      
-      let filtered = rawHistory;
-      if (since) {
-          const sinceTime = new Date(since).getTime();
-          filtered = rawHistory.filter(m => new Date(m.timestamp).getTime() >= sinceTime);
-      }
-      
-      const groups = new Map<string, ContextHistoryGroup>();
-      
-      for (const msg of filtered) {
-          // Identify the correlation group
-          let corrId = msg.correlationId;
-          if (msg.role === 'user') {
-              corrId = msg.id;
-          }
-          
-          if (!corrId) continue;
-          
-          if (!groups.has(corrId)) {
-              groups.set(corrId, {
-                  correlationId: corrId,
-                  // Placeholder user message if not found in this slice (will be populated if found)
-                  userMessage: { id: corrId, role: 'user', content: '', timestamp: msg.timestamp } as ContextMessage,
-                  assistantMessages: [],
-                  status: 'complete'
-              });
-          }
-          
-          const group = groups.get(corrId)!;
-          
-          if (msg.role === 'user') {
-              group.userMessage = msg;
-          } else {
-              // Include non-user messages. Sanitize tool results to hide their content from the UI.
-              const cleanMsg = {
-                  ...msg,
-                  content: msg.role === 'tool' ? '' : msg.content
-              };
-              group.assistantMessages.push(cleanMsg);
-          }
-      }
-      
-      if (session?.activeMessageId && groups.has(session.activeMessageId)) {
-          groups.get(session.activeMessageId)!.status = 'processing';
-      }
-      
-      return Array.from(groups.values()).sort((a, b) => new Date(a.userMessage.timestamp).getTime() - new Date(b.userMessage.timestamp).getTime());
-  },
-
-  async recordMessage(sessionId: string, message: Omit<ContextMessage, 'timestamp'> & { timestamp?: string }): Promise<void> {
-    const session = await loadSession(sessionId);
-    if (!session) {
-      throw new Error(`Context session not found: ${sessionId}`);
-    }
-
-    const history = await loadHistory(sessionId);
-    const entry: ContextMessage = {
-      ...message,
-      timestamp: message.timestamp || new Date().toISOString(),
-    };
-
-    history.push(entry);
-    await persistHistory(sessionId, history);
-
-    const updated: ContextSession = {
-      ...session,
-      updatedAt: new Date().toISOString(),
-    };
-    await persistSession(updated);
-  },
-
-  async ensureConversationSession(forceNew: boolean = false, metadata?: Record<string, any>): Promise<{ session: ContextSession; created: boolean }> {
-    const sessions = await this.listSessions();
-    const openConversations = sessions.filter((s) => s.type === 'conversation' && s.status === 'open');
-
-    if (openConversations.length > 0 && !forceNew) {
-      const [primary, ...extras] = openConversations;
-      for (const session of extras) {
-        await closeSessionInternal(session);
-      }
-      return { session: primary, created: false };
-    }
-
-    for (const session of openConversations) {
-      await closeSessionInternal(session);
-    }
-
-    const session = await this.createSession('conversation', metadata);
-    return { session, created: true };
-  },
-
-  async closeSession(id: string): Promise<ContextSession | null> {
+  /**
+   * Get a session if the user has access to it.
+   */
+  async getSession(id: string, userId?: string, isAdmin?: boolean): Promise<ContextSession | null> {
     const session = await loadSession(id);
     if (!session) return null;
+    
+    // Admin can access any session
+    if (isAdmin) return session;
+    
+    // User can only access their own sessions
+    if (userId && session.userId === userId) {
+      // Non-admins cannot access agent/loop contexts
+      if (session.type === 'agent') {
+        return null;
+      }
+      return session;
+    }
+    
+    // No access
+    return null;
+  },
+
+  /**
+   * Check if user can access a session.
+   */
+  async canAccessSession(id: string, userId?: string, isAdmin?: boolean): Promise<boolean> {
+    const session = await loadSession(id);
+    if (!session) return false;
+    
+    if (isAdmin) return true;
+    if (userId && session.userId === userId && session.type !== 'agent') return true;
+    
+    return false;
+  },
+
+  async closeSession(id: string, userId?: string, isAdmin?: boolean): Promise<ContextSession | null> {
+    // Verify access first
+    const hasAccess = await contextService.canAccessSession(id, userId, isAdmin);
+    if (!hasAccess) return null;
+    
+    const session = await loadSession(id);
+    if (!session) return null;
+    
     return closeSessionInternal(session);
   },
 
-  async closeConversationSessions(): Promise<void> {
-    const sessions = await this.listSessions();
-    const openConversations = sessions.filter((s) => s.type === 'conversation' && s.status === 'open');
-    for (const session of openConversations) {
-      await closeSessionInternal(session);
+  async deleteSession(id: string, userId?: string, isAdmin?: boolean): Promise<boolean> {
+    // Verify access first
+    const hasAccess = await contextService.canAccessSession(id, userId, isAdmin);
+    if (!hasAccess) return false;
+    
+    const session = await loadSession(id);
+    if (!session) return false;
+
+    await redisService.request(['DEL', sessionKey(id)]);
+    await redisService.request(['DEL', historyKey(id)]);
+    await redisService.request(['DEL', queueKey(id)]);
+    await redisService.request(['SREM', CONTEXT_INDEX_KEY, id]);
+    
+    // Also remove from user index if applicable
+    if (session.userId) {
+      await redisService.request(['SREM', userIndexKey(session.userId), id]);
     }
-  },
 
-  async startLoopSession(loopId: string, metadata?: Record<string, any>): Promise<ContextSession> {
-    return this.createSession('loop', { loopId, ...(metadata || {}) });
-  },
-
-  async closeLoopSession(id: string): Promise<ContextSession | null> {
-    return this.closeSession(id);
-  },
-
-  async requestCancellation(sessionId: string): Promise<void> {
-      const session = await loadSession(sessionId);
-      if (!session) return;
-      session.metadata = { ...session.metadata, cancellationRequested: true };
-      await persistSession(session);
-  },
-
-  async clearCancellation(sessionId: string): Promise<void> {
-      const session = await loadSession(sessionId);
-      if (!session) return;
-      if (session.metadata?.cancellationRequested) {
-          delete session.metadata.cancellationRequested;
-          await persistSession(session);
-      }
-  },
-
-  async isCancelled(sessionId: string): Promise<boolean> {
-      const session = await loadSession(sessionId);
-      return !!session?.metadata?.cancellationRequested;
-  },
-
-  async updateMetadata(sessionId: string, metadata: Record<string, any>): Promise<void> {
-      const session = await loadSession(sessionId);
-      if (!session) return;
-      session.metadata = { ...(session.metadata || {}), ...metadata };
-      session.updatedAt = new Date().toISOString();
-      await persistSession(session);
-  },
-
-  async isWriteAllowed(sessionId: string | undefined, toolName: string): Promise<boolean> {
-    if (!sessionId) return true;
-    const session = await loadSession(sessionId);
-    if (!session) return true;
-    if (session.status === 'closed' && writeToolNames.has(toolName)) {
-      return false;
-    }
     return true;
   },
 
-  async setActiveMessage(sessionId: string, messageId: string): Promise<void> {
-      const session = await loadSession(sessionId);
-      if (!session) return;
-      session.activeMessageId = messageId;
-      await persistSession(session);
+  async getHistory(sessionId: string, userId?: string, isAdmin?: boolean): Promise<ContextMessage[]> {
+    // Verify access first
+    const hasAccess = await contextService.canAccessSession(sessionId, userId, isAdmin);
+    if (!hasAccess) return [];
+    
+    return loadHistory(sessionId);
   },
 
-  async clearActiveMessage(sessionId: string): Promise<void> {
-      const session = await loadSession(sessionId);
-      if (!session) return;
-      session.activeMessageId = null;
-      await persistSession(session);
+  async getUnfilteredHistory(sessionId: string, userId?: string, isAdmin?: boolean): Promise<ContextMessage[]> {
+    // Verify access first
+    const hasAccess = await contextService.canAccessSession(sessionId, userId, isAdmin);
+    if (!hasAccess) return [];
+    
+    return loadHistory(sessionId);
   },
 
-  async hasActiveMessage(sessionId: string): Promise<boolean> {
-      const session = await loadSession(sessionId);
-      return !!session?.activeMessageId;
+  async appendHistory(sessionId: string, messages: ContextMessage[], userId?: string, isAdmin?: boolean): Promise<void> {
+    // Verify access first
+    const hasAccess = await contextService.canAccessSession(sessionId, userId, isAdmin);
+    if (!hasAccess) throw new Error('Access denied');
+    
+    const history = await loadHistory(sessionId);
+    history.push(...messages);
+    await persistHistory(sessionId, history);
   },
 
-  async cleanupTestSessions(): Promise<number> {
-      const sessions = await this.listSessions();
-      // Test sessions often have a specific metadata signature or type 'loop' that wasn't properly closed
-      // Or they are 'conversation' type but were created specifically for a test run
-      // Looking at startTestRun in testService, it creates tool executors which might use temp sessions.
-      // Actually, runSignalZeroTest often creates a session with source: 'test' or similar if we set it.
-      
-      const toDelete = sessions.filter(s => 
-          s.status === 'open' && 
-          (s.metadata?.source === 'test' || s.metadata?.temp === true)
-      );
+  async setActiveMessage(sessionId: string, messageId: string | null, userId?: string, isAdmin?: boolean): Promise<void> {
+    // Verify access first
+    const hasAccess = await contextService.canAccessSession(sessionId, userId, isAdmin);
+    if (!hasAccess) throw new Error('Access denied');
+    
+    const session = await loadSession(sessionId);
+    if (!session) return;
 
-      for (const session of toDelete) {
-          await redisService.request(['SREM', CONTEXT_INDEX_KEY, session.id]);
-          await redisService.request(['DEL', sessionKey(session.id)]);
-          await redisService.request(['DEL', historyKey(session.id)]);
+    session.activeMessageId = messageId;
+    session.updatedAt = new Date().toISOString();
+    await persistSession(session);
+  },
+
+  async clearActiveMessage(sessionId: string, userId?: string, isAdmin?: boolean): Promise<void> {
+    return contextService.setActiveMessage(sessionId, null, userId, isAdmin);
+  },
+
+  async updateSessionMetadata(sessionId: string, metadata: Record<string, any>, userId?: string, isAdmin?: boolean): Promise<ContextSession | null> {
+    // Verify access first
+    const hasAccess = await contextService.canAccessSession(sessionId, userId, isAdmin);
+    if (!hasAccess) return null;
+    
+    const session = await loadSession(sessionId);
+    if (!session) return null;
+
+    session.metadata = { ...session.metadata, ...metadata };
+    session.updatedAt = new Date().toISOString();
+    await persistSession(session);
+    return session;
+  },
+
+  async enqueueMessage(sessionId: string, message: ContextMessage, userId?: string, isAdmin?: boolean): Promise<void> {
+    // Verify access first
+    const hasAccess = await contextService.canAccessSession(sessionId, userId, isAdmin);
+    if (!hasAccess) throw new Error('Access denied');
+    
+    const queue = await redisService.request(['LPUSH', queueKey(sessionId), JSON.stringify(message)]);
+  },
+
+  async dequeueMessage(sessionId: string, userId?: string, isAdmin?: boolean): Promise<ContextMessage | null> {
+    // Verify access first
+    const hasAccess = await contextService.canAccessSession(sessionId, userId, isAdmin);
+    if (!hasAccess) return null;
+    
+    const payload = await redisService.request(['RPOP', queueKey(sessionId)]);
+    if (!payload) return null;
+    try {
+      return JSON.parse(payload) as ContextMessage;
+    } catch {
+      return null;
+    }
+  },
+
+  async getHistoryGrouped(sessionId: string, userId?: string, isAdmin?: boolean): Promise<ContextHistoryGroup[]> {
+    // Verify access first
+    const hasAccess = await contextService.canAccessSession(sessionId, userId, isAdmin);
+    if (!hasAccess) return [];
+    
+    const history = await loadHistory(sessionId);
+    const groups: ContextHistoryGroup[] = [];
+    let currentGroup: ContextHistoryGroup | null = null;
+
+    for (const message of history) {
+      if (message.role === 'user') {
+        if (currentGroup) {
+          groups.push(currentGroup);
+        }
+        currentGroup = {
+          correlationId: message.correlationId || message.id,
+          userMessage: message,
+          assistantMessages: [],
+          status: 'complete',
+        };
+      } else if (currentGroup) {
+        currentGroup.assistantMessages.push(message);
+        if (message.role === 'model' && message.isStreaming) {
+          currentGroup.status = 'processing';
+        }
       }
+    }
 
-      return toDelete.length;
+    if (currentGroup) {
+      groups.push(currentGroup);
+    }
+
+    return groups;
+  },
+
+  /**
+   * Check if a session has an active message being processed
+   */
+  async hasActiveMessage(sessionId: string, userId?: string, isAdmin?: boolean): Promise<boolean> {
+    const hasAccess = await contextService.canAccessSession(sessionId, userId, isAdmin);
+    if (!hasAccess) return false;
+    
+    const session = await loadSession(sessionId);
+    return !!session?.activeMessageId;
+  },
+
+  /**
+   * Check if a session has queued messages
+   */
+  async hasQueuedMessages(sessionId: string, userId?: string, isAdmin?: boolean): Promise<boolean> {
+    const hasAccess = await contextService.canAccessSession(sessionId, userId, isAdmin);
+    if (!hasAccess) return false;
+    
+    const len = await redisService.request(['LLEN', queueKey(sessionId)]);
+    return (len || 0) > 0;
+  },
+
+  /**
+   * Pop the next message from the queue
+   */
+  async popNextMessage(sessionId: string, userId?: string, isAdmin?: boolean): Promise<{ sourceId: string; message: string } | null> {
+    const hasAccess = await contextService.canAccessSession(sessionId, userId, isAdmin);
+    if (!hasAccess) return null;
+    
+    const payload = await redisService.request(['RPOP', queueKey(sessionId)]);
+    if (!payload) return null;
+    
+    try {
+      const parsed = JSON.parse(payload) as ContextMessage;
+      return {
+        sourceId: parsed.id,
+        message: parsed.content
+      };
+    } catch {
+      return null;
+    }
+  },
+
+  /**
+   * Request cancellation for a session
+   */
+  async requestCancellation(sessionId: string, userId?: string, isAdmin?: boolean): Promise<void> {
+    const hasAccess = await contextService.canAccessSession(sessionId, userId, isAdmin);
+    if (!hasAccess) throw new Error('Access denied');
+    
+    const cancelKey = `context:cancellation:${sessionId}`;
+    await redisService.request(['SET', cancelKey, '1', 'EX', '60']); // 60 second expiry
+  },
+
+  /**
+   * Check if cancellation has been requested
+   */
+  async hasCancellationRequest(sessionId: string, userId?: string, isAdmin?: boolean): Promise<boolean> {
+    const hasAccess = await contextService.canAccessSession(sessionId, userId, isAdmin);
+    if (!hasAccess) return false;
+    
+    const cancelKey = `context:cancellation:${sessionId}`;
+    const exists = await redisService.request(['EXISTS', cancelKey]);
+    return !!exists;
+  },
+
+  /**
+   * Clear cancellation request
+   */
+  async clearCancellation(sessionId: string, userId?: string, isAdmin?: boolean): Promise<void> {
+    const hasAccess = await contextService.canAccessSession(sessionId, userId, isAdmin);
+    if (!hasAccess) return;
+    
+    const cancelKey = `context:cancellation:${sessionId}`;
+    await redisService.request(['DEL', cancelKey]);
+  },
+
+  /**
+   * Record a message to the session history
+   */
+  async recordMessage(sessionId: string, message: ContextMessage, userId?: string, isAdmin?: boolean): Promise<void> {
+    const hasAccess = await contextService.canAccessSession(sessionId, userId, isAdmin);
+    if (!hasAccess) throw new Error('Access denied');
+    
+    const history = await loadHistory(sessionId);
+    history.push(message);
+    await persistHistory(sessionId, history);
+  },
+
+  /**
+   * Cleanup test sessions (admin only operation)
+   */
+  async cleanupTestSessions(): Promise<number> {
+    const ids: string[] = await redisService.request(['SMEMBERS', CONTEXT_INDEX_KEY]);
+    let cleaned = 0;
+
+    for (const id of ids || []) {
+      const session = await loadSession(id);
+      if (session?.metadata?.testContext && session.status === 'open') {
+        await closeSessionInternal(session);
+        cleaned++;
+      }
+    }
+
+    return cleaned;
   }
 };

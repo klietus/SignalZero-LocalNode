@@ -319,6 +319,7 @@ export interface ContextSession {
   closedAt?: string | null;
   metadata?: Record<string, any>;
   activeMessageId?: string | null;
+  userId?: string | null; // null for admin/loop contexts
 }
 
 export interface ContextHistoryGroup {
