@@ -723,8 +723,10 @@ app.get('/api/index/status', async (req, res) => {
 let activeSystemPrompt = ACTIVATION_PROMPT;
 
 // Chat Endpoint
-app.post('/api/chat', async (req, res) => {
+app.post('/api/chat', async (req: AuthenticatedRequest, res) => {
   const { message, contextSessionId, messageId } = req.body;
+  const userId = req.user?.userId;
+  const isAdmin = req.user?.role === 'admin';
 
   if (!message) {
      res.status(400).json({ error: 'Message is required' });
@@ -737,9 +739,10 @@ app.post('/api/chat', async (req, res) => {
   }
 
   try {
-    const contextSession = await contextService.getSession(contextSessionId);
+    // Get session with ownership check
+    const contextSession = await contextService.getSession(contextSessionId, userId, isAdmin);
     if (!contextSession) {
-        res.status(404).json({ error: 'Context session not found' });
+        res.status(404).json({ error: 'Context session not found or access denied' });
         return;
     }
 
@@ -754,7 +757,7 @@ app.post('/api/chat', async (req, res) => {
     }
 
     // Lock the context
-    await contextService.setActiveMessage(contextSession.id, messageId || 'unknown');
+    await contextService.setActiveMessage(contextSession.id, messageId || 'unknown', userId, isAdmin);
 
     const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), contextSession.id);
     
@@ -773,14 +776,17 @@ app.post('/api/chat', async (req, res) => {
 });
 
 // Stop Chat Endpoint
-app.post('/api/chat/stop', async (req, res) => {
+app.post('/api/chat/stop', async (req: AuthenticatedRequest, res) => {
     const { contextSessionId } = req.body;
+    const userId = req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
+    
     if (!contextSessionId) {
         res.status(400).json({ error: 'Context session ID is required' });
         return;
     }
     try {
-        await contextService.requestCancellation(contextSessionId);
+        await contextService.requestCancellation(contextSessionId, userId, isAdmin);
         loggerService.info("Cancellation requested for session", { contextSessionId });
         res.json({ status: 'cancellation_requested' });
     } catch (e) {
@@ -790,15 +796,24 @@ app.post('/api/chat/stop', async (req, res) => {
 });
 
 // Trigger Context Processing (Queue Drain)
-app.post('/api/contexts/:id/trigger', async (req, res) => {
+app.post('/api/contexts/:id/trigger', async (req: AuthenticatedRequest, res) => {
     const { id } = req.params;
+    const userId = req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
+    
     try {
-        if (!await contextService.hasActiveMessage(id) && await contextService.hasQueuedMessages(id)) {
-            const nextItem = await contextService.popNextMessage(id);
+        // Verify access first
+        const hasAccess = await contextService.canAccessSession(id, userId, isAdmin);
+        if (!hasAccess) {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+        
+        if (!await contextService.hasActiveMessage(id, userId, isAdmin) && await contextService.hasQueuedMessages(id, userId, isAdmin)) {
+            const nextItem = await contextService.popNextMessage(id, userId, isAdmin);
             if (nextItem) {
                 loggerService.info(`Triggering queued message for ${id}`, { sourceId: nextItem.sourceId });
                 const queueMsgId = `queued-${Date.now()}`;
-                await contextService.setActiveMessage(id, queueMsgId);
+                await contextService.setActiveMessage(id, queueMsgId, userId, isAdmin);
                 
                 const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), id);
                 processMessageAsync(id, nextItem.message, toolExecutor, activeSystemPrompt, queueMsgId);
@@ -814,10 +829,13 @@ app.post('/api/contexts/:id/trigger', async (req, res) => {
 });
 
 // Send Assistant Message to Latest Conversational Context
-app.post('/api/contexts/latest/assistant-message', async (req, res) => {
+app.post('/api/contexts/latest/assistant-message', async (req: AuthenticatedRequest, res) => {
     const { message } = req.body;
+    const userId = req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
+    
     try {
-        const contexts = await contextService.listSessions();
+        const contexts = await contextService.listSessions(userId, isAdmin);
         const conversations = contexts
             .filter(c => c.type === 'conversation' && c.status === 'open')
             .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
@@ -828,12 +846,12 @@ app.post('/api/contexts/latest/assistant-message', async (req, res) => {
             return;
         }
 
-        await contextService.recordMessage(latest.id, {
+        await contextService.appendHistory(latest.id, [{
             id: randomUUID(),
-            role: 'assistant',
+            role: 'model',
             content: message,
             metadata: { kind: 'agent_update' }
-        });
+        }], userId, isAdmin);
 
         res.json({ status: 'sent', contextId: latest.id });
     } catch (e) {
@@ -865,9 +883,12 @@ app.post('/api/system/prompt', async (req, res) => {
 });
 
 // Context Sessions
-app.get('/api/contexts', async (req, res) => {
+app.get('/api/contexts', async (req: AuthenticatedRequest, res) => {
+    const userId = req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
+    
     try {
-        const contexts = await contextService.listSessions();
+        const contexts = await contextService.listSessions(userId, isAdmin);
         res.json({ contexts });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
@@ -875,10 +896,19 @@ app.get('/api/contexts', async (req, res) => {
     }
 });
 
-app.post('/api/contexts', async (req, res) => {
+app.post('/api/contexts', async (req: AuthenticatedRequest, res) => {
+    const userId = req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
+    
     try {
         const type = req.body?.type || 'conversation';
-        const session = await contextService.createSession(type, { source: 'api' });
+        
+        // Only admins can create agent/loop contexts
+        if (type === 'agent' && !isAdmin) {
+            return res.status(403).json({ error: 'Admin access required to create agent contexts' });
+        }
+        
+        const session = await contextService.createSession(type, { source: 'api' }, undefined, userId);
         res.status(201).json(session);
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
@@ -886,11 +916,14 @@ app.post('/api/contexts', async (req, res) => {
     }
 });
 
-app.post('/api/contexts/:id/archive', async (req, res) => {
+app.post('/api/contexts/:id/archive', async (req: AuthenticatedRequest, res) => {
+    const userId = req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
+    
     try {
-        const session = await contextService.closeSession(req.params.id);
+        const session = await contextService.closeSession(req.params.id, userId, isAdmin);
         if (!session) {
-            res.status(404).json({ error: 'Context not found' });
+            res.status(404).json({ error: 'Context not found or access denied' });
             return;
         }
         res.json(session);
@@ -900,16 +933,18 @@ app.post('/api/contexts/:id/archive', async (req, res) => {
     }
 });
 
-app.get('/api/contexts/:id/history', async (req, res) => {
+app.get('/api/contexts/:id/history', async (req: AuthenticatedRequest, res) => {
+    const userId = req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
+    
     try {
-        const session = await contextService.getSession(req.params.id);
+        const session = await contextService.getSession(req.params.id, userId, isAdmin);
         if (!session) {
-            res.status(404).json({ error: 'Context session not found' });
+            res.status(404).json({ error: 'Context session not found or access denied' });
             return;
         }
 
-        const since = typeof req.query.since === 'string' ? req.query.since : undefined;
-        const history = await contextService.getHistoryGrouped(req.params.id, since);
+        const history = await contextService.getHistoryGrouped(req.params.id, userId, isAdmin);
         res.json({ session, history });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
@@ -1930,11 +1965,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             }
 
             loggerService.info("Checking for interrupted contexts requiring recovery...");
-            const contexts = await contextService.listSessions();
+            // System-level recovery - pass undefined userId and true for isAdmin to see all contexts
+            const contexts = await contextService.listSessions(undefined, true);
             const pendingContexts = contexts.filter(c => c.activeMessageId && c.status === 'open');
             
             for (const ctx of pendingContexts) {
-                const history = await contextService.getUnfilteredHistory(ctx.id);
+                // Get history as system/admin
+                const history = await contextService.getUnfilteredHistory(ctx.id, undefined, true);
                 const lastUserMsg = [...history].reverse().find(m => m.role === 'user');
                 
                 if (lastUserMsg) {
@@ -1945,7 +1982,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
                 } else {
                     // No user message found to retry, clear the stale lock
                     loggerService.warn(`Context ${ctx.id} has activeMessageId but no user prompt in history. Clearing stale lock.`);
-                    await contextService.clearActiveMessage(ctx.id);
+                    await contextService.clearActiveMessage(ctx.id, undefined, true);
                 }
             }
             if (pendingContexts.length > 0) {
