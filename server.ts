@@ -203,7 +203,7 @@ app.post('/api/auth/setup', async (req, res) => {
         await authService.initialize(username, password);
         
         if (inference) {
-            settingsService.setInferenceSettings(inference);
+            await settingsService.setInferenceSettings(inference);
         }
 
         const token = await authService.login(username, password);
@@ -632,9 +632,9 @@ app.get('/api/health', async (req, res) => {
 });
 
 // System Settings
-app.get('/api/settings', (req, res) => {
+app.get('/api/settings', async (req, res) => {
     try {
-        const settings = settingsService.getSystemSettings();
+        const settings = await settingsService.getSystemSettings();
         res.json(settings);
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
@@ -642,11 +642,11 @@ app.get('/api/settings', (req, res) => {
     }
 });
 
-app.post('/api/settings', (req, res) => {
+app.post('/api/settings', async (req, res) => {
     try {
         const { redis, chroma, inference, googleSearch } = req.body || {};
-        settingsService.setSystemSettings({ redis, chroma, inference, googleSearch });
-        const updated = settingsService.getSystemSettings();
+        await settingsService.setSystemSettings({ redis, chroma, inference, googleSearch });
+        const updated = await settingsService.getSystemSettings();
         res.json(updated);
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
@@ -1872,6 +1872,14 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 
         if (redisHealth) {
             loggerService.info("Redis Connection: OK");
+            
+            // Initialize settings (migrate from file to Redis if needed)
+            try {
+                await settingsService.initialize();
+                loggerService.info("Settings initialized");
+            } catch (error) {
+                loggerService.error("Failed to initialize settings", { error });
+            }
             
             // Load persisted system prompt
             try {

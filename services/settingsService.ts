@@ -2,10 +2,21 @@ import { UserProfile } from '../types.ts';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
+import { redisService } from './redisService.ts';
+import { loggerService } from './loggerService.ts';
 
 dotenv.config();
 
+// Settings file for local development / migration source
 const SETTINGS_FILE = process.env.SETTINGS_FILE_PATH || path.join(process.cwd(), 'settings.json');
+const SETTINGS_KEY = 'sz:settings:system';
+
+// Detect Cloud Run / stateless environment
+const isStateless = (): boolean => {
+  return process.env.STATELESS === 'true' || 
+         process.env.K_SERVICE !== undefined || // Cloud Run sets this
+         process.env.SETTINGS_STORAGE === 'redis';
+};
 
 export interface VectorSettings {
   useExternal: boolean;
@@ -32,6 +43,24 @@ export interface VoiceSettings {
   wakeWord?: string;
 }
 
+export interface InferenceSettings {
+  provider: 'local' | 'openai' | 'gemini' | 'kimi2';
+  apiKey: string;
+  endpoint: string;
+  model: string;
+  loopModel: string;
+  visionModel: string;
+  savedConfigs?: Record<string, InferenceConfiguration>;
+}
+
+export interface InferenceConfiguration {
+  apiKey: string;
+  endpoint: string;
+  model: string;
+  loopModel: string;
+  visionModel: string;
+}
+
 export interface SystemSettings {
   redis?: {
     server?: string;
@@ -52,73 +81,200 @@ export interface SystemSettings {
   };
 }
 
-// In-memory store for saved configs, loaded from file
-let _savedInferenceConfigs: Record<string, InferenceConfiguration> = {};
-let _adminUser: AdminUser | null = null;
+// In-memory cache for settings (reduces Redis calls)
+let _settingsCache: SystemSettings | null = null;
+let _cacheTimestamp = 0;
+const CACHE_TTL = 5000; // 5 seconds
 
-const loadPersistedSettings = () => {
-  if (fs.existsSync(SETTINGS_FILE)) {
-    try {
-      const data = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
-      if (data.redis) {
-        if (data.redis.server) process.env.REDIS_SERVER = data.redis.server;
-        if (data.redis.port) process.env.REDIS_PORT = String(data.redis.port);
-        if (data.redis.password) process.env.REDIS_PASSWORD = data.redis.password;
+// Load settings from Redis
+const loadFromRedis = async (): Promise<SystemSettings | null> => {
+  try {
+    const data = await redisService.request(['GET', SETTINGS_KEY]);
+    if (data) {
+      return JSON.parse(data) as SystemSettings;
+    }
+  } catch (e) {
+    loggerService.error('Failed to load settings from Redis', { error: e });
+  }
+  return null;
+};
+
+// Save settings to Redis
+const saveToRedis = async (settings: SystemSettings): Promise<void> => {
+  try {
+    await redisService.request(['SET', SETTINGS_KEY, JSON.stringify(settings)]);
+    _settingsCache = settings;
+    _cacheTimestamp = Date.now();
+  } catch (e) {
+    loggerService.error('Failed to save settings to Redis', { error: e });
+    throw e;
+  }
+};
+
+// Load settings from file (for migration)
+const loadFromFile = (): SystemSettings | null => {
+  if (!fs.existsSync(SETTINGS_FILE)) {
+    return null;
+  }
+  
+  try {
+    const data = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
+    return data as SystemSettings;
+  } catch (e) {
+    loggerService.error('Failed to load settings from file', { error: e });
+    return null;
+  }
+};
+
+// Save settings to file (local mode only)
+const saveToFile = (settings: SystemSettings): void => {
+  if (isStateless()) {
+    return; // Don't write files in stateless mode
+  }
+  
+  try {
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
+  } catch (e) {
+    loggerService.error('Failed to save settings to file', { error: e });
+  }
+};
+
+// Migration: Move file settings to Redis
+export const migrateSettingsToRedis = async (): Promise<boolean> => {
+  const fileSettings = loadFromFile();
+  if (!fileSettings) {
+    return false; // Nothing to migrate
+  }
+  
+  const redisSettings = await loadFromRedis();
+  if (redisSettings) {
+    loggerService.info('Settings already exist in Redis, skipping migration');
+    return false;
+  }
+  
+  loggerService.info('Migrating settings from file to Redis...');
+  
+  // Don't store connection settings in Redis - keep them in env
+  // Only store application settings
+  const settingsToMigrate: SystemSettings = {
+    inference: fileSettings.inference,
+    voice: fileSettings.voice,
+    googleSearch: fileSettings.googleSearch,
+    // Don't migrate: redis, chroma, adminUser (userService handles users now)
+  };
+  
+  await saveToRedis(settingsToMigrate);
+  loggerService.info('Settings migration complete');
+  
+  // Rename the old file as backup
+  try {
+    const backupPath = `${SETTINGS_FILE}.backup`;
+    fs.renameSync(SETTINGS_FILE, backupPath);
+    loggerService.info(`Backed up old settings file to ${backupPath}`);
+  } catch (e) {
+    loggerService.warn('Could not backup old settings file', { error: e });
+  }
+  
+  return true;
+};
+
+// Initialize settings on startup
+export const initializeSettings = async (): Promise<void> => {
+  if (isStateless()) {
+    loggerService.info('Running in stateless mode - settings stored in Redis');
+    await migrateSettingsToRedis();
+  } else {
+    loggerService.info('Running in local mode - settings from file with Redis fallback');
+    // In local mode, try Redis first, fall back to file
+    const redisSettings = await loadFromRedis();
+    if (!redisSettings) {
+      const fileSettings = loadFromFile();
+      if (fileSettings) {
+        await saveToRedis(fileSettings);
       }
-      if (data.chroma) {
-        if (data.chroma.url) process.env.CHROMA_URL = data.chroma.url;
-        if (data.chroma.collection) process.env.CHROMA_COLLECTION = data.chroma.collection;
-        if (data.chroma.useExternal !== undefined) process.env.USE_EXTERNAL_VECTOR_DB = String(data.chroma.useExternal);
-      }
-      if (data.inference) {
-        if (data.inference.provider) process.env.INFERENCE_PROVIDER = data.inference.provider;
-        if (data.inference.apiKey) process.env.INFERENCE_API_KEY = data.inference.apiKey;
-        if (data.inference.endpoint) process.env.INFERENCE_ENDPOINT = data.inference.endpoint;
-        if (data.inference.model) process.env.INFERENCE_MODEL = data.inference.model;
-        if (data.inference.loopModel) process.env.INFERENCE_LOOP_MODEL = data.inference.loopModel;
-        if (data.inference.visionModel) process.env.INFERENCE_VISION_MODEL = data.inference.visionModel;
-        
-        if (data.inference.savedConfigs) {
-           _savedInferenceConfigs = data.inference.savedConfigs;
-        }
-      }
-      if (data.googleSearch) {
-        if (data.googleSearch.apiKey) process.env.GOOGLE_CUSTOM_SEARCH_KEY = data.googleSearch.apiKey;
-        if (data.googleSearch.cx) process.env.GOOGLE_CSE_ID = data.googleSearch.cx;
-      }
-      if (data.voice) {
-          if (data.voice.pulseServer) process.env.PULSE_SERVER = data.voice.pulseServer;
-          if (data.voice.wakeWord) process.env.WAKE_WORD = data.voice.wakeWord;
-      }
-      if (data.adminUser) {
-          _adminUser = data.adminUser;
-      }
-    } catch (e) {
-      console.error('Failed to load settings file', e);
     }
   }
 };
 
-const savePersistedSettings = (settings: any) => {
-  try {
-    // Merge current savedConfigs into the object being saved
-    const payload = {
-      ...settings,
-      inference: {
-        ...settings.inference,
-        savedConfigs: _savedInferenceConfigs
-      },
-      adminUser: _adminUser
-    };
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(payload, null, 2));
-  } catch (e) {
-    console.error('Failed to save settings file', e);
+// Get settings with caching
+const getSettings = async (): Promise<SystemSettings> => {
+  const now = Date.now();
+  
+  // Return cached if fresh
+  if (_settingsCache && (now - _cacheTimestamp) < CACHE_TTL) {
+    return _settingsCache;
   }
+  
+  // Try Redis first
+  let settings = await loadFromRedis();
+  
+  // Fall back to file in local mode
+  if (!settings && !isStateless()) {
+    settings = loadFromFile();
+    if (settings) {
+      // Sync to Redis for next time
+      await saveToRedis(settings).catch(() => {});
+    }
+  }
+  
+  // Default empty settings
+  settings = settings || {};
+  
+  _settingsCache = settings;
+  _cacheTimestamp = now;
+  
+  return settings;
 };
 
-// Load settings on initialization
-loadPersistedSettings();
+// --- Connection Settings (Always from ENV) ---
+
+const getRedisSettingsFromEnv = (): RedisSettings => {
+  const parseRedisUrl = (url: string) => {
+    if (!url) {
+      return { host: '', port: 0, password: '' };
+    }
+
+    try {
+      const normalizedUrl = url.includes('://') ? url : `redis://${url}`;
+      const parsed = new URL(normalizedUrl);
+
+      return {
+        host: parsed.hostname,
+        port: parsed.port ? Number(parsed.port) : 6379,
+        password: parsed.password
+      };
+    } catch (e) {
+      return { host: '', port: 0, password: '' };
+    }
+  };
+
+  const redisUrl = process.env.REDIS_URL || '';
+  const derived = parseRedisUrl(redisUrl);
+
+  return {
+    redisUrl,
+    redisToken: process.env.REDIS_TOKEN || '',
+    redisServer: process.env.REDIS_SERVER || derived.host,
+    redisPort: process.env.REDIS_PORT ? Number(process.env.REDIS_PORT) : (derived.port || 6379),
+    redisPassword: process.env.REDIS_PASSWORD || process.env.REDIS_TOKEN || derived.password || '',
+  };
+};
+
+const getVectorSettingsFromEnv = (): VectorSettings => {
+  return {
+    useExternal: process.env.USE_EXTERNAL_VECTOR_DB === 'true',
+    chromaUrl: process.env.CHROMA_URL || 'http://localhost:8000',
+    collectionName: process.env.CHROMA_COLLECTION || 'signalzero',
+  };
+};
+
 export const settingsService = {
+  // --- Initialization ---
+  initialize: initializeSettings,
+  migrateToRedis: migrateSettingsToRedis,
+  
+  isStateless: isStateless,
+
   // --- Core Identity ---
   getApiKey: (): string => {
     return process.env.API_KEY || '';
@@ -149,89 +305,87 @@ export const settingsService = {
     return defaultPrompt;
   },
 
-  setSystemPrompt: (prompt: string) => {
-  },
+  setSystemPrompt: (prompt: string) => {},
 
   clearSystemPrompt: () => {},
 
-  // --- Admin Auth ---
-  getAdminUser: (): AdminUser | null => _adminUser,
-  
-  setAdminUser: (user: AdminUser) => {
-      _adminUser = user;
-      savePersistedSettings(settingsService.getSystemSettings());
-  },
-
-  // --- Redis Settings ---
-  getRedisSettings: (): RedisSettings => {
-    const parseRedisUrl = (url: string) => {
-      if (!url) {
-        return { host: '', port: 0, password: '' };
-      }
-
-      try {
-        const normalizedUrl = url.includes('://') ? url : `redis://${url}`;
-        const parsed = new URL(normalizedUrl);
-
-        return {
-          host: parsed.hostname,
-          port: parsed.port ? Number(parsed.port) : 6379,
-          password: parsed.password
-        };
-      } catch (e) {
-        return { host: '', port: 0, password: '' };
-      }
-    };
-
-    const redisUrl = process.env.REDIS_URL || '';
-    const derived = parseRedisUrl(redisUrl);
-
-    return {
-      redisUrl,
-      redisToken: process.env.REDIS_TOKEN || '',
-      redisServer: process.env.REDIS_SERVER || derived.host,
-      redisPort: process.env.REDIS_PORT ? Number(process.env.REDIS_PORT) : (derived.port || 6379),
-      redisPassword: process.env.REDIS_PASSWORD || process.env.REDIS_TOKEN || derived.password || '',
-    };
-  },
+  // --- Redis Settings (Always from ENV) ---
+  getRedisSettings: getRedisSettingsFromEnv,
 
   setRedisSettings: (settings: RedisSettings) => {
+    // In stateless mode, only update env vars (won't persist)
     process.env.REDIS_URL = settings.redisUrl;
     process.env.REDIS_TOKEN = settings.redisToken;
     process.env.REDIS_SERVER = settings.redisServer;
     process.env.REDIS_PORT = String(settings.redisPort);
     process.env.REDIS_PASSWORD = settings.redisPassword;
+    
+    // In local mode, also save to file for backward compatibility
+    if (!isStateless()) {
+      const current = loadFromFile() || {};
+      current.redis = {
+        server: settings.redisServer,
+        port: settings.redisPort,
+        password: settings.redisPassword,
+      };
+      saveToFile(current);
+    }
   },
 
-  // --- Vector Database ---
-  getVectorSettings: (): VectorSettings => {
-    return {
-      useExternal: process.env.USE_EXTERNAL_VECTOR_DB === 'true',
-      chromaUrl: process.env.CHROMA_URL || 'http://localhost:8000',
-      collectionName: process.env.CHROMA_COLLECTION || 'signalzero',
-    };
-  },
+  // --- Vector Database (Always from ENV) ---
+  getVectorSettings: getVectorSettingsFromEnv,
 
   setVectorSettings: (settings: VectorSettings) => {
     process.env.USE_EXTERNAL_VECTOR_DB = String(settings.useExternal);
     process.env.CHROMA_URL = settings.chromaUrl;
     process.env.CHROMA_COLLECTION = settings.collectionName;
+    
+    // In local mode, also save to file
+    if (!isStateless()) {
+      const current = loadFromFile() || {};
+      current.chroma = {
+        url: settings.chromaUrl,
+        collection: settings.collectionName,
+        useExternal: settings.useExternal,
+      };
+      saveToFile(current);
+    }
   },
 
-  // --- Inference Settings ---
-  getInferenceSettings: (): InferenceSettings => {
+  // --- Inference Settings (Stored in Redis) ---
+  getInferenceSettings: async (): Promise<InferenceSettings> => {
+    const settings = await getSettings();
+    const saved = settings.inference || {};
+    
     return {
-      provider: (process.env.INFERENCE_PROVIDER as 'local' | 'openai' | 'gemini' | 'kimi2') || 'local',
-      apiKey: process.env.INFERENCE_API_KEY || '',
-      endpoint: process.env.INFERENCE_ENDPOINT || 'http://localhost:1234/v1',
-      model: process.env.INFERENCE_MODEL || 'openai/gpt-oss-120b',
-      loopModel: process.env.INFERENCE_LOOP_MODEL || process.env.INFERENCE_MODEL || 'openai/gpt-oss-120b',
-      visionModel: process.env.INFERENCE_VISION_MODEL || 'zai-org/glm-4.6v-flash',
-      savedConfigs: _savedInferenceConfigs
+      provider: (saved.provider as 'local' | 'openai' | 'gemini' | 'kimi2') || 
+                (process.env.INFERENCE_PROVIDER as 'local' | 'openai' | 'gemini' | 'kimi2') || 
+                'local',
+      apiKey: saved.apiKey || process.env.INFERENCE_API_KEY || '',
+      endpoint: saved.endpoint || process.env.INFERENCE_ENDPOINT || 'http://localhost:1234/v1',
+      model: saved.model || process.env.INFERENCE_MODEL || 'openai/gpt-oss-120b',
+      loopModel: saved.loopModel || process.env.INFERENCE_LOOP_MODEL || saved.model || process.env.INFERENCE_MODEL || 'openai/gpt-oss-120b',
+      visionModel: saved.visionModel || process.env.INFERENCE_VISION_MODEL || 'zai-org/glm-4.6v-flash',
+      savedConfigs: saved.savedConfigs || {},
     };
   },
 
-  setInferenceSettings: (settings: InferenceSettings) => {
+  setInferenceSettings: async (settings: InferenceSettings) => {
+    const current = await getSettings();
+    
+    current.inference = {
+      provider: settings.provider,
+      apiKey: settings.apiKey,
+      endpoint: settings.endpoint,
+      model: settings.model,
+      loopModel: settings.loopModel,
+      visionModel: settings.visionModel,
+      savedConfigs: settings.savedConfigs || current.inference?.savedConfigs || {},
+    };
+    
+    await saveToRedis(current);
+    
+    // Also update env for current process
     process.env.INFERENCE_PROVIDER = settings.provider;
     process.env.INFERENCE_API_KEY = settings.apiKey;
     process.env.INFERENCE_ENDPOINT = settings.endpoint;
@@ -239,29 +393,89 @@ export const settingsService = {
     process.env.INFERENCE_LOOP_MODEL = settings.loopModel;
     process.env.INFERENCE_VISION_MODEL = settings.visionModel;
     
-    // Update the saved config for this provider
-    if (settings.provider) {
-        _savedInferenceConfigs[settings.provider] = {
-            apiKey: settings.apiKey,
-            endpoint: settings.endpoint,
-            model: settings.model,
-            loopModel: settings.loopModel,
-            visionModel: settings.visionModel
-        };
+    // Local mode: also save to file
+    if (!isStateless()) {
+      saveToFile(current);
+    }
+  },
+
+  // --- Google Search Settings (Stored in Redis) ---
+  getGoogleSearchSettings: async (): Promise<{ apiKey: string; cx: string }> => {
+    const settings = await getSettings();
+    return {
+      apiKey: settings.googleSearch?.apiKey || process.env.GOOGLE_CUSTOM_SEARCH_KEY || '',
+      cx: settings.googleSearch?.cx || process.env.GOOGLE_CSE_ID || '',
+    };
+  },
+
+  setGoogleSearchSettings: async (settings: { apiKey?: string; cx?: string }) => {
+    const current = await getSettings();
+    current.googleSearch = {
+      apiKey: settings.apiKey ?? current.googleSearch?.apiKey ?? '',
+      cx: settings.cx ?? current.googleSearch?.cx ?? '',
+    };
+    await saveToRedis(current);
+    
+    if (settings.apiKey !== undefined) process.env.GOOGLE_CUSTOM_SEARCH_KEY = settings.apiKey;
+    if (settings.cx !== undefined) process.env.GOOGLE_CSE_ID = settings.cx;
+    
+    if (!isStateless()) {
+      saveToFile(current);
+    }
+  },
+
+  // --- Voice Settings (Stored in Redis) ---
+  getVoiceSettings: async (): Promise<VoiceSettings> => {
+    const settings = await getSettings();
+    return {
+      pulseServer: settings.voice?.pulseServer || process.env.PULSE_SERVER || '',
+      wakeWord: settings.voice?.wakeWord || process.env.WAKE_WORD || 'axiom',
+    };
+  },
+
+  setVoiceSettings: async (settings: VoiceSettings) => {
+    const current = await getSettings();
+    current.voice = {
+      pulseServer: settings.pulseServer ?? current.voice?.pulseServer ?? '',
+      wakeWord: settings.wakeWord ?? current.voice?.wakeWord ?? 'axiom',
+    };
+    await saveToRedis(current);
+    
+    if (settings.pulseServer !== undefined) process.env.PULSE_SERVER = settings.pulseServer;
+    if (settings.wakeWord !== undefined) process.env.WAKE_WORD = settings.wakeWord;
+    
+    // Push config to Voice Server
+    if (settings.pulseServer || settings.wakeWord) {
+      const voiceUrl = 'http://voiceservice:8000';
+      fetch(`${voiceUrl}/config`, {
+          method: 'POST',
+          headers: { 
+              'Content-Type': 'application/json',
+              'x-internal-key': process.env.INTERNAL_SERVICE_KEY || ''
+          },
+          body: JSON.stringify({
+              pulse_server: settings.pulseServer,
+              wake_word: settings.wakeWord
+          })
+      }).catch(err => loggerService.error("Failed to push config to Voice Server", { error: err }));
     }
     
-    // If incoming settings has a bulk update for savedConfigs (e.g. from UI import), respect it
-    if (settings.savedConfigs) {
-        _savedInferenceConfigs = { ..._savedInferenceConfigs, ...settings.savedConfigs };
+    if (!isStateless()) {
+      saveToFile(current);
     }
   },
 
   // --- Aggregated Settings ---
-  getSystemSettings: () => {
-    const redisSettings = settingsService.getRedisSettings();
-    const vectorSettings = settingsService.getVectorSettings();
-    const inferenceSettings = settingsService.getInferenceSettings();
-
+  get: async (): Promise<SystemSettings> => {
+    const [inference, googleSearch, voice] = await Promise.all([
+      settingsService.getInferenceSettings(),
+      settingsService.getGoogleSearchSettings(),
+      settingsService.getVoiceSettings(),
+    ]);
+    
+    const redisSettings = getRedisSettingsFromEnv();
+    const vectorSettings = getVectorSettingsFromEnv();
+    
     return {
       redis: {
         server: redisSettings.redisServer,
@@ -273,97 +487,60 @@ export const settingsService = {
         collection: vectorSettings.collectionName,
         useExternal: vectorSettings.useExternal,
       },
-      inference: {
-        provider: inferenceSettings.provider,
-        apiKey: inferenceSettings.apiKey,
-        endpoint: inferenceSettings.endpoint,
-        model: inferenceSettings.model,
-        loopModel: inferenceSettings.loopModel,
-        visionModel: inferenceSettings.visionModel,
-      },
-      googleSearch: {
-        apiKey: process.env.GOOGLE_CUSTOM_SEARCH_KEY || '',
-        cx: process.env.GOOGLE_CSE_ID || ''
-      },
-      voice: {
-          pulseServer: process.env.PULSE_SERVER || '',
-          wakeWord: process.env.WAKE_WORD || 'axiom'
-      },
-      adminUser: _adminUser || undefined
+      inference,
+      googleSearch,
+      voice,
     };
   },
 
-  setSystemSettings: (settings: SystemSettings) => {
+  update: async (settings: Partial<SystemSettings>) => {
     if (settings.redis) {
-        const currentRedis = settingsService.getRedisSettings();
-        const redisInput = settings.redis as Record<string, unknown>;
-        settingsService.setRedisSettings({
-          redisUrl: currentRedis.redisUrl,
-          redisToken: currentRedis.redisToken,
-          redisServer: (redisInput.server as string | undefined) ?? currentRedis.redisServer,
-          redisPort: (redisInput.port as number | undefined) ?? currentRedis.redisPort,
-          redisPassword: (redisInput.password as string | undefined) ?? currentRedis.redisPassword,
-        });
+      const currentRedis = getRedisSettingsFromEnv();
+      settingsService.setRedisSettings({
+        ...currentRedis,
+        redisServer: settings.redis.server ?? currentRedis.redisServer,
+        redisPort: settings.redis.port ?? currentRedis.redisPort,
+        redisPassword: settings.redis.password ?? currentRedis.redisPassword,
+      });
     }
 
     if (settings.chroma) {
-        const currentVector = settingsService.getVectorSettings();
-        const chromaInput = settings.chroma as Record<string, unknown>;
-        settingsService.setVectorSettings({
-          useExternal: (chromaInput.useExternal as boolean | undefined) ?? currentVector.useExternal,
-          chromaUrl: (chromaInput.url as string | undefined) ?? currentVector.chromaUrl,
-          collectionName: (chromaInput.collection as string | undefined) ?? currentVector.collectionName,
-        });
+      const currentVector = getVectorSettingsFromEnv();
+      settingsService.setVectorSettings({
+        ...currentVector,
+        useExternal: settings.chroma.useExternal ?? currentVector.useExternal,
+        chromaUrl: settings.chroma.url ?? currentVector.chromaUrl,
+        collectionName: settings.chroma.collection ?? currentVector.collectionName,
+      });
     }
 
     if (settings.inference) {
-      const currentInference = settingsService.getInferenceSettings();
-      const inferenceInput = settings.inference as Record<string, unknown>;
-      settingsService.setInferenceSettings({
-        provider: (inferenceInput.provider as 'local' | 'openai' | 'gemini' | 'kimi2' | undefined) ?? currentInference.provider,
-        apiKey: (inferenceInput.apiKey as string | undefined) ?? currentInference.apiKey,
-        endpoint: (inferenceInput.endpoint as string | undefined) ?? currentInference.endpoint,
-        model: (inferenceInput.model as string | undefined) ?? currentInference.model,
-        loopModel: (inferenceInput.loopModel as string | undefined) ?? (inferenceInput.model as string | undefined) ?? currentInference.loopModel,
-        visionModel: (inferenceInput.visionModel as string | undefined) ?? currentInference.visionModel,
+      const currentInference = await settingsService.getInferenceSettings();
+      await settingsService.setInferenceSettings({
+        ...currentInference,
+        ...settings.inference as InferenceSettings,
       });
     }
 
     if (settings.googleSearch) {
-        if (settings.googleSearch.apiKey !== undefined) process.env.GOOGLE_CUSTOM_SEARCH_KEY = settings.googleSearch.apiKey;
-        if (settings.googleSearch.cx !== undefined) process.env.GOOGLE_CSE_ID = settings.googleSearch.cx;
+      await settingsService.setGoogleSearchSettings(settings.googleSearch);
     }
 
     if (settings.voice) {
-        if (settings.voice.pulseServer !== undefined) process.env.PULSE_SERVER = settings.voice.pulseServer;
-        if (settings.voice.wakeWord !== undefined) process.env.WAKE_WORD = settings.voice.wakeWord;
-        
-        // Push config to Voice Server
-        const voiceUrl = 'http://voiceservice:8000';
-        // Note: fetch is available globally in Node 18+ (which we are using)
-        fetch(`${voiceUrl}/config`, {
-            method: 'POST',
-            headers: { 
-                'Content-Type': 'application/json',
-                'x-internal-key': process.env.INTERNAL_SERVICE_KEY || ''
-            },
-            body: JSON.stringify({
-                pulse_server: settings.voice.pulseServer,
-                wake_word: settings.voice.wakeWord
-            })
-        }).catch(err => console.error("Failed to push config to Voice Server", err));
-    }
-
-    if (settings.adminUser) {
-        settingsService.setAdminUser(settings.adminUser);
-    } else {
-        // Save aggregated settings to file
-        savePersistedSettings(settingsService.getSystemSettings());
+      await settingsService.setVoiceSettings(settings.voice);
     }
   },
 
-  // --- Utilities ---
+  // --- Legacy / Backward Compatibility ---
+  getSystemSettings: async (): Promise<SystemSettings> => {
+    return settingsService.get();
+  },
+
+  setSystemSettings: async (settings: SystemSettings) => {
+    return settingsService.update(settings);
+  },
+
   clearAll: () => {
-    // No-op
+    // No-op - use update with empty values instead
   }
 };
