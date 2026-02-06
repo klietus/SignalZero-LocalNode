@@ -6,6 +6,44 @@ export enum Sender {
   SYSTEM = 'system'
 }
 
+// User Management Types
+export type UserRole = 'admin' | 'user';
+
+export interface User {
+  id: string;
+  username: string;
+  passwordHash: string;
+  salt: string;
+  apiKey: string;
+  role: UserRole;
+  createdAt: string;
+  updatedAt: string;
+  enabled: boolean;
+}
+
+export interface CreateUserRequest {
+  username: string;
+  password: string;
+  role?: UserRole;
+}
+
+export interface UpdateUserRequest {
+  username?: string;
+  password?: string;
+  role?: UserRole;
+  enabled?: boolean;
+  apiKey?: string;
+}
+
+// Domain isolation: only these domains are per-user
+export const USER_SPECIFIC_DOMAINS = ['user', 'state'] as const;
+export type UserDomainType = typeof USER_SPECIFIC_DOMAINS[number];
+
+// Helper to check if a domain is user-specific
+export const isUserSpecificDomain = (domainId: string): boolean => {
+  return USER_SPECIFIC_DOMAINS.includes(domainId as UserDomainType);
+};
+
 export interface ToolCallDetails {
   id: string;
   name: string;

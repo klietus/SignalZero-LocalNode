@@ -20,10 +20,71 @@ import { agentService } from './services/agentService.js';
 import { contextService } from './services/contextService.js';
 import { documentMeaningService } from './services/documentMeaningService.js';
 import { redisService } from './services/redisService.js';
-import { authService } from './services/authService.js';
+import { authService, AuthContext } from './services/authService.js';
+import { userService } from './services/userService.js';
+import { contextWindowService } from './services/contextWindowService.js';
 
 import { vectorService } from './services/vectorService.js';
 import { indexingService } from './services/indexingService.js';
+
+// MCP Session Store
+const mcpSessions = new Map<string, { userId: string; res: express.Response; createdAt: number }>();
+
+// MCP Method Handler
+async function handleMCPMethod(method: string, params: any, userId: string): Promise<any> {
+    switch (method) {
+        case 'initialize':
+            return {
+                protocolVersion: '2024-11-05',
+                capabilities: {
+                    symbolicDomains: true,
+                    vectorSearch: true,
+                    contextWindows: true
+                },
+                serverInfo: {
+                    name: 'signalzero-mcp',
+                    version: '1.0.0'
+                }
+            };
+
+        case 'domains/list':
+            const domains = await domainService.listDomains(userId);
+            return { domains };
+
+        case 'domains/get':
+            const domain = await domainService.get(params.domainId, userId);
+            return { domain };
+
+        case 'symbols/search':
+            const results = await domainService.search(
+                params.query,
+                userId,
+                params.domainId,
+                params.limit || 10
+            );
+            return { results };
+
+        case 'symbols/activate':
+            const symbol = await domainService.activate(params.symbolId, userId);
+            return { symbol };
+
+        case 'context/build':
+            const contextSessionId = params.sessionId || randomUUID();
+            const systemPrompt = params.systemPrompt || ACTIVATION_PROMPT;
+            const context = await contextWindowService.constructContextWindow(
+                contextSessionId,
+                systemPrompt,
+                userId
+            );
+            return { contextSessionId, context };
+
+        case 'ping':
+            return { pong: true };
+
+        default:
+            throw new Error(`Method not found: ${method}`);
+    }
+}
 
 dotenv.config();
 
@@ -70,8 +131,13 @@ app.use((req, res, next) => {
 
 const PORT = process.env.PORT || 3001;
 
+// Extend Express Request to include user
+interface AuthenticatedRequest extends express.Request {
+    user?: AuthContext;
+}
+
 // Auth Middleware
-const requireAuth = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+const requireAuth = async (req: AuthenticatedRequest, res: express.Response, next: express.NextFunction) => {
     if (req.method === 'OPTIONS') return next();
     
     const publicPaths = ['/api/health', '/api/auth/status', '/api/auth/setup', '/api/auth/login'];
@@ -80,14 +146,30 @@ const requireAuth = (req: express.Request, res: express.Response, next: express.
     // Check for Internal Service Key
     const internalKey = req.headers['x-internal-key'];
     if (internalKey && internalKey === process.env.INTERNAL_SERVICE_KEY) {
+        req.user = { userId: 'system', username: 'system', role: 'admin' };
         return next();
     }
 
+    // Check for API Key (X-API-Key header)
+    const apiKey = req.headers['x-api-key'];
+    if (typeof apiKey === 'string') {
+        const authContext = await authService.verifyApiKey(apiKey);
+        if (authContext) {
+            req.user = authContext;
+            return next();
+        }
+    }
+
+    // Check for Session Token
     const authHeader = req.headers['authorization'] || req.headers['x-auth-token'];
     const token = typeof authHeader === 'string' ? authHeader.replace('Bearer ', '') : null;
 
-    if (token && authService.verifySession(token)) {
-        return next();
+    if (token) {
+        const authContext = authService.verifySession(token);
+        if (authContext) {
+            req.user = authContext;
+            return next();
+        }
     }
 
     res.status(401).json({ error: 'Unauthorized' });
@@ -96,17 +178,20 @@ const requireAuth = (req: express.Request, res: express.Response, next: express.
 app.use(requireAuth);
 
 // Auth Routes
-app.get('/api/auth/status', (req, res) => {
+app.get('/api/auth/status', async (req, res) => {
+    const token = (req.headers['x-auth-token'] as string) || '';
+    const session = token ? authService.verifySession(token) : null;
     res.json({
-        initialized: authService.isInitialized(),
-        authenticated: authService.verifySession((req.headers['x-auth-token'] as string) || '')
+        initialized: await authService.isInitialized(),
+        authenticated: !!session,
+        user: session ? { userId: session.userId, username: session.username, role: session.role } : null
     });
 });
 
-app.post('/api/auth/setup', (req, res) => {
+app.post('/api/auth/setup', async (req, res) => {
     const { username, password, inference } = req.body;
     try {
-        if (authService.isInitialized()) {
+        if (await authService.isInitialized()) {
              res.status(400).json({ error: 'System already initialized' });
              return;
         }
@@ -115,13 +200,13 @@ app.post('/api/auth/setup', (req, res) => {
              return;
         }
 
-        authService.initialize(username, password);
+        await authService.initialize(username, password);
         
         if (inference) {
             settingsService.setInferenceSettings(inference);
         }
 
-        const token = authService.login(username, password);
+        const token = await authService.login(username, password);
         res.json({ status: 'success', token, user: { name: username } });
     } catch (e) {
         loggerService.error('Setup failed', { error: e });
@@ -129,27 +214,370 @@ app.post('/api/auth/setup', (req, res) => {
     }
 });
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
     const { username, password } = req.body;
-    const token = authService.login(username, password);
+    const token = await authService.login(username, password);
     if (token) {
-        res.json({ token, user: { name: username } });
+        const user = await userService.getUserByUsername(username);
+        res.json({ 
+            token, 
+            user: { 
+                id: user?.id,
+                name: username,
+                role: user?.role,
+                apiKey: user?.apiKey 
+            } 
+        });
     } else {
         res.status(401).json({ error: 'Invalid credentials' });
     }
 });
 
-app.post('/api/auth/change-password', (req, res) => {
+app.post('/api/auth/change-password', async (req: AuthenticatedRequest, res) => {
     const { oldPassword, newPassword } = req.body;
     if (!oldPassword || !newPassword) {
         return res.status(400).json({ error: 'Missing current or new password' });
     }
 
     try {
-        authService.changePassword(oldPassword, newPassword);
+        if (!req.user?.userId) {
+            return res.status(401).json({ error: 'Not authenticated' });
+        }
+        await authService.changePassword(oldPassword, newPassword, req.user.userId);
         res.json({ success: true, message: 'Password changed successfully' });
     } catch (error: any) {
         res.status(401).json({ error: error.message });
+    }
+});
+
+// --- User Management Routes ---
+
+// List all users (admin only)
+app.get('/api/users', async (req: AuthenticatedRequest, res) => {
+    try {
+        if (!req.user || req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Admin access required' });
+        }
+        const users = await userService.listUsers();
+        // Don't return password hashes
+        const safeUsers = users.map(u => ({
+            id: u.id,
+            username: u.username,
+            role: u.role,
+            enabled: u.enabled,
+            createdAt: u.createdAt,
+            updatedAt: u.updatedAt,
+            apiKey: u.apiKey
+        }));
+        res.json({ users: safeUsers });
+    } catch (e) {
+        loggerService.error('Error listing users', { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+// Create new user (admin only)
+app.post('/api/users', async (req: AuthenticatedRequest, res) => {
+    try {
+        if (!req.user || req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Admin access required' });
+        }
+        const { username, password, role = 'user' } = req.body;
+        if (!username || !password) {
+            return res.status(400).json({ error: 'Username and password required' });
+        }
+        const user = await userService.createUser({ username, password }, role);
+        res.status(201).json({
+            id: user.id,
+            username: user.username,
+            role: user.role,
+            enabled: user.enabled,
+            apiKey: user.apiKey,
+            createdAt: user.createdAt
+        });
+    } catch (e: any) {
+        loggerService.error('Error creating user', { error: e });
+        res.status(400).json({ error: e.message || String(e) });
+    }
+});
+
+// Get current user
+app.get('/api/users/me', async (req: AuthenticatedRequest, res) => {
+    try {
+        if (!req.user?.userId) {
+            return res.status(401).json({ error: 'Not authenticated' });
+        }
+        const user = await userService.getUserById(req.user.userId);
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        res.json({
+            id: user.id,
+            username: user.username,
+            role: user.role,
+            enabled: user.enabled,
+            apiKey: user.apiKey,
+            createdAt: user.createdAt,
+            updatedAt: user.updatedAt
+        });
+    } catch (e) {
+        loggerService.error('Error getting current user', { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+// Get user by ID
+app.get('/api/users/:id', async (req: AuthenticatedRequest, res) => {
+    try {
+        if (!req.user) {
+            return res.status(401).json({ error: 'Not authenticated' });
+        }
+        // Users can view themselves, admins can view anyone
+        if (req.user.role !== 'admin' && req.user.userId !== req.params.id) {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+        const user = await userService.getUserById(req.params.id);
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        res.json({
+            id: user.id,
+            username: user.username,
+            role: user.role,
+            enabled: user.enabled,
+            apiKey: user.apiKey,
+            createdAt: user.createdAt,
+            updatedAt: user.updatedAt
+        });
+    } catch (e) {
+        loggerService.error('Error getting user', { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+// Update user
+app.patch('/api/users/:id', async (req: AuthenticatedRequest, res) => {
+    try {
+        if (!req.user) {
+            return res.status(401).json({ error: 'Not authenticated' });
+        }
+        // Users can update themselves, admins can update anyone
+        if (req.user.role !== 'admin' && req.user.userId !== req.params.id) {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+        // Non-admins can't change role
+        if (req.body.role && req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Only admins can change role' });
+        }
+        const user = await userService.updateUser(req.params.id, req.body);
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        res.json({
+            id: user.id,
+            username: user.username,
+            role: user.role,
+            enabled: user.enabled,
+            apiKey: user.apiKey,
+            updatedAt: user.updatedAt
+        });
+    } catch (e: any) {
+        loggerService.error('Error updating user', { error: e });
+        res.status(400).json({ error: e.message || String(e) });
+    }
+});
+
+// Delete user (admin only)
+app.delete('/api/users/:id', async (req: AuthenticatedRequest, res) => {
+    try {
+        if (!req.user || req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Admin access required' });
+        }
+        // Prevent deleting yourself
+        if (req.user.userId === req.params.id) {
+            return res.status(400).json({ error: 'Cannot delete your own account' });
+        }
+        const success = await userService.deleteUser(req.params.id);
+        if (!success) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        res.json({ success: true });
+    } catch (e) {
+        loggerService.error('Error deleting user', { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+// --- MCP Server Routes ---
+
+// MCP Server-Sent Events endpoint
+app.get('/mcp/sse', async (req: AuthenticatedRequest, res) => {
+    // Verify API key for MCP access
+    const apiKey = req.headers['x-api-key'];
+    const internalKey = req.headers['x-internal-key'];
+    
+    let user = null;
+    if (typeof apiKey === 'string') {
+        user = await authService.verifyApiKey(apiKey);
+    }
+    if (!user && internalKey === process.env.INTERNAL_SERVICE_KEY) {
+        user = { userId: 'system', username: 'system', role: 'admin' };
+    }
+    
+    if (!user) {
+        return res.status(401).json({ error: 'Invalid API key' });
+    }
+
+    // Set SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    // Send initial endpoint event
+    const sessionId = randomUUID();
+    res.write(`event: endpoint\n`);
+    res.write(`data: /mcp/messages?sessionId=${sessionId}\n\n`);
+
+    // Store session for message routing
+    await redisService.request(['SET', `mcp:session:${sessionId}`, JSON.stringify({ userId: user.userId, createdAt: Date.now() }), 'EX', '3600']);
+
+    // Keep connection alive
+    const keepAlive = setInterval(() => {
+        res.write(`: keep-alive\n\n`);
+    }, 30000);
+
+    // Clean up on close
+    req.on('close', () => {
+        clearInterval(keepAlive);
+        redisService.request(['DEL', `mcp:session:${sessionId}`]);
+    });
+});
+
+// MCP Messages endpoint (JSON-RPC)
+app.post('/mcp/messages', async (req: AuthenticatedRequest, res) => {
+    const { sessionId } = req.query;
+    if (!sessionId || typeof sessionId !== 'string') {
+        return res.status(400).json({ error: 'Session ID required' });
+    }
+
+    // Verify session
+    const sessionData = await redisService.request(['GET', `mcp:session:${sessionId}`]);
+    if (!sessionData) {
+        return res.status(401).json({ error: 'Invalid or expired session' });
+    }
+
+    const session = JSON.parse(sessionData);
+    const { jsonrpc, method, params, id } = req.body;
+
+    if (jsonrpc !== '2.0') {
+        return res.json({ jsonrpc: '2.0', error: { code: -32600, message: 'Invalid Request' }, id });
+    }
+
+    try {
+        let result: any;
+
+        switch (method) {
+            case 'initialize':
+                result = {
+                    protocolVersion: '2024-11-05',
+                    capabilities: {
+                        tools: {},
+                        resources: {}
+                    },
+                    serverInfo: {
+                        name: 'SignalZero LocalNode',
+                        version: '1.0.0'
+                    }
+                };
+                break;
+
+            case 'tools/list':
+                result = {
+                    tools: [
+                        {
+                            name: 'search_symbols',
+                            description: 'Search for symbols across domains',
+                            inputSchema: {
+                                type: 'object',
+                                properties: {
+                                    query: { type: 'string', description: 'Search query' },
+                                    limit: { type: 'number', description: 'Max results' }
+                                },
+                                required: ['query']
+                            }
+                        },
+                        {
+                            name: 'get_symbol',
+                            description: 'Get a symbol by ID',
+                            inputSchema: {
+                                type: 'object',
+                                properties: {
+                                    id: { type: 'string', description: 'Symbol ID' }
+                                },
+                                required: ['id']
+                            }
+                        },
+                        {
+                            name: 'list_domains',
+                            description: 'List all accessible domains',
+                            inputSchema: {
+                                type: 'object',
+                                properties: {}
+                            }
+                        }
+                    ]
+                };
+                break;
+
+            case 'tools/call':
+                const { name, arguments: args } = params;
+                switch (name) {
+                    case 'search_symbols':
+                        const searchResults = await domainService.search(args.query, session.userId, undefined, args.limit || 5);
+                        result = {
+                            content: [
+                                {
+                                    type: 'text',
+                                    text: JSON.stringify(searchResults, null, 2)
+                                }
+                            ]
+                        };
+                        break;
+                    case 'get_symbol':
+                        const symbol = await domainService.findById(args.id, session.userId);
+                        result = {
+                            content: [
+                                {
+                                    type: 'text',
+                                    text: symbol ? JSON.stringify(symbol, null, 2) : 'Symbol not found'
+                                }
+                            ]
+                        };
+                        break;
+                    case 'list_domains':
+                        const domains = await domainService.getMetadata(session.userId);
+                        result = {
+                            content: [
+                                {
+                                    type: 'text',
+                                    text: JSON.stringify(domains, null, 2)
+                                }
+                            ]
+                        };
+                        break;
+                    default:
+                        return res.json({ jsonrpc: '2.0', error: { code: -32601, message: `Tool not found: ${name}` }, id });
+                }
+                break;
+
+            default:
+                return res.json({ jsonrpc: '2.0', error: { code: -32601, message: `Method not found: ${method}` }, id });
+        }
+
+        res.json({ jsonrpc: '2.0', result, id });
+    } catch (error: any) {
+        loggerService.error('MCP error', { method, error });
+        res.json({ jsonrpc: '2.0', error: { code: -32603, message: error.message || 'Internal error' }, id });
     }
 });
 
@@ -1204,6 +1632,220 @@ app.post('/api/voice/story/toggle', async (req, res) => {
     }
 });
 
+// --- User Management Routes ---
+
+// List all users (admin only)
+app.get('/api/users', async (req, res) => {
+    try {
+        // TODO: Add admin role check
+        const users = await userService.listUsers();
+        // Don't expose password hashes
+        const safeUsers = users.map(u => ({
+            id: u.id,
+            username: u.username,
+            role: u.role,
+            enabled: u.enabled,
+            createdAt: u.createdAt,
+            updatedAt: u.updatedAt
+        }));
+        res.json({ users: safeUsers });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+// Get current user info
+app.get('/api/users/me', async (req, res) => {
+    try {
+        const authHeader = req.headers['authorization'] || req.headers['x-auth-token'];
+        const token = typeof authHeader === 'string' ? authHeader.replace('Bearer ', '') : null;
+        
+        if (!token) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+        
+        const session = authService.verifySession(token);
+        if (!session) {
+            return res.status(401).json({ error: 'Invalid session' });
+        }
+        
+        const user = await userService.getUser(session.userId);
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        
+        res.json({
+            id: user.id,
+            username: user.username,
+            role: user.role,
+            enabled: user.enabled,
+            apiKey: user.apiKey
+        });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+// Create new user (admin only)
+app.post('/api/users', async (req, res) => {
+    const { username, password, role } = req.body;
+    
+    if (!username || !password) {
+        return res.status(400).json({ error: 'Username and password required' });
+    }
+    
+    try {
+        // TODO: Add admin role check
+        const user = await userService.createUser({ username, password, role });
+        res.status(201).json({
+            id: user.id,
+            username: user.username,
+            role: user.role,
+            enabled: user.enabled,
+            apiKey: user.apiKey
+        });
+    } catch (e: any) {
+        if (e.message.includes('already exists')) {
+            return res.status(409).json({ error: e.message });
+        }
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+// Update user
+app.patch('/api/users/:id', async (req, res) => {
+    const { id } = req.params;
+    const updates = req.body;
+    
+    try {
+        // TODO: Add ownership or admin role check
+        const user = await userService.updateUser(id, updates);
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        res.json({
+            id: user.id,
+            username: user.username,
+            role: user.role,
+            enabled: user.enabled,
+            apiKey: user.apiKey
+        });
+    } catch (e: any) {
+        if (e.message.includes('not found')) {
+            return res.status(404).json({ error: e.message });
+        }
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+// Delete user
+app.delete('/api/users/:id', async (req, res) => {
+    const { id } = req.params;
+    
+    try {
+        // TODO: Add admin role check
+        await userService.deleteUser(id);
+        res.json({ status: 'success' });
+    } catch (e: any) {
+        if (e.message.includes('not found')) {
+            return res.status(404).json({ error: e.message });
+        }
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+// Regenerate API key
+app.post('/api/users/:id/apikey', async (req, res) => {
+    const { id } = req.params;
+    
+    try {
+        // TODO: Add ownership or admin role check
+        const apiKey = await userService.regenerateApiKey(id);
+        res.json({ apiKey });
+    } catch (e: any) {
+        if (e.message.includes('not found')) {
+            return res.status(404).json({ error: e.message });
+        }
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+// --- MCP Server Endpoints ---
+
+// SSE endpoint for MCP
+app.get('/mcp/sse', async (req, res) => {
+    // Verify API key for MCP access
+    const apiKey = req.headers['x-api-key'] as string;
+    if (!apiKey) {
+        return res.status(401).json({ error: 'API key required' });
+    }
+    
+    const user = await userService.getUserByApiKey(apiKey);
+    if (!user || !user.enabled) {
+        return res.status(401).json({ error: 'Invalid API key' });
+    }
+    
+    // Set up SSE
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    
+    const sessionId = randomUUID();
+    
+    // Send endpoint event
+    res.write(`event: endpoint\n`);
+    res.write(`data: /mcp/messages?sessionId=${sessionId}\n\n`);
+    
+    // Store session
+    mcpSessions.set(sessionId, {
+        userId: user.id,
+        res,
+        createdAt: Date.now()
+    });
+    
+    loggerService.info(`MCP SSE connection established`, { sessionId, userId: user.id });
+    
+    // Clean up on disconnect
+    req.on('close', () => {
+        mcpSessions.delete(sessionId);
+        loggerService.info(`MCP SSE connection closed`, { sessionId });
+    });
+});
+
+// MCP message endpoint (JSON-RPC)
+app.post('/mcp/messages', async (req, res) => {
+    const { sessionId } = req.query;
+    
+    if (!sessionId || typeof sessionId !== 'string') {
+        return res.status(400).json({ error: 'sessionId required' });
+    }
+    
+    const session = mcpSessions.get(sessionId);
+    if (!session) {
+        return res.status(404).json({ error: 'Session not found' });
+    }
+    
+    const { jsonrpc, method, params, id } = req.body;
+    
+    if (jsonrpc !== '2.0') {
+        return res.status(400).json({ jsonrpc: '2.0', error: { code: -32600, message: 'Invalid Request' }, id });
+    }
+    
+    try {
+        const result = await handleMCPMethod(method, params, session.userId);
+        res.json({ jsonrpc: '2.0', result, id });
+    } catch (e: any) {
+        loggerService.error(`MCP method error`, { method, error: e });
+        res.json({ jsonrpc: '2.0', error: { code: -32603, message: e.message || 'Internal error' }, id });
+    }
+});
+
 // Global Error Handler
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
     loggerService.error(`Unhandled Error: ${err.message}`, { stack: err.stack });
@@ -1263,8 +1905,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             loggerService.info("Running symbol registry migration check...");
             const domains = await domainService.listDomains();
             for (const d of domains) {
-                // getDomain internally calls migrateSymbols and saves if modified
-                await domainService.getDomain(d);
+                // get() internally calls migrateSymbols and saves if modified
+                await domainService.get(d);
             }
             loggerService.info("Registry migration check complete.");
         } catch (error) {

@@ -245,6 +245,19 @@ export const vectorService = {
             console.error("[VectorService] Failed to count collection", e);
             return 0;
         }
+    },
+
+    async removeSymbol(symbolId: string, domainId?: string): Promise<boolean> {
+        const collection = await getCollectionInstance();
+        if (!collection) return false;
+
+        try {
+            await collection.delete({ ids: [symbolId] });
+            return true;
+        } catch (e) {
+            console.error(`[VectorService] Failed to remove symbol ${symbolId}`, e);
+            return false;
+        }
     }
 };
 

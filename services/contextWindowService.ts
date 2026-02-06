@@ -1,7 +1,7 @@
 
 import { contextService } from './contextService.js';
 import { domainService } from './domainService.js';
-import { SymbolDef, ContextMessage } from '../types.js';
+import { SymbolDef, ContextMessage, isUserSpecificDomain } from '../types.js';
 import { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { loggerService } from './loggerService.js';
 import { buildSystemMetadataBlock } from './timeService.js';
@@ -19,10 +19,15 @@ export class ContextWindowService {
    * 2. Stable Symbolic Context (Domains, Core, Personas) -> Cache Anchor
    * 3. Sliding History Window
    * 4. Dynamic Symbolic Context (Identity, Preferences, State) -> Volatile
+   * 
+   * @param contextSessionId - The session ID for context
+   * @param systemPrompt - Base system prompt
+   * @param userId - Optional user ID for domain isolation (filters user/state domains)
    */
   async constructContextWindow(
     contextSessionId: string,
-    systemPrompt: string
+    systemPrompt: string,
+    userId?: string
   ): Promise<ChatCompletionMessageParam[]> {
     const messages: ChatCompletionMessageParam[] = [];
 
@@ -38,7 +43,7 @@ export class ContextWindowService {
     messages.push({ role: 'system', content: effectiveSystemPrompt });
 
     // 2. Stable Symbolic Context (Cache Anchor)
-    const stableContext = await this.buildStableContext();
+    const stableContext = await this.buildStableContext(userId);
     messages.push({
       role: 'system',
       content: `[KERNEL]\n${stableContext}`
@@ -117,7 +122,7 @@ export class ContextWindowService {
     messages.push(...historyMessages);
 
     // 4. Dynamic Symbolic Context (Volatile)
-    const dynamicContext = await this.buildDynamicContext(type);
+    const dynamicContext = await this.buildDynamicContext(type, userId);
     
     // Generate fresh system metadata
     const systemMetadata = buildSystemMetadataBlock({
@@ -300,13 +305,14 @@ export class ContextWindowService {
 
   /**
    * Fetches stable symbols (Domains, Core, Personas) that rarely change.
+   * Includes global domains + user's user/state domains.
    */
-  private async buildStableContext(): Promise<string> {
+  private async buildStableContext(userId?: string): Promise<string> {
       try {
           const results: string[] = [];
           
-          // Query 1: List Domains
-          const meta = await domainService.getMetadata();
+          // Query 1: List Domains (filtered by user)
+          const meta = await domainService.getMetadata(userId);
           // Compact domain list with invariants
           const domains = meta.map(d => `| ${d.id} | ${d.name} | ${d.invariants?.join('; ') || ''} |`);
           results.push(`[DOMAINS]\n${domains.join('\n')}`);
@@ -314,14 +320,14 @@ export class ContextWindowService {
           // Query 2: Recursive Core Injection
           // Start with SELF-RECURSIVE-CORE and expand 3 levels deep
           const coreSet = new Map<string, SymbolDef>();
-          await this.recursiveSymbolLoad('SELF-RECURSIVE-CORE', 3, coreSet);
+          await this.recursiveSymbolLoad('SELF-RECURSIVE-CORE', 3, coreSet, userId);
           
           const coreSymbols = Array.from(coreSet.values());
           results.push(`\n[SELF]\n${this.formatSymbols(coreSymbols)}`);
 
           // Query 3: Root Domain
           const rootSet = new Map<string, SymbolDef>();
-          await this.recursiveSymbolLoad('ROOT-SYNTHETIC-CORE', 3, rootSet);
+          await this.recursiveSymbolLoad('ROOT-SYNTHETIC-CORE', 3, rootSet, userId);
           
           const rootSymbols = Array.from(rootSet.values());
           results.push(`\n[ROOT]\n${this.formatSymbols(rootSymbols)}`);
@@ -341,11 +347,11 @@ export class ContextWindowService {
       }
   }
 
-  private async recursiveSymbolLoad(startId: string, depth: number, collected: Map<string, SymbolDef>) {
+  private async recursiveSymbolLoad(startId: string, depth: number, collected: Map<string, SymbolDef>, userId?: string) {
       if (depth < 0) return;
       if (collected.has(startId)) return; // Already visited
 
-      const symbol = await domainService.findById(startId);
+      const symbol = await domainService.findById(startId, userId);
       if (!symbol) return;
 
       collected.set(symbol.id, symbol);
@@ -353,15 +359,16 @@ export class ContextWindowService {
         // Recursive expansion (Deep Traversal)
         if (depth > 0 && symbol.linked_patterns && symbol.linked_patterns.length > 0) {
             await Promise.all(symbol.linked_patterns.map(link => 
-                this.recursiveSymbolLoad(link.id, depth - 1, collected)
+                this.recursiveSymbolLoad(link.id, depth - 1, collected, userId)
             ));
         }
   }
 
   /**
    * Fetches dynamic symbols (Identity, Preferences, Recent State) that change frequently.
+   * User and state domains are filtered by userId.
    */
-  private async buildDynamicContext(type: 'conversation' | 'loop' = 'conversation'): Promise<string> {
+  private async buildDynamicContext(type: 'conversation' | 'loop' = 'conversation', userId?: string): Promise<string> {
       try {
           const results: string[] = [];
           let userCoreCount = 0;
@@ -370,7 +377,7 @@ export class ContextWindowService {
               // Query 4: Recursive User Core Injection
               // Start with USER-RECURSIVE-CORE and expand 3 levels deep
               const userSet = new Map<string, SymbolDef>();
-              await this.recursiveSymbolLoad('USER-RECURSIVE-CORE', 3, userSet);
+              await this.recursiveSymbolLoad('USER-RECURSIVE-CORE', 3, userSet, userId);
               
               const userSymbols = Array.from(userSet.values());
               userCoreCount = userSymbols.length;
@@ -378,7 +385,9 @@ export class ContextWindowService {
           }
 
           // Query 6: Recent State Domain Symbols (Last 5 by date time)
-          const stateSymbols = await domainService.getSymbols('state');
+          // For user-specific state domain, pass userId to get user's private state
+          const stateDomain = await domainService.get('state', userId);
+          const stateSymbols = stateDomain?.symbols || [];
           const recentStateSymbols = stateSymbols
               .sort((a, b) => {
                   const getT = (s?: string) => {
