@@ -5,7 +5,7 @@ import fs from 'fs';
 import multer from 'multer';
 import { randomUUID } from 'crypto';
 import { getChatSession, resetChatSession, sendMessageAndHandleTools, runSignalZeroTest, processMessageAsync } from './services/inferenceService.js';
-import { createToolExecutor } from './services/toolsService.js';
+import { createToolExecutor, toolDeclarations } from './services/toolsService.js';
 import { settingsService } from './services/settingsService.js';
 import { ACTIVATION_PROMPT } from './symbolic_system/activation_prompt.js';
 import { domainService, ReadOnlyDomainError } from './services/domainService.js';
@@ -37,15 +37,53 @@ async function handleMCPMethod(method: string, params: any, userId: string): Pro
             return {
                 protocolVersion: '2024-11-05',
                 capabilities: {
-                    symbolicDomains: true,
-                    vectorSearch: true,
-                    contextWindows: true
+                    tools: {},
+                    resources: {},
+                    prompts: {}
                 },
                 serverInfo: {
                     name: 'signalzero-mcp',
                     version: '1.0.0'
                 }
             };
+
+        case 'tools/list':
+            return {
+                tools: toolDeclarations.map(t => ({
+                    name: t.function.name,
+                    description: t.function.description,
+                    inputSchema: t.function.parameters
+                }))
+            };
+
+        case 'tools/call': {
+            const { name, arguments: toolArgs } = params;
+            const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), undefined, userId, true);
+            try {
+                const result = await toolExecutor(name, toolArgs);
+                return {
+                    content: [
+                        {
+                            type: 'text',
+                            text: JSON.stringify(result, null, 2)
+                        }
+                    ]
+                };
+            } catch (error: any) {
+                return {
+                    content: [
+                        {
+                            type: 'text',
+                            text: `Error executing tool ${name}: ${error.message}`
+                        }
+                    ],
+                    isError: true
+                };
+            }
+        }
+
+        case 'notifications/initialized':
+            return {};
 
         case 'domains/list':
             const domains = await domainService.listDomains(userId);
@@ -116,6 +154,7 @@ app.use((req, res, next) => {
         req.url.startsWith('/api/contexts') || 
         req.url.includes('/history') || 
         req.url.startsWith('/api/traces') ||
+        req.url.startsWith('/api/domains') ||
         req.url === '/api/voice/mic/status' ||
         req.url === '/api/voice/story/status'
     );
@@ -140,7 +179,7 @@ interface AuthenticatedRequest extends express.Request {
 const requireAuth = async (req: AuthenticatedRequest, res: express.Response, next: express.NextFunction) => {
     if (req.method === 'OPTIONS') return next();
     
-    const publicPaths = ['/api/health', '/api/auth/status', '/api/auth/setup', '/api/auth/login'];
+    const publicPaths = ['/api/health', '/api/auth/status', '/api/auth/setup', '/api/auth/login', '/mcp/sse', '/mcp/messages'];
     if (publicPaths.includes(req.path)) return next();
 
     // Check for Internal Service Key
@@ -155,6 +194,7 @@ const requireAuth = async (req: AuthenticatedRequest, res: express.Response, nex
     if (typeof apiKey === 'string') {
         const authContext = await authService.verifyApiKey(apiKey);
         if (authContext) {
+            loggerService.debug(`requireAuth: Authenticated via API key for user ${authContext.userId}`);
             req.user = authContext;
             return next();
         }
@@ -165,13 +205,28 @@ const requireAuth = async (req: AuthenticatedRequest, res: express.Response, nex
     const token = typeof authHeader === 'string' ? authHeader.replace('Bearer ', '') : null;
 
     if (token) {
-        const authContext = authService.verifySession(token);
+        const authContext = await authService.verifySession(token);
         if (authContext) {
+            const isPolling = req.method === 'GET' && (
+                req.url.startsWith('/api/contexts') || 
+                req.url.includes('/history') || 
+                req.url.startsWith('/api/traces') ||
+                req.url.startsWith('/api/domains') ||
+                req.url === '/api/voice/mic/status' ||
+                req.url === '/api/voice/story/status'
+            );
+            
+            if (!isPolling) {
+                loggerService.debug(`requireAuth: Authenticated via session token for user ${authContext.userId}, role: ${authContext.role}`);
+            }
             req.user = authContext;
             return next();
+        } else {
+            loggerService.warn(`requireAuth: Invalid session token provided`);
         }
     }
 
+    loggerService.warn(`requireAuth: Unauthorized request to ${req.path}`);
     res.status(401).json({ error: 'Unauthorized' });
 };
 
@@ -180,7 +235,7 @@ app.use(requireAuth);
 // Auth Routes
 app.get('/api/auth/status', async (req, res) => {
     const token = (req.headers['x-auth-token'] as string) || '';
-    const session = token ? authService.verifySession(token) : null;
+    const session = token ? await authService.verifySession(token) : null;
     res.json({
         initialized: await authService.isInitialized(),
         authenticated: !!session,
@@ -408,176 +463,21 @@ app.delete('/api/users/:id', async (req: AuthenticatedRequest, res) => {
     }
 });
 
-// --- MCP Server Routes ---
-
-// MCP Server-Sent Events endpoint
-app.get('/mcp/sse', async (req: AuthenticatedRequest, res) => {
-    // Verify API key for MCP access
-    const apiKey = req.headers['x-api-key'];
-    const internalKey = req.headers['x-internal-key'];
-    
-    let user = null;
-    if (typeof apiKey === 'string') {
-        user = await authService.verifyApiKey(apiKey);
-    }
-    if (!user && internalKey === process.env.INTERNAL_SERVICE_KEY) {
-        user = { userId: 'system', username: 'system', role: 'admin' };
-    }
-    
-    if (!user) {
-        return res.status(401).json({ error: 'Invalid API key' });
-    }
-
-    // Set SSE headers
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-
-    // Send initial endpoint event
-    const sessionId = randomUUID();
-    res.write(`event: endpoint\n`);
-    res.write(`data: /mcp/messages?sessionId=${sessionId}\n\n`);
-
-    // Store session for message routing
-    await redisService.request(['SET', `mcp:session:${sessionId}`, JSON.stringify({ userId: user.userId, createdAt: Date.now() }), 'EX', '3600']);
-
-    // Keep connection alive
-    const keepAlive = setInterval(() => {
-        res.write(`: keep-alive\n\n`);
-    }, 30000);
-
-    // Clean up on close
-    req.on('close', () => {
-        clearInterval(keepAlive);
-        redisService.request(['DEL', `mcp:session:${sessionId}`]);
-    });
-});
-
-// MCP Messages endpoint (JSON-RPC)
-app.post('/mcp/messages', async (req: AuthenticatedRequest, res) => {
-    const { sessionId } = req.query;
-    if (!sessionId || typeof sessionId !== 'string') {
-        return res.status(400).json({ error: 'Session ID required' });
-    }
-
-    // Verify session
-    const sessionData = await redisService.request(['GET', `mcp:session:${sessionId}`]);
-    if (!sessionData) {
-        return res.status(401).json({ error: 'Invalid or expired session' });
-    }
-
-    const session = JSON.parse(sessionData);
-    const { jsonrpc, method, params, id } = req.body;
-
-    if (jsonrpc !== '2.0') {
-        return res.json({ jsonrpc: '2.0', error: { code: -32600, message: 'Invalid Request' }, id });
-    }
-
+// Regenerate API key
+app.post('/api/users/:id/apikey', async (req: AuthenticatedRequest, res) => {
     try {
-        let result: any;
-
-        switch (method) {
-            case 'initialize':
-                result = {
-                    protocolVersion: '2024-11-05',
-                    capabilities: {
-                        tools: {},
-                        resources: {}
-                    },
-                    serverInfo: {
-                        name: 'SignalZero LocalNode',
-                        version: '1.0.0'
-                    }
-                };
-                break;
-
-            case 'tools/list':
-                result = {
-                    tools: [
-                        {
-                            name: 'search_symbols',
-                            description: 'Search for symbols across domains',
-                            inputSchema: {
-                                type: 'object',
-                                properties: {
-                                    query: { type: 'string', description: 'Search query' },
-                                    limit: { type: 'number', description: 'Max results' }
-                                },
-                                required: ['query']
-                            }
-                        },
-                        {
-                            name: 'get_symbol',
-                            description: 'Get a symbol by ID',
-                            inputSchema: {
-                                type: 'object',
-                                properties: {
-                                    id: { type: 'string', description: 'Symbol ID' }
-                                },
-                                required: ['id']
-                            }
-                        },
-                        {
-                            name: 'list_domains',
-                            description: 'List all accessible domains',
-                            inputSchema: {
-                                type: 'object',
-                                properties: {}
-                            }
-                        }
-                    ]
-                };
-                break;
-
-            case 'tools/call':
-                const { name, arguments: args } = params;
-                switch (name) {
-                    case 'search_symbols':
-                        const searchResults = await domainService.search(args.query, session.userId, undefined, args.limit || 5);
-                        result = {
-                            content: [
-                                {
-                                    type: 'text',
-                                    text: JSON.stringify(searchResults, null, 2)
-                                }
-                            ]
-                        };
-                        break;
-                    case 'get_symbol':
-                        const symbol = await domainService.findById(args.id, session.userId);
-                        result = {
-                            content: [
-                                {
-                                    type: 'text',
-                                    text: symbol ? JSON.stringify(symbol, null, 2) : 'Symbol not found'
-                                }
-                            ]
-                        };
-                        break;
-                    case 'list_domains':
-                        const domains = await domainService.getMetadata(session.userId);
-                        result = {
-                            content: [
-                                {
-                                    type: 'text',
-                                    text: JSON.stringify(domains, null, 2)
-                                }
-                            ]
-                        };
-                        break;
-                    default:
-                        return res.json({ jsonrpc: '2.0', error: { code: -32601, message: `Tool not found: ${name}` }, id });
-                }
-                break;
-
-            default:
-                return res.json({ jsonrpc: '2.0', error: { code: -32601, message: `Method not found: ${method}` }, id });
+        if (!req.user) {
+            return res.status(401).json({ error: 'Not authenticated' });
         }
-
-        res.json({ jsonrpc: '2.0', result, id });
-    } catch (error: any) {
-        loggerService.error('MCP error', { method, error });
-        res.json({ jsonrpc: '2.0', error: { code: -32603, message: error.message || 'Internal error' }, id });
+        // Users can regenerate their own, admins can regenerate anyone's
+        if (req.user.role !== 'admin' && req.user.userId !== req.params.id) {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+        const apiKey = await userService.regenerateApiKey(req.params.id);
+        res.json({ apiKey });
+    } catch (e: any) {
+        loggerService.error('Error regenerating API key', { error: e });
+        res.status(400).json({ error: e.message || String(e) });
     }
 });
 
@@ -759,10 +659,10 @@ app.post('/api/chat', async (req: AuthenticatedRequest, res) => {
     // Lock the context
     await contextService.setActiveMessage(contextSession.id, messageId || 'unknown', userId, isAdmin);
 
-    const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), contextSession.id);
+    const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), contextSession.id, req.user.userId, isAdmin);
     
     // Fire and forget
-    processMessageAsync(contextSession.id, message, toolExecutor, activeSystemPrompt, messageId);
+    processMessageAsync(contextSession.id, message, toolExecutor, activeSystemPrompt, messageId, userId);
 
     res.status(202).json({
         status: 'accepted',
@@ -815,8 +715,8 @@ app.post('/api/contexts/:id/trigger', async (req: AuthenticatedRequest, res) => 
                 const queueMsgId = `queued-${Date.now()}`;
                 await contextService.setActiveMessage(id, queueMsgId, userId, isAdmin);
                 
-                const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), id);
-                processMessageAsync(id, nextItem.message, toolExecutor, activeSystemPrompt, queueMsgId);
+                const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), id, req.user?.userId, isAdmin);
+                processMessageAsync(id, nextItem.message, toolExecutor, activeSystemPrompt, queueMsgId, userId);
                 res.json({ status: 'triggered' });
                 return;
             }
@@ -850,6 +750,7 @@ app.post('/api/contexts/latest/assistant-message', async (req: AuthenticatedRequ
             id: randomUUID(),
             role: 'model',
             content: message,
+            timestamp: new Date().toISOString(),
             metadata: { kind: 'agent_update' }
         }], userId, isAdmin);
 
@@ -966,14 +867,16 @@ app.get('/api/domains', async (req, res) => {
 });
 
 // Create domain
-app.post('/api/domains', async (req, res) => {
+app.post('/api/domains', async (req: AuthenticatedRequest, res) => {
     const { id, name, description, invariants } = req.body;
     if (!id) {
         res.status(400).json({ error: 'id is required' });
         return;
     }
+    const userId = req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
     try {
-        await domainService.createDomain(id, { name, description, invariants });
+        await domainService.createDomain(id, { name, description, invariants }, userId, isAdmin);
         res.json({ status: 'success', id });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
@@ -1004,14 +907,16 @@ app.get('/api/domains/:id/enabled', async (req, res) => {
 });
 
 // Toggle domain enabled status
-app.post('/api/domains/:id/toggle', async (req, res) => {
+app.post('/api/domains/:id/toggle', async (req: AuthenticatedRequest, res) => {
     const { enabled } = req.body;
     if (typeof enabled !== 'boolean') {
         res.status(400).json({ error: 'enabled boolean is required' });
         return;
     }
+    const userId = req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
     try {
-        await domainService.toggleDomain(req.params.id, enabled);
+        await domainService.toggleDomain(req.params.id, enabled, userId, isAdmin);
         res.json({ status: 'success', domainId: req.params.id, enabled });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
@@ -1020,10 +925,12 @@ app.post('/api/domains/:id/toggle', async (req, res) => {
 });
 
 // Update domain metadata
-app.patch('/api/domains/:id', async (req, res) => {
+app.patch('/api/domains/:id', async (req: AuthenticatedRequest, res) => {
     const { name, description, invariants } = req.body;
+    const userId = req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
     try {
-        await domainService.updateDomainMetadata(req.params.id, { name, description, invariants });
+        await domainService.updateDomainMetadata(req.params.id, { name, description, invariants }, userId, isAdmin);
         res.json({ status: 'success' });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
@@ -1032,9 +939,11 @@ app.patch('/api/domains/:id', async (req, res) => {
 });
 
 // Delete domain
-app.delete('/api/domains/:id', async (req, res) => {
+app.delete('/api/domains/:id', async (req: AuthenticatedRequest, res) => {
+    const userId = req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
     try {
-        await domainService.deleteDomain(req.params.id);
+        await domainService.deleteDomain(req.params.id, userId, isAdmin);
         res.json({ status: 'success' });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
@@ -1043,7 +952,11 @@ app.delete('/api/domains/:id', async (req, res) => {
 });
 
 // Clear ALL domains
-app.post('/api/admin/clear-all', async (req, res) => {
+app.post('/api/admin/clear-all', async (req: AuthenticatedRequest, res) => {
+    if (req.user?.role !== 'admin') {
+        res.status(403).json({ error: 'Admin only' });
+        return;
+    }
     try {
         await domainService.clearAll();
         res.json({ status: 'success' });
@@ -1157,14 +1070,16 @@ app.get('/api/domains/:id/query', async (req, res) => {
 });
 
 // Upsert symbol
-app.post('/api/domains/:id/symbols', async (req, res) => {
+app.post('/api/domains/:id/symbols', async (req: AuthenticatedRequest, res) => {
     const symbol = req.body;
     if (!symbol || !symbol.id) {
         res.status(400).json({ error: 'Valid symbol object with id is required' });
         return;
     }
+    const userId = req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
     try {
-        await domainService.upsertSymbol(req.params.id, symbol);
+        await domainService.upsertSymbol(req.params.id, symbol, userId, isAdmin);
         res.json({ status: 'success', id: symbol.id });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
@@ -1177,15 +1092,17 @@ app.post('/api/domains/:id/symbols', async (req, res) => {
 });
 
 // Bulk Upsert symbols
-app.post('/api/domains/:id/symbols/bulk', async (req, res) => {
+app.post('/api/domains/:id/symbols/bulk', async (req: AuthenticatedRequest, res) => {
     const symbols = req.body;
     if (!Array.isArray(symbols)) {
         res.status(400).json({ error: 'Array of symbols required' });
         return;
     }
+    const userId = req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
     try {
         // API bulk loads default to bypassing validation to allow cross-domain/external links
-        await domainService.bulkUpsert(req.params.id, symbols, { bypassValidation: true });
+        await domainService.bulkUpsert(req.params.id, symbols, { userId, isAdmin });
         res.json({ status: 'success', count: symbols.length });
     } catch (e: any) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e?.message || e });
@@ -1201,10 +1118,12 @@ app.post('/api/domains/:id/symbols/bulk', async (req, res) => {
 });
 
 // Delete symbol
-app.delete('/api/domains/:domainId/symbols/:symbolId', async (req, res) => {
+app.delete('/api/domains/:domainId/symbols/:symbolId', async (req: AuthenticatedRequest, res) => {
     const { cascade } = req.query;
+    const userId = req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
     try {
-        await domainService.deleteSymbol(req.params.domainId, req.params.symbolId, cascade === 'true');
+        await domainService.deleteSymbol(req.params.domainId, req.params.symbolId, userId, isAdmin);
         res.json({ status: 'success' });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
@@ -1213,14 +1132,16 @@ app.delete('/api/domains/:domainId/symbols/:symbolId', async (req, res) => {
 });
 
 // Rename symbol (Internal propagation)
-app.post('/api/domains/:domainId/symbols/rename', async (req, res) => {
+app.post('/api/domains/:domainId/symbols/rename', async (req: AuthenticatedRequest, res) => {
     const { oldId, newId } = req.body;
     if (!oldId || !newId) {
         res.status(400).json({ error: 'oldId and newId required' });
         return;
     }
+    const userId = req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
     try {
-        await domainService.propagateRename(req.params.domainId, oldId, newId);
+        await domainService.propagateRename(req.params.domainId, oldId, newId, userId, isAdmin);
         res.json({ status: 'success' });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
@@ -1277,10 +1198,12 @@ app.post('/api/tests/runs', async (req, res) => {
         return;
     }
 
+    const userId = req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
     try {
         // We inject the runner logic here to resolve circular dependencies
         const runnerFn = async (prompt: string) => {
-            const toolExecutor = createToolExecutor(() => settingsService.getApiKey());
+            const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), undefined, userId, isAdmin);
             return await runSignalZeroTest(prompt, toolExecutor, [], activeSystemPrompt);
         };
 
@@ -1304,11 +1227,13 @@ app.post('/api/tests/runs/:runId/stop', async (req, res) => {
 });
 
 // Resume Test Run
-app.post('/api/tests/runs/:runId/resume', async (req, res) => {
+app.post('/api/tests/runs/:runId/resume', async (req: AuthenticatedRequest, res) => {
+    const userId = req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
     try {
         // Reinject runner
         const runnerFn = async (prompt: string) => {
-            const toolExecutor = createToolExecutor(() => settingsService.getApiKey());
+            const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), undefined, userId, isAdmin);
             return await runSignalZeroTest(prompt, toolExecutor, [], activeSystemPrompt);
         };
 
@@ -1321,10 +1246,12 @@ app.post('/api/tests/runs/:runId/resume', async (req, res) => {
 });
 
 // Rerun Single Test Case
-app.post('/api/tests/runs/:runId/cases/:caseId/rerun', async (req, res) => {
+app.post('/api/tests/runs/:runId/cases/:caseId/rerun', async (req: AuthenticatedRequest, res) => {
+    const userId = req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
     try {
         const runnerFn = async (prompt: string) => {
-            const toolExecutor = createToolExecutor(() => settingsService.getApiKey());
+            const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), undefined, userId, isAdmin);
             return await runSignalZeroTest(prompt, toolExecutor, [], activeSystemPrompt);
         };
 
@@ -1567,14 +1494,15 @@ app.get('/api/agents/:id', async (req, res) => {
     }
 });
 
-app.post('/api/agents', async (req, res) => {
+app.post('/api/agents', async (req: AuthenticatedRequest, res) => {
     const { id, schedule, prompt, enabled } = req.body;
+    const userId = req.user?.userId;
     if (!id || !prompt) {
         res.status(400).json({ error: 'id and prompt are required' });
         return;
     }
     try {
-        const agent = await agentService.upsertAgent(id, prompt, enabled ?? true, schedule);
+        const agent = await agentService.upsertAgent(id, prompt, enabled ?? true, schedule, userId);
         res.json(agent);
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
@@ -1582,15 +1510,16 @@ app.post('/api/agents', async (req, res) => {
     }
 });
 
-app.put('/api/agents/:id', async (req, res) => {
+app.put('/api/agents/:id', async (req: AuthenticatedRequest, res) => {
     const { schedule, prompt, enabled } = req.body;
     const { id } = req.params;
+    const userId = req.user?.userId;
     if (!prompt) {
         res.status(400).json({ error: 'prompt is required' });
         return;
     }
     try {
-        const agent = await agentService.upsertAgent(id, prompt, enabled ?? true, schedule);
+        const agent = await agentService.upsertAgent(id, prompt, enabled ?? true, schedule, userId);
         res.json(agent);
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
@@ -1667,162 +1596,25 @@ app.post('/api/voice/story/toggle', async (req, res) => {
     }
 });
 
-// --- User Management Routes ---
-
-// List all users (admin only)
-app.get('/api/users', async (req, res) => {
-    try {
-        // TODO: Add admin role check
-        const users = await userService.listUsers();
-        // Don't expose password hashes
-        const safeUsers = users.map(u => ({
-            id: u.id,
-            username: u.username,
-            role: u.role,
-            enabled: u.enabled,
-            createdAt: u.createdAt,
-            updatedAt: u.updatedAt
-        }));
-        res.json({ users: safeUsers });
-    } catch (e) {
-        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
-        res.status(500).json({ error: String(e) });
-    }
-});
-
-// Get current user info
-app.get('/api/users/me', async (req, res) => {
-    try {
-        const authHeader = req.headers['authorization'] || req.headers['x-auth-token'];
-        const token = typeof authHeader === 'string' ? authHeader.replace('Bearer ', '') : null;
-        
-        if (!token) {
-            return res.status(401).json({ error: 'Unauthorized' });
-        }
-        
-        const session = authService.verifySession(token);
-        if (!session) {
-            return res.status(401).json({ error: 'Invalid session' });
-        }
-        
-        const user = await userService.getUser(session.userId);
-        if (!user) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-        
-        res.json({
-            id: user.id,
-            username: user.username,
-            role: user.role,
-            enabled: user.enabled,
-            apiKey: user.apiKey
-        });
-    } catch (e) {
-        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
-        res.status(500).json({ error: String(e) });
-    }
-});
-
-// Create new user (admin only)
-app.post('/api/users', async (req, res) => {
-    const { username, password, role } = req.body;
-    
-    if (!username || !password) {
-        return res.status(400).json({ error: 'Username and password required' });
-    }
-    
-    try {
-        // TODO: Add admin role check
-        const user = await userService.createUser({ username, password, role });
-        res.status(201).json({
-            id: user.id,
-            username: user.username,
-            role: user.role,
-            enabled: user.enabled,
-            apiKey: user.apiKey
-        });
-    } catch (e: any) {
-        if (e.message.includes('already exists')) {
-            return res.status(409).json({ error: e.message });
-        }
-        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
-        res.status(500).json({ error: String(e) });
-    }
-});
-
-// Update user
-app.patch('/api/users/:id', async (req, res) => {
-    const { id } = req.params;
-    const updates = req.body;
-    
-    try {
-        // TODO: Add ownership or admin role check
-        const user = await userService.updateUser(id, updates);
-        if (!user) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-        res.json({
-            id: user.id,
-            username: user.username,
-            role: user.role,
-            enabled: user.enabled,
-            apiKey: user.apiKey
-        });
-    } catch (e: any) {
-        if (e.message.includes('not found')) {
-            return res.status(404).json({ error: e.message });
-        }
-        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
-        res.status(500).json({ error: String(e) });
-    }
-});
-
-// Delete user
-app.delete('/api/users/:id', async (req, res) => {
-    const { id } = req.params;
-    
-    try {
-        // TODO: Add admin role check
-        await userService.deleteUser(id);
-        res.json({ status: 'success' });
-    } catch (e: any) {
-        if (e.message.includes('not found')) {
-            return res.status(404).json({ error: e.message });
-        }
-        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
-        res.status(500).json({ error: String(e) });
-    }
-});
-
-// Regenerate API key
-app.post('/api/users/:id/apikey', async (req, res) => {
-    const { id } = req.params;
-    
-    try {
-        // TODO: Add ownership or admin role check
-        const apiKey = await userService.regenerateApiKey(id);
-        res.json({ apiKey });
-    } catch (e: any) {
-        if (e.message.includes('not found')) {
-            return res.status(404).json({ error: e.message });
-        }
-        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
-        res.status(500).json({ error: String(e) });
-    }
-});
-
 // --- MCP Server Endpoints ---
 
 // SSE endpoint for MCP
 app.get('/mcp/sse', async (req, res) => {
     // Verify API key for MCP access
     const apiKey = req.headers['x-api-key'] as string;
+    loggerService.info(`MCP: Incoming SSE connection attempt`, { 
+        hasApiKey: !!apiKey,
+        userAgent: req.headers['user-agent']
+    });
+    
     if (!apiKey) {
+        loggerService.warn(`MCP: SSE connection attempt missing API key`);
         return res.status(401).json({ error: 'API key required' });
     }
     
     const user = await userService.getUserByApiKey(apiKey);
     if (!user || !user.enabled) {
+        loggerService.warn(`MCP: SSE connection attempt with invalid API key`, { apiKey: apiKey.substring(0, 8) + '...' });
         return res.status(401).json({ error: 'Invalid API key' });
     }
     
@@ -1833,9 +1625,15 @@ app.get('/mcp/sse', async (req, res) => {
     
     const sessionId = randomUUID();
     
-    // Send endpoint event
+    // Send endpoint event with absolute URL
+    const protocol = req.protocol;
+    const host = req.get('host');
+    const endpointUrl = `${protocol}://${host}/mcp/messages?sessionId=${sessionId}`;
+    
+    loggerService.info(`MCP: Establishing SSE stream`, { sessionId, endpointUrl });
+    
     res.write(`event: endpoint\n`);
-    res.write(`data: /mcp/messages?sessionId=${sessionId}\n\n`);
+    res.write(`data: ${endpointUrl}\n\n`);
     
     // Store session
     mcpSessions.set(sessionId, {
@@ -1853,8 +1651,37 @@ app.get('/mcp/sse', async (req, res) => {
     });
 });
 
+// Fallback for clients that POST to the SSE endpoint directly
+app.post('/mcp/sse', async (req: AuthenticatedRequest, res) => {
+    // Verify API key
+    const apiKey = req.headers['x-api-key'] as string;
+    if (!apiKey) return res.status(401).json({ error: 'API key required' });
+    const user = await userService.getUserByApiKey(apiKey);
+    if (!user || !user.enabled) return res.status(401).json({ error: 'Invalid API key' });
+
+    const { jsonrpc, method, params, id } = req.body;
+    loggerService.debug(`MCP: Received POST to SSE endpoint`, { method, id });
+    
+    try {
+        const result = await handleMCPMethod(method, params, user.id);
+        return res.json({ jsonrpc: '2.0', result, id });
+    } catch (e: any) {
+        // Some methods like notifications/initialized might not return a result
+        if (method.startsWith('notifications/')) {
+            return res.json({ jsonrpc: '2.0', result: {} });
+        }
+        return res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: e.message }, id });
+    }
+});
+
 // MCP message endpoint (JSON-RPC)
-app.post('/mcp/messages', async (req, res) => {
+app.post('/mcp/messages', async (req: AuthenticatedRequest, res) => {
+    // Verify API key
+    const apiKey = req.headers['x-api-key'] as string;
+    if (!apiKey) return res.status(401).json({ error: 'API key required' });
+    const user = await userService.getUserByApiKey(apiKey);
+    if (!user || !user.enabled) return res.status(401).json({ error: 'Invalid API key' });
+
     const { sessionId } = req.query;
     
     if (!sessionId || typeof sessionId !== 'string') {
@@ -1863,10 +1690,12 @@ app.post('/mcp/messages', async (req, res) => {
     
     const session = mcpSessions.get(sessionId);
     if (!session) {
+        loggerService.warn(`MCP: Session ${sessionId} not found`);
         return res.status(404).json({ error: 'Session not found' });
     }
     
     const { jsonrpc, method, params, id } = req.body;
+    loggerService.debug(`MCP: Received message`, { method, id, sessionId });
     
     if (jsonrpc !== '2.0') {
         return res.status(400).json({ jsonrpc: '2.0', error: { code: -32600, message: 'Invalid Request' }, id });
@@ -1874,6 +1703,7 @@ app.post('/mcp/messages', async (req, res) => {
     
     try {
         const result = await handleMCPMethod(method, params, session.userId);
+        loggerService.debug(`MCP: Sending result`, { method, id, sessionId });
         res.json({ jsonrpc: '2.0', result, id });
     } catch (e: any) {
         loggerService.error(`MCP method error`, { method, error: e });
@@ -1912,8 +1742,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             try {
                 await settingsService.initialize();
                 loggerService.info("Settings initialized");
+                
+                // Initialize/Ensure admin user
+                await userService.initializeDefaultAdmin();
+                loggerService.info("User system checked/initialized");
             } catch (error) {
-                loggerService.error("Failed to initialize settings", { error });
+                loggerService.error("Failed to initialize settings/users", { error });
             }
             
             // Load persisted system prompt
@@ -1976,9 +1810,15 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
                 
                 if (lastUserMsg) {
                     loggerService.info(`Recovering context ${ctx.id}. Retrying message ${ctx.activeMessageId}`);
-                    const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), ctx.id);
+                    // Check if the user who owns this context is an admin
+                    let isContextAdmin = false;
+                    if (ctx.userId) {
+                        const contextUser = await userService.getUserById(ctx.userId);
+                        isContextAdmin = contextUser?.role === 'admin';
+                    }
+                    const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), ctx.id, ctx.userId || undefined, isContextAdmin);
                     // Use the original messageId from the lock to ensure idempotency/grouping on client
-                    processMessageAsync(ctx.id, lastUserMsg.content, toolExecutor, activeSystemPrompt, ctx.activeMessageId || undefined);
+                    processMessageAsync(ctx.id, lastUserMsg.content, toolExecutor, activeSystemPrompt, ctx.activeMessageId || undefined, ctx.userId || undefined);
                 } else {
                     // No user message found to retry, clear the stale lock
                     loggerService.warn(`Context ${ctx.id} has activeMessageId but no user prompt in history. Clearing stale lock.`);

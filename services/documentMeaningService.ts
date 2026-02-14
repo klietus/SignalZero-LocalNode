@@ -228,7 +228,7 @@ class DocumentMeaningService {
     }
 
     private async extractImageMeaning(buffer: Buffer, contentType: string, url?: string): Promise<NormalizedDocument> {
-        const settings = settingsService.getInferenceSettings();
+        const settings = await settingsService.getInferenceSettings();
         const apiKey = settings.apiKey;
         
         // Ensure we have a sensible vision model default per provider if none set or if using OpenAI default on Gemini

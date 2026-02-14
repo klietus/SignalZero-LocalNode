@@ -24,7 +24,7 @@ const createTestApp = () => {
     
     const token = req.headers['x-auth-token'];
     if (typeof token === 'string') {
-      const auth = authService.verifySession(token);
+      const auth = await authService.verifySession(token);
       if (auth) {
         req.user = auth;
         return next();

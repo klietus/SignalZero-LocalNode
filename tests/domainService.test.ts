@@ -54,13 +54,13 @@ describe('DomainService', () => {
     });
 
     it('should upsert a symbol with structured links', async () => {
-        await domainService.createDomain('new-domain');
+        await domainService.createDomain('new-domain', 'New Domain');
         const symbol: any = { 
             id: 'sym-1', 
             name: 'Symbol 1',
             linked_patterns: [{ id: 'other-1', link_type: 'depends_on', bidirectional: true }]
         };
-        await domainService.upsertSymbol('new-domain', symbol, { bypassValidation: true });
+        await domainService.upsertSymbol('new-domain', symbol);
 
         const stored = await redisService.request(['GET', 'sz:domain:new-domain']);
         const domain = JSON.parse(stored);
@@ -69,7 +69,7 @@ describe('DomainService', () => {
     });
 
     it('should create back-links for bidirectional links', async () => {
-        await domainService.createDomain('test-dom');
+        await domainService.createDomain('test-dom', 'Test Dom');
         const symA: any = { id: 'SYM-A', name: 'Alpha', linked_patterns: [], symbol_domain: 'test-dom' };
         const symB: any = { 
             id: 'SYM-B', 
@@ -78,8 +78,8 @@ describe('DomainService', () => {
             linked_patterns: [{ id: 'SYM-A', link_type: 'relates_to', bidirectional: true }] 
         };
 
-        await domainService.upsertSymbol('test-dom', symA, { bypassValidation: true });
-        await domainService.upsertSymbol('test-dom', symB, { bypassValidation: true });
+        await domainService.upsertSymbol('test-dom', symA);
+        await domainService.upsertSymbol('test-dom', symB);
 
         const updatedA = await domainService.findById('SYM-A');
         expect(updatedA?.linked_patterns).toContainEqual({ id: 'SYM-B', link_type: 'relates_to', bidirectional: true });

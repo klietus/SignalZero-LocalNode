@@ -1,6 +1,6 @@
 import { redisService } from '../services/redisService.js';
 
-async function main() {
+export async function fixUserCore() {
     try {
         console.log("Fixing USER-RECURSIVE-CORE deduplication in 'user' domain...");
         
@@ -39,4 +39,4 @@ async function main() {
     }
 }
 
-main();
+fixUserCore();

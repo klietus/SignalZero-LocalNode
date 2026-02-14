@@ -8,6 +8,7 @@ import { AgentDefinition, AgentExecutionLog, SymbolDef, TraceData } from "../typ
 import { indexingService } from "./indexingService.ts";
 import { loggerService } from "./loggerService.ts";
 import { redisService } from "./redisService.js";
+import { settingsService } from "./settingsService.ts";
 import { secretManagerService } from "./secretManagerService.ts";
 import { contextService } from "./contextService.js";
 import { documentMeaningService } from "./documentMeaningService.js";
@@ -694,7 +695,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
 ];
 
 // 2. Define the execution logic
-export const createToolExecutor = (getApiKey: () => string | null, contextSessionId?: string) => {
+export const createToolExecutor = (getApiKey: () => string | null, contextSessionId?: string, userId?: string, isAdmin: boolean = false) => {
   const executor = async (name: string, args: any): Promise<any> => {
     console.log(`[ToolExecutor] Executing ${name} with`, args);
 
@@ -726,7 +727,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
             if (symbol_domains && Array.isArray(symbol_domains)) {
                 targetDomains = symbol_domains;
             } else {
-                targetDomains = await domainService.listDomains();
+                targetDomains = await domainService.listDomains(userId);
             }
 
             const mergedMetadataFilter: Record<string, unknown> = { ...(metadata_filter || {}) };
@@ -756,7 +757,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                     time_between,
                     metadata_filter: Object.keys(mergedMetadataFilter).length > 0 ? mergedMetadataFilter : undefined,
                     domains: targetDomains
-                });
+                }, userId); // Pass userId to search
                 
                 results.forEach((r: any) => {
                     if (!aggregatedSymbols.has(r.id)) aggregatedSymbols.set(r.id, r);
@@ -764,7 +765,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                 queryResultCount = results.length;
             } else {
                 for (const domain of targetDomains) {
-                    const domainSymbols = await domainService.getSymbols(domain);
+                    const domainSymbols = await domainService.getSymbols(domain, userId);
                     const filtered = domainSymbols.filter((s) => matchesMetadata(s, mergedMetadataFilter));
                     
                     const paged = fetch_all ? filtered : filtered.slice(0, maxLimit);
@@ -822,7 +823,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           const missing = [];
 
           for (const id of ids) {
-              const sym = await domainService.findById(id);
+              const sym = await domainService.findById(id, userId);
               if (sym) found.push(sym);
               else missing.push(id);
           }
@@ -944,13 +945,21 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
               for (const [domain, domainSymbols] of Object.entries(upsertByDomain)) {
                   if (domainSymbols.length === 0) continue;
                   loggerService.info(`upsert_symbols processing batch for domain ${domain}`, { count: domainSymbols.length });
-                  await domainService.bulkUpsert(domain, domainSymbols, { bypassValidation: bypass_validation });
+                  await domainService.bulkUpsert(domain, domainSymbols, { userId, isAdmin });
                   upserted.push({ domain, count: domainSymbols.length });
               }
 
               if (refactors.length > 0) {
                   loggerService.info(`upsert_symbols processing refactors`, { count: refactors.length });
-                  await domainService.processRefactorOperation(refactors);
+                  for (const refactor of refactors) {
+                      const domainId = refactor.symbol_data.symbol_domain || 'root';
+                      // 1. Propagate Rename
+                      await domainService.propagateRename(domainId, refactor.old_id, refactor.symbol_data.id, userId, isAdmin);
+                      // 2. Delete old
+                      await domainService.deleteSymbol(domainId, refactor.old_id, userId, isAdmin);
+                      // 3. Upsert new
+                      await domainService.upsertSymbol(domainId, refactor.symbol_data, userId, isAdmin);
+                  }
               }
 
               loggerService.info("upsert_symbols completed successfully", { upserted, refactors: refactors.length });
@@ -990,7 +999,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
               domainMap[symbol_domain] = symbol_ids;
           } else {
               for (const id of symbol_ids) {
-                  const sym = await domainService.findById(id);
+                  const sym = await domainService.findById(id, userId);
                   if (sym?.symbol_domain) {
                       if (!domainMap[sym.symbol_domain]) domainMap[sym.symbol_domain] = [];
                       domainMap[sym.symbol_domain].push(id);
@@ -1005,7 +1014,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
               for (const [domain, ids] of Object.entries(domainMap)) {
                   if (ids.length === 0) continue;
                   for (const id of ids) {
-                      await domainService.deleteSymbol(domain, id, cascade);
+                      await domainService.deleteSymbol(domain, id, userId, isAdmin);
                   }
                   deleted.push({ domain, count: ids.length });
               }
@@ -1028,7 +1037,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
               return { error: "Missing domain_id or description." };
           }
 
-          const exists = await domainService.hasDomain(domain_id);
+          const exists = await domainService.hasDomain(domain_id, userId);
           if (exists) {
               return { error: `Domain '${domain_id}' already exists.`, code: 409 };
           }
@@ -1039,7 +1048,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                       name: name || domain_id,
                       description,
                       invariants,
-                  });
+                  }, userId, isAdmin);
 
                   return {
                       status: "Domain created with provided invariants.",
@@ -1047,7 +1056,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                   };
               }
 
-              const result = await domainInferenceService.createDomainWithInference(domain_id, description, name);
+              const result = await domainInferenceService.createDomainWithInference(domain_id, description, name, userId, isAdmin);
               return {
                   status: "Domain created with inferred invariants.",
                   domain: result.domain,
@@ -1062,7 +1071,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
 
       case 'list_domains': {
         try {
-          const metaList = await domainService.getMetadata();
+          const metaList = await domainService.getMetadata(userId);
           const domainResponsePromises = metaList
             .sort((a, b) => a.name.localeCompare(b.name))
             .map(async d => {
@@ -1314,11 +1323,12 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
 
           loggerService.info(`web_search executing ${queryList.length} queries`, { queries: queryList });
 
-          const apiKey = process.env.API_KEY || process.env.GOOGLE_CUSTOM_SEARCH_KEY || process.env.GOOGLE_SEARCH_KEY;
-          const searchEngineId = process.env.GOOGLE_CSE_ID || process.env.GOOGLE_SEARCH_ENGINE_ID || process.env.GOOGLE_CUSTOM_SEARCH_CX;
+          const searchSettings = await settingsService.getGoogleSearchSettings();
+          const apiKey = searchSettings.apiKey || process.env.GOOGLE_CUSTOM_SEARCH_KEY || process.env.GOOGLE_SEARCH_KEY || process.env.API_KEY;
+          const searchEngineId = searchSettings.cx || process.env.GOOGLE_CSE_ID || process.env.GOOGLE_SEARCH_ENGINE_ID || process.env.GOOGLE_CUSTOM_SEARCH_CX;
 
-          if (!apiKey) return { error: 'Google Custom Search failed: Missing GOOGLE_API_KEY environment variable.' };
-          if (!searchEngineId) return { error: 'Google Custom Search failed: Missing search engine ID.' };
+          if (!apiKey) return { error: 'Google Custom Search failed: Missing API Key. Please configure it in Settings.' };
+          if (!searchEngineId) return { error: 'Google Custom Search failed: Missing Search Engine ID (CX). Please configure it in Settings.' };
 
           const executeSearch = async (q: string) => {
               try {

@@ -2,6 +2,7 @@ import { scryptSync, randomBytes, timingSafeEqual } from 'crypto';
 import { redisService } from './redisService.js';
 import { loggerService } from './loggerService.js';
 import { User, UserRole, CreateUserRequest, UpdateUserRequest } from '../types.js';
+import { domainService } from './domainService.js';
 
 // Redis Keys Configuration
 const KEYS = {
@@ -38,11 +39,20 @@ export const userService = {
   /**
    * Initialize the default admin user if no users exist
    * This is called during system startup for backward compatibility
+   * Also ensures all existing users are admins if they are not already
    */
   initializeDefaultAdmin: async (adminUsername?: string, adminPassword?: string): Promise<void> => {
     const users = await userService.listUsers();
+    
     if (users.length > 0) {
-      loggerService.info('Users already exist, skipping default admin creation');
+      loggerService.info(`Checking ${users.length} existing users for admin role and domains...`);
+      for (const user of users) {
+        if (user.role !== 'admin') {
+          loggerService.info(`Promoting existing user '${user.username}' to admin`);
+          await userService.updateUser(user.id, { role: 'admin' });
+        }
+        await domainService.bootstrapUserDomains(user.id);
+      }
       return;
     }
 
@@ -134,6 +144,8 @@ export const userService = {
     await redisService.request(['SADD', KEYS.USERS_SET, userId]);
     await redisService.request(['HSET', KEYS.USERNAME_INDEX, username.toLowerCase(), userId]);
     await redisService.request(['HSET', KEYS.API_KEY_INDEX, apiKey, userId]);
+
+    await domainService.bootstrapUserDomains(userId);
 
     loggerService.info(`User created: ${username} (${userId}) with role ${role}`);
     return user;

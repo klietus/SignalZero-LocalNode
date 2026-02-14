@@ -92,7 +92,7 @@ export const authService = {
   /**
    * Verifies a session token.
    */
-  verifySession: (token: string): AuthContext | null => {
+  verifySession: async (token: string): Promise<AuthContext | null> => {
     const session = sessions.get(token);
     if (!session) return null;
 
@@ -101,10 +101,17 @@ export const authService = {
       return null;
     }
 
+    // Look up the user to get their actual role
+    const user = await userService.getUserById(session.userId);
+    if (!user) {
+      sessions.delete(token);
+      return null;
+    }
+
     return {
       userId: session.userId,
       username: session.username,
-      role: 'user', // Will be looked up if needed
+      role: user.role,
     };
   },
 
@@ -127,7 +134,7 @@ export const authService = {
    * Get the current user from a session token.
    */
   getUserFromSession: async (token: string): Promise<User | null> => {
-    const session = authService.verifySession(token);
+    const session = await authService.verifySession(token);
     if (!session) return null;
     return userService.getUserById(session.userId);
   },

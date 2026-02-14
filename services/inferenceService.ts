@@ -30,8 +30,8 @@ interface ChatSessionState {
 
 const MAX_TOOL_LOOPS = 15;
 
-export const getClient = () => {
-  const { endpoint, provider, apiKey } = settingsService.getInferenceSettings();
+export const getClient = async () => {
+  const { endpoint, provider, apiKey } = await settingsService.getInferenceSettings();
 
   let effectiveEndpoint = endpoint;
   if (provider === 'openai') effectiveEndpoint = 'https://api.openai.com/v1';
@@ -57,6 +57,7 @@ export const getClient = () => {
       return new OpenAI({
         baseURL: 'https://api.moonshot.ai/v1',
         apiKey: apiKey ? apiKey.trim() : apiKey,
+        // @ts-ignore
         fetch: async (url: any, init: any = {}) => {
             // Normalize headers
             const headers = init.headers || {};
@@ -88,8 +89,8 @@ export const getClient = () => {
   });
 };
 
-export const getGeminiClient = () => {
-  const { apiKey } = settingsService.getInferenceSettings();
+export const getGeminiClient = async () => {
+  const { apiKey } = await settingsService.getInferenceSettings();
   return new GoogleGenerativeAI(apiKey);
 };
 
@@ -118,20 +119,24 @@ const cleanGeminiSchema = (schema: any): any => {
 };
 
 const toGeminiTools = (tools: any[]) => {
+  loggerService.debug("toGeminiTools: Converting tools", { count: tools.length });
   return [{
-    functionDeclarations: tools.map((t) => ({
-      name: t.function.name,
-      description: t.function.description,
-      parameters: cleanGeminiSchema({
-        type: SchemaType.OBJECT,
-        properties: t.function.parameters.properties,
-        required: t.function.parameters.required,
-      }),
-    }))
+    functionDeclarations: tools.map((t) => {
+      const decl = {
+        name: t.function.name,
+        description: t.function.description,
+        parameters: cleanGeminiSchema({
+          type: SchemaType.OBJECT,
+          properties: t.function.parameters.properties,
+          required: t.function.parameters.required,
+        }),
+      };
+      return decl;
+    })
   }];
 };
 
-const getModel = () => settingsService.getInferenceSettings().model;
+const getModel = async () => (await settingsService.getInferenceSettings()).model;
 
 const extractTextDelta = (delta: ChatCompletionChunk["choices"][number]["delta"]) => {
   if (!delta?.content) return "";
@@ -196,23 +201,23 @@ const parseToolArguments = (args: string): { data: any; error?: string } => {
 const DEFAULT_CHAT_KEY = "default";
 const chatSessions = new Map<string, ChatSessionState>();
 
-const createChatSession = (systemInstruction: string): ChatSessionState => ({
+const createChatSession = async (systemInstruction: string): Promise<ChatSessionState> => ({
   messages: [{ role: "system", content: systemInstruction }],
   systemInstruction,
-  model: getModel(),
+  model: await getModel(),
 });
 
-export const getChatSession = (systemInstruction: string, contextSessionId?: string) => {
+export const getChatSession = async (systemInstruction: string, contextSessionId?: string) => {
   const key = contextSessionId || DEFAULT_CHAT_KEY;
   const existing = chatSessions.get(key);
 
   if (!existing || existing.systemInstruction !== systemInstruction) {
-    const fresh = createChatSession(systemInstruction);
+    const fresh = await createChatSession(systemInstruction);
     chatSessions.set(key, fresh);
   }
 
   const chat = chatSessions.get(key)!;
-  const currentModel = getModel();
+  const currentModel = await getModel();
   if (chat.model !== currentModel) {
     chat.model = currentModel;
   }
@@ -227,8 +232,8 @@ export const resetChatSession = (contextSessionId?: string) => {
   }
 };
 
-export const createFreshChatSession = (systemInstruction: string, contextSessionId?: string, model?: string) => {
-  const session = createChatSession(systemInstruction);
+export const createFreshChatSession = async (systemInstruction: string, contextSessionId?: string, model?: string) => {
+  const session = await createChatSession(systemInstruction);
   if (model) {
       session.model = model;
   }
@@ -289,17 +294,17 @@ export const generateGapSynthesis = async (
         Return valid JSON object(s) wrapped in <sz_symbol></sz_symbol> tags. You may return multiple symbols if the gap requires a structure.
         `;
 
-  const settings = settingsService.getInferenceSettings();
+  const settings = await settingsService.getInferenceSettings();
   if (settings.provider === 'gemini') {
-      const client = getGeminiClient();
+      const client = await getGeminiClient();
       const model = client.getGenerativeModel({ model: settings.model });
       const result = await model.generateContent(prompt);
       return result.response.text();
   }
 
-  const client = getClient();
+  const client = await getClient();
   const result = await client.chat.completions.create({
-    model: getModel(),
+    model: await getModel(),
     messages: [{ role: "user", content: prompt }]
   });
 
@@ -339,13 +344,30 @@ const _streamAssistantResponseInternal = async function* (
   toolCalls?: ChatCompletionMessageToolCall[];
   assistantMessage?: ChatCompletionMessageParam;
 }> {
-  const settings = settingsService.getInferenceSettings();
+  const settings = await settingsService.getInferenceSettings();
   
   if (settings.provider === 'gemini') {
-    const client = getGeminiClient();
+    loggerService.info("Gemini Request Debug: Starting", { 
+        model, 
+        toolCount: toolDeclarations.length,
+        messageCount: messages.length 
+    });
+    
+    loggerService.debug("Gemini Request: Incoming message roles", {
+        roles: messages.map(m => m.role)
+    });
+
+    const client = await getGeminiClient();
+    const geminiTools = toGeminiTools(toolDeclarations);
+    
+    // Log first few tool names
+    loggerService.debug("Gemini Tools Sample:", { 
+        tools: geminiTools[0].functionDeclarations.slice(0, 3).map(t => t.name) 
+    });
+
     const geminiModel = client.getGenerativeModel({
         model: model,
-        tools: toGeminiTools(toolDeclarations)
+        tools: geminiTools
     });
     
     const systemMessage = messages.find(m => m.role === 'system');
@@ -354,11 +376,19 @@ const _streamAssistantResponseInternal = async function* (
     const downgradedToolCallIds = new Set<string>();
 
     for (const m of messages) {
+        loggerService.debug(`Gemini Conversion: Processing message role=${m.role}`, { contentSnippet: typeof m.content === 'string' ? m.content.slice(0, 50) : 'none' });
+        
         if (m.role === 'system') continue;
 
         if (m.role === 'user') {
-            history.push({ role: 'user', parts: [{ text: typeof m.content === 'string' ? m.content : '' }] });
-            lastRole = 'user';
+            // Gemini history cannot have two consecutive user messages
+            if (lastRole === 'user') {
+                const lastMsg = history[history.length - 1];
+                lastMsg.parts[0].text += `\n\n${typeof m.content === 'string' ? m.content : ''}`;
+            } else {
+                history.push({ role: 'user', parts: [{ text: typeof m.content === 'string' ? m.content : '' }] });
+                lastRole = 'user';
+            }
         } else if (m.role === 'assistant') {
              const parts: any[] = [];
              if (m.content) parts.push({ text: m.content });
@@ -398,8 +428,15 @@ const _streamAssistantResponseInternal = async function* (
                      }
                  });
              }
-             history.push({ role: 'model', parts });
-             lastRole = 'model';
+             
+             // Gemini history cannot have two consecutive model messages
+             if (lastRole === 'model') {
+                 const lastMsg = history[history.length - 1];
+                 lastMsg.parts.push(...parts);
+             } else {
+                 history.push({ role: 'model', parts });
+                 lastRole = 'model';
+             }
         } else if (m.role === 'tool') {
              let toolName = "unknown_tool";
              const assistantMsg = messages.find(msg => 
@@ -411,43 +448,66 @@ const _streamAssistantResponseInternal = async function* (
                  if (tc) toolName = tc.function.name;
              }
 
-             if (downgradedToolCallIds.has(m.tool_call_id)) {
-                 history.push({
-                     role: 'user',
-                     parts: [{
-                         text: `[System Log: Tool '${toolName}' returned result: ${m.content}]`
-                     }]
-                 });
-                 lastRole = 'user';
+             const part: any = downgradedToolCallIds.has(m.tool_call_id) 
+                ? { text: `[System Log: Tool '${toolName}' returned result: ${m.content}]` }
+                : { functionResponse: { name: toolName, response: { result: m.content } } };
+
+             if (lastRole === 'function') {
+                 const lastMsg = history[history.length - 1];
+                 lastMsg.parts.push(part);
              } else {
                  history.push({
-                     role: 'function',
-                     parts: [{
-                         functionResponse: {
-                             name: toolName,
-                             response: { result: m.content } 
-                         }
-                     }]
+                     role: 'function', // Using 'function' role for tool responses
+                     parts: [part]
                  });
                  lastRole = 'function';
              }
         }
     }
 
+    // Ensure we have at least one message to send, and it must be from user
+    if (history.length === 0) {
+        history.push({ role: 'user', parts: [{ text: 'Hello' }] });
+    }
+
     let messageToSend = history.pop();
-    if (!messageToSend) return;
+    
+    // If the message we just popped is from model, it means the LAST role was model.
+    // Gemini requires the last message in sendMessage to be from 'user'.
+    if (messageToSend.role === 'model') {
+        history.push(messageToSend);
+        messageToSend = { role: 'user', parts: [{ text: 'Continue' }] };
+    }
+
+    loggerService.debug("Gemini Request Full History:", { 
+        historyCount: history.length,
+        messageToSendParts: messageToSend.parts.length,
+        systemInstruction: systemMessage?.content ? (systemMessage.content as string).slice(0, 100) + '...' : 'none'
+    });
 
     const chatSession = geminiModel.startChat({
         history: history,
         systemInstruction: systemMessage?.content ? { role: 'system', parts: [{ text: systemMessage.content as string }] } : undefined
     });
     
+    loggerService.debug("Gemini: Sending message stream", { 
+        partsCount: messageToSend.parts.length,
+        lastMessage: JSON.stringify(messageToSend.parts).slice(0, 200) 
+    });
     const result = await chatSession.sendMessageStream(messageToSend.parts);
     let textAccumulator = "";
     const collectedToolCalls: ChatCompletionMessageToolCall[] = [];
 
+    let chunkCount = 0;
     for await (const chunk of result.stream) {
-          const text = chunk.text(); 
+          chunkCount++;
+          let text = "";
+          try {
+              text = chunk.text(); 
+          } catch (e) {
+              // chunk.text() might throw if it's only function calls
+          }
+
           if (text) {
               textAccumulator += text;
               yield { text };
@@ -457,7 +517,8 @@ const _streamAssistantResponseInternal = async function* (
           const parts = candidate?.content?.parts;
           
           const calls = chunk.functionCalls();
-          if (calls) {
+          if (calls && calls.length > 0) {
+              loggerService.info(`Gemini Chunk ${chunkCount}: Found ${calls.length} function calls`);
               calls.forEach((call: any, index: number) => {
                    const callId = 'gemini-' + randomUUID();
                    let signature: string | undefined;
@@ -484,6 +545,12 @@ const _streamAssistantResponseInternal = async function* (
           }
     }
 
+    loggerService.info("Gemini Stream Complete", { 
+        chunks: chunkCount, 
+        textLength: textAccumulator.length, 
+        toolCalls: collectedToolCalls.length 
+    });
+
     if (collectedToolCalls.length > 0) {
         yield { toolCalls: collectedToolCalls };
     }
@@ -498,7 +565,7 @@ const _streamAssistantResponseInternal = async function* (
     return;
   }
 
-  const client = getClient();
+  const client = await getClient();
   const stream = await client.chat.completions.create({
     model,
     messages,
@@ -591,7 +658,8 @@ export async function* sendMessageAndHandleTools(
   toolExecutor: (name: string, args: any) => Promise<any>,
   systemInstruction?: string,
   contextSessionId?: string,
-  userMessageId?: string
+  userMessageId?: string,
+  userId?: string
 ): AsyncGenerator<
   { text?: string; toolCalls?: any[]; isComplete?: boolean },
   void,
@@ -613,7 +681,7 @@ export async function* sendMessageAndHandleTools(
   if (contextSessionId) {
     try {
       // Use system/admin access for internal inference operations
-      const session = await contextService.getSession(contextSessionId, undefined, true);
+      const session = await contextService.getSession(contextSessionId, userId, true);
       if (session) {
         const lifecycle = session.status === "closed" ? "zombie" : "live";
         contextMetadata = {
@@ -643,11 +711,12 @@ export async function* sendMessageAndHandleTools(
       id: correlationId,
       role: "user",
       content: resolvedContent, // Save the resolved content so history makes sense
+      timestamp: new Date().toISOString(),
       metadata: { 
           kind: "user_prompt",
           ...(attachments.length > 0 ? { attachments } : {})
       },
-    }, undefined, true);
+    }, userId, true);
   }
 
   let loops = 0;
@@ -684,7 +753,7 @@ export async function* sendMessageAndHandleTools(
             return;
         }
 
-        const session = await contextService.getSession(contextSessionId, undefined, true);
+        const session = await contextService.getSession(contextSessionId, userId, true);
         if (!session || session.status === 'closed') {
             loggerService.info("Context closed during inference, aborting.", { contextSessionId });
             yield { text: "\n[System] Context archived. Inference aborted." };
@@ -701,12 +770,17 @@ export async function* sendMessageAndHandleTools(
     while (retries < MAX_RETRIES) {
         // Construct fresh context window using the ContextWindowService
         let contextMessages = contextSessionId 
-            ? await contextWindowService.constructContextWindow(contextSessionId, systemInstruction || chat.systemInstruction)
+            ? await contextWindowService.constructContextWindow(contextSessionId, systemInstruction || chat.systemInstruction, userId)
             : [{ role: 'system', content: systemInstruction || chat.systemInstruction }, { role: 'user', content: resolvedContent }] as ChatCompletionMessageParam[];
 
         if (transientMessages.length > 0) {
             contextMessages = [...contextMessages, ...transientMessages];
         }
+
+        loggerService.debug("sendMessageAndHandleTools: Context window messages counts", { 
+            total: contextMessages.length,
+            roles: contextMessages.reduce((acc: any, m) => { acc[m.role] = (acc[m.role] || 0) + 1; return acc; }, {})
+        });
 
         const assistantMessage = streamAssistantResponse(contextMessages as ChatCompletionMessageParam[], chat.model);
         textAccumulatedInTurn = ""; 
@@ -832,6 +906,7 @@ export async function* sendMessageAndHandleTools(
         id: randomUUID(),
         role: "assistant",
         content: textAccumulatedInTurn,
+        timestamp: new Date().toISOString(),
         toolCalls: (nextAssistant as any).tool_calls?.map((call: any) => ({
           id: call.id,
           name: call.function?.name,
@@ -905,6 +980,7 @@ export async function* sendMessageAndHandleTools(
             id: randomUUID(),
             role: "tool",
             content: JSON.stringify(errorPayload),
+            timestamp: new Date().toISOString(),
             toolName: toolName,
             toolCallId: call.id,
             toolArgs: { raw: call.function.arguments },
@@ -928,6 +1004,7 @@ export async function* sendMessageAndHandleTools(
             id: randomUUID(),
             role: "tool",
             content: JSON.stringify(result),
+            timestamp: new Date().toISOString(),
             toolName: toolName,
             toolCallId: call.id,
             toolArgs: args,
@@ -948,6 +1025,7 @@ export async function* sendMessageAndHandleTools(
             id: randomUUID(),
             role: "tool",
             content: JSON.stringify({ error: String(err) }),
+            timestamp: new Date().toISOString(),
             toolName: toolName,
             toolCallId: call.id,
             toolArgs: args,
@@ -971,11 +1049,12 @@ export const processMessageAsync = async (
   message: string,
   toolExecutor: (name: string, args: any) => Promise<any>,
   systemInstruction: string,
-  userMessageId?: string
+  userMessageId?: string,
+  userId?: string
 ) => {
   try {
-    const chat = getChatSession(systemInstruction, contextSessionId);
-    const stream = sendMessageAndHandleTools(chat, message, toolExecutor, systemInstruction, contextSessionId, userMessageId);
+    const chat = await getChatSession(systemInstruction, contextSessionId);
+    const stream = sendMessageAndHandleTools(chat, message, toolExecutor, systemInstruction, contextSessionId, userMessageId, userId);
     
     // Consume the stream to drive execution
     for await (const _ of stream) {
@@ -1001,6 +1080,7 @@ export const processMessageAsync = async (
         id: randomUUID(),
         role: "system",
         content: `Error processing message: ${error?.message || "Internal Error"}`,
+        timestamp: new Date().toISOString(),
         metadata: { kind: "error", ...errorDetails },
         correlationId: userMessageId
     }, undefined, true);
@@ -1051,7 +1131,7 @@ export const runSignalZeroTest = async (
   const contextSessionId = session.id;
 
   try {
-    const chat = createFreshChatSession(systemInstruction, contextSessionId);
+    const chat = await createFreshChatSession(systemInstruction, contextSessionId);
 
     const executeTurn = async (msg: string): Promise<string> => {
       let turnText = "";
@@ -1111,17 +1191,17 @@ export const runSignalZeroTest = async (
 
 export const runBaselineTest = async (prompt: string): Promise<string> => {
   try {
-    const settings = settingsService.getInferenceSettings();
+    const settings = await settingsService.getInferenceSettings();
     if (settings.provider === 'gemini') {
-        const client = getGeminiClient();
+        const client = await getGeminiClient();
         const model = client.getGenerativeModel({ model: settings.model });
         const result = await model.generateContent(prompt);
         return result.response.text();
     }
 
-    const client = getClient();
+    const client = await getClient();
     const completion = await client.chat.completions.create({
-      model: getModel(),
+      model: await getModel(),
       messages: [{ role: "user", content: prompt }],
       max_tokens: 4096
     });
@@ -1182,18 +1262,18 @@ export const evaluateComparison = async (
       auditability_score: 0,
     };
 
-    const settings = settingsService.getInferenceSettings();
+    const settings = await settingsService.getInferenceSettings();
     let messageText = "{}";
 
     if (settings.provider === 'gemini') {
-        const client = getGeminiClient();
+        const client = await getGeminiClient();
         const model = client.getGenerativeModel({ model: settings.model, generationConfig: { responseMimeType: "application/json" } });
         const result = await model.generateContent(evalPrompt);
         messageText = result.response.text();
     } else {
-        const client = getClient();
+        const client = await getClient();
         const result = await client.chat.completions.create({
-          model: getModel(),
+          model: await getModel(),
           messages: [{ role: "user", content: evalPrompt }],
           response_format: { type: "json_object" },
         });
@@ -1246,18 +1326,18 @@ export const evaluateSemanticMatch = async (
       }
     `;
 
-    const settings = settingsService.getInferenceSettings();
+    const settings = await settingsService.getInferenceSettings();
     let messageText = "{}";
 
     if (settings.provider === 'gemini') {
-        const client = getGeminiClient();
+        const client = await getGeminiClient();
         const model = client.getGenerativeModel({ model: settings.model, generationConfig: { responseMimeType: "application/json" } });
         const result = await model.generateContent(matchPrompt);
         messageText = result.response.text();
     } else {
-        const client = getClient();
+        const client = await getClient();
         const result = await client.chat.completions.create({
-          model: getModel(),
+          model: await getModel(),
           messages: [{ role: "user", content: matchPrompt }],
           response_format: { type: "json_object" },
         });

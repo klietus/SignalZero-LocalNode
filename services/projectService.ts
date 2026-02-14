@@ -119,11 +119,14 @@ export const projectService = {
         }
 
         return {
-            meta,
-            testCaseCount,
-            agentCount,
-            domains,
-            totalSymbols
+            stats: {
+                meta,
+                testCaseCount,
+                agentCount,
+                domains,
+                totalSymbols
+            },
+            systemPrompt
         };
     }
 };

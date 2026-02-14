@@ -3,7 +3,7 @@ import { redisService } from '../services/redisService.js';
 import fs from 'fs';
 import path from 'path';
 
-async function main() {
+export async function main() {
     try {
         console.log("Loading dynamic context...");
         // Accessing private method via type casting
