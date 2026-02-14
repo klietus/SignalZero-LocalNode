@@ -1,7 +1,7 @@
 
 import { contextService } from './contextService.js';
 import { domainService } from './domainService.js';
-import { SymbolDef, ContextMessage, isUserSpecificDomain } from '../types.js';
+import { SymbolDef, ContextMessage, isUserSpecificDomain, ContextKind } from '../types.js';
 import { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { loggerService } from './loggerService.js';
 import { buildSystemMetadataBlock } from './timeService.js';
@@ -32,8 +32,9 @@ export class ContextWindowService {
     const messages: ChatCompletionMessageParam[] = [];
 
     // Determine context type for selective injection
-    const session = await contextService.getSession(contextSessionId);
+    const session = await contextService.getSession(contextSessionId, userId, true);
     const type = session?.type || 'conversation';
+    const effectiveUserId = userId || session?.userId || undefined;
 
     // 1. System Prompt
     let effectiveSystemPrompt = systemPrompt;
@@ -43,7 +44,7 @@ export class ContextWindowService {
     messages.push({ role: 'system', content: effectiveSystemPrompt });
 
     // 2. Stable Symbolic Context (Cache Anchor)
-    const stableContext = await this.buildStableContext(userId);
+    const stableContext = await this.buildStableContext(effectiveUserId);
     messages.push({
       role: 'system',
       content: `[KERNEL]\n${stableContext}`
@@ -53,7 +54,7 @@ export class ContextWindowService {
     let currentTokens = messages.reduce((sum, m) => sum + this.estimateTokens(JSON.stringify(m)), 0);
 
     // 3. Sliding History Window (Token based)
-    const rawHistory = await contextService.getUnfilteredHistory(contextSessionId);
+    const rawHistory = await contextService.getUnfilteredHistory(contextSessionId, effectiveUserId, true);
     const historyMessages: ChatCompletionMessageParam[] = [];
     
     // Group into rounds (reverse chronological: Newest -> Oldest)
@@ -122,7 +123,7 @@ export class ContextWindowService {
     messages.push(...historyMessages);
 
     // 4. Dynamic Symbolic Context (Volatile)
-    const dynamicContext = await this.buildDynamicContext(type, userId);
+    const dynamicContext = await this.buildDynamicContext(type, effectiveUserId);
     
     // Generate fresh system metadata
     const systemMetadata = buildSystemMetadataBlock({
@@ -187,12 +188,15 @@ export class ContextWindowService {
   }
 
   private mapToOpenAIMessage(msg: ContextMessage): ChatCompletionMessageParam {
+    let role = msg.role;
+    if (role === 'model') role = 'assistant';
+    
     const chatMsg: any = {
-        role: msg.role === 'model' ? 'assistant' : msg.role,
+        role: role,
         content: msg.content || null,
     };
 
-    if (msg.toolCalls) {
+    if (msg.toolCalls && msg.toolCalls.length > 0) {
         chatMsg.tool_calls = msg.toolCalls.map((tc: any) => ({
             id: tc.id,
             type: 'function',
@@ -203,11 +207,11 @@ export class ContextWindowService {
         }));
     }
 
-    if (msg.role === 'tool') {
+    if (role === 'tool') {
         chatMsg.tool_call_id = msg.toolCallId;
     }
 
-    return chatMsg;
+    return chatMsg as ChatCompletionMessageParam;
   }
 
   private estimateTokens(text: string): number {
@@ -368,12 +372,12 @@ export class ContextWindowService {
    * Fetches dynamic symbols (Identity, Preferences, Recent State) that change frequently.
    * User and state domains are filtered by userId.
    */
-  private async buildDynamicContext(type: 'conversation' | 'loop' = 'conversation', userId?: string): Promise<string> {
+  private async buildDynamicContext(type: ContextKind = 'conversation', userId?: string): Promise<string> {
       try {
           const results: string[] = [];
           let userCoreCount = 0;
           
-          if (type !== 'loop') {
+          if (type !== 'agent') {
               // Query 4: Recursive User Core Injection
               // Start with USER-RECURSIVE-CORE and expand 3 levels deep
               const userSet = new Map<string, SymbolDef>();

@@ -39,7 +39,7 @@ describe('AuthService', () => {
         expect(token).not.toBeNull();
         expect(typeof token).toBe('string');
         
-        const session = authService.verifySession(token!);
+        const session = await authService.verifySession(token!);
         expect(session).toBeTruthy();
         expect(session?.username).toBe('admin');
     });
@@ -51,8 +51,8 @@ describe('AuthService', () => {
         expect(token).toBeNull();
     });
 
-    it('should reject invalid session tokens', () => {
-        const session = authService.verifySession('invalid-token');
+    it('should reject invalid session tokens', async () => {
+        const session = await authService.verifySession('invalid-token');
         expect(session).toBeNull();
     });
 
@@ -131,12 +131,12 @@ describe('AuthService', () => {
         const token = await authService.login('admin', 'password123');
         
         // Verify session exists
-        expect(authService.verifySession(token!)).toBeTruthy();
+        expect(await authService.verifySession(token!)).toBeTruthy();
         
         // Logout
         authService.logout(token!);
         
         // Session should be invalid
-        expect(authService.verifySession(token!)).toBeNull();
+        expect(await authService.verifySession(token!)).toBeNull();
     });
 });

@@ -34,7 +34,7 @@ async function reindexSymbols(includeDisabled: boolean = false): Promise<Reindex
     queueState = { pending: 0, total: 0, running: true };
 
     try {
-        const symbols = await domainService.getAllSymbols(includeDisabled);
+        const symbols = await domainService.getAllSymbols(undefined, includeDisabled);
         queueState.total = symbols.length;
         queueState.pending = symbols.length;
 

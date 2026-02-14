@@ -259,6 +259,7 @@ export interface DomainImportStat {
 
 export interface AgentDefinition {
     id: string;
+    userId?: string; // Optional owner
     schedule?: string;
     prompt: string;
     enabled: boolean;
@@ -296,6 +297,7 @@ export interface ContextMessage {
   role: string;
   content: string;
   timestamp: string;
+  isStreaming?: boolean;
   toolName?: string | null;
   toolCallId?: string | null;
   toolArgs?: Record<string, any> | null;

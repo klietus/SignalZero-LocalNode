@@ -127,6 +127,10 @@ const handleMockCommand = async (command: any[]): Promise<any> => {
         });
         return added;
     }
+    case 'SISMEMBER': {
+        const set = getMockSet(args[0]);
+        return set.has(args[1]) ? 1 : 0;
+    }
     case 'SREM': {
         const set = getMockSet(args[0]);
         let removed = 0;

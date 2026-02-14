@@ -1,7 +1,7 @@
 import { redisService } from '../services/redisService.js';
 import { vectorService } from '../services/vectorService.js';
 
-async function main() {
+export async function main() {
     const domainId = 'state';
     const key = `sz:domain:${domainId}`;
 

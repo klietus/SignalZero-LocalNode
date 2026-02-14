@@ -540,6 +540,26 @@ export const settingsService = {
     return settingsService.update(settings);
   },
 
+  /**
+   * Get legacy admin user from settings file for migration
+   */
+  getAdminUser: (): { username: string; passwordHash: string; salt: string } | null => {
+    try {
+      const data = fs.readFileSync(SETTINGS_FILE, 'utf-8');
+      const settings = JSON.parse(data);
+      if (settings?.admin?.username && settings?.admin?.passwordHash) {
+        return {
+          username: settings.admin.username,
+          passwordHash: settings.admin.passwordHash,
+          salt: settings.admin.salt || '',
+        };
+      }
+    } catch (e) {
+      // File doesn't exist or no admin section
+    }
+    return null;
+  },
+
   clearAll: () => {
     // No-op - use update with empty values instead
   }

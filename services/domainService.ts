@@ -3,6 +3,7 @@ import { vectorService } from './vectorService.ts';
 import { redisService } from './redisService.ts';
 import { loggerService } from './loggerService.ts';
 import { currentTimestamp, decodeTimestamp, getBucketKeysFromTimestamps, getDayBucketKey } from './timeService.ts';
+import { USER_DOMAIN_TEMPLATE, STATE_DOMAIN_TEMPLATE } from '../symbolic_system/domain_templates.ts';
 
 // Redis Keys Configuration
 const KEYS = {
@@ -80,9 +81,14 @@ const parseDomain = (data: string, domainId: string): CachedDomain => {
   return domain;
 };
 
-const ensureWritableDomain = (domain: CachedDomain, domainId: string, symbolId?: string) => {
+const ensureWritableDomain = (domain: CachedDomain, domainId: string, isAdmin: boolean = false, symbolId?: string) => {
   if (domain.readOnly) {
       throw new ReadOnlyDomainError(domainId, symbolId);
+  }
+  
+  // Global domains: only admin can write
+  if (!isUserSpecificDomain(domainId) && !isAdmin) {
+    throw new Error(`Admin privileges required to modify symbols in global domain '${domainId}'.`);
   }
 };
 
@@ -145,8 +151,16 @@ export const domainService = {
   /**
    * Initialize a domain (create if not exists).
    * For user-specific domains, requires userId.
+   * For global domains, requires isAdmin.
    */
-  init: async (domainId: string, name: string, userId?: string): Promise<CachedDomain> => {
+  init: async (domainId: string, name: string, userId?: string, isAdmin: boolean = false): Promise<CachedDomain> => {
+    const isUserDomain = isUserSpecificDomain(domainId);
+    
+    // Global domain creation requires admin
+    if (!isUserDomain && !isAdmin) {
+      throw new Error(`Admin privileges required to initialize global domain '${domainId}'`);
+    }
+
     const key = getDomainKey(domainId, userId);
     const data = await redisService.request(['GET', key]);
 
@@ -155,25 +169,44 @@ export const domainService = {
     }
 
     // Create new domain
+    let template: any = {};
+    if (domainId === 'user') template = USER_DOMAIN_TEMPLATE;
+    else if (domainId === 'state') template = STATE_DOMAIN_TEMPLATE;
+
     const newDomain: CachedDomain = {
       id: domainId,
-      name,
+      name: template.name || name,
+      description: template.description || "",
+      invariants: template.invariants || [],
       enabled: true,
       lastUpdated: Date.now(),
-      symbols: [],
-      invariants: [],
+      symbols: template.symbols || [],
       readOnly: false,
       ownerId: userId,
     };
 
     await redisService.request(['SET', key, JSON.stringify(newDomain)]);
     
+    // Index symbols if present
+    if (newDomain.symbols.length > 0) {
+        await vectorService.indexBatch(newDomain.symbols);
+    }
+    
     // Only track global domains in the domains set
-    if (!isUserSpecificDomain(domainId)) {
+    if (!isUserDomain) {
       await redisService.request(['SADD', KEYS.DOMAINS_SET, domainId]);
     }
 
     return newDomain;
+  },
+
+  /**
+   * Bootstrap mandatory user domains (user, state) for a given user.
+   */
+  bootstrapUserDomains: async (userId: string): Promise<void> => {
+    loggerService.info(`Bootstrapping domains for user ${userId}`);
+    await domainService.init('user', 'User', userId);
+    await domainService.init('state', 'State', userId);
   },
 
   /**
@@ -206,7 +239,7 @@ export const domainService = {
   /**
    * Get domain by ID with access control.
    */
-  get: async (domainId: string, userId?: string): Promise<CachedDomain | null> => {
+  get: async (domainId: string, userId?: string, includeDisabled: boolean = false): Promise<CachedDomain | null> => {
     const key = getDomainKey(domainId, userId);
     const data = await redisService.request(['GET', key]);
     
@@ -224,7 +257,7 @@ export const domainService = {
       throw new DomainAccessError(domainId, userId);
     }
 
-    if (domain.enabled === false) return null;
+    if (!includeDisabled && domain.enabled === false) return null;
 
     return domain;
   },
@@ -232,13 +265,31 @@ export const domainService = {
   /**
    * Toggle domain enabled/disabled status.
    * User-specific domains can only be toggled by their owner.
+   * Global domains can only be toggled by admins.
    */
-  setEnabled: async (domainId: string, enabled: boolean, userId?: string): Promise<CachedDomain | null> => {
-    const key = getDomainKey(domainId, userId);
-    const data = await redisService.request(['GET', key]);
-    if (!data) return null;
+  setEnabled: async (domainId: string, enabled: boolean, userId?: string, isAdmin: boolean = false): Promise<CachedDomain | null> => {
+    const isUserDomain = isUserSpecificDomain(domainId);
+    
+    // Global domain toggling requires admin
+    if (!isUserDomain && !isAdmin) {
+      throw new Error(`Admin privileges required to toggle global domain '${domainId}'`);
+    }
 
-    const domain = parseDomain(data, domainId);
+    const key = getDomainKey(domainId, userId);
+    let data = await redisService.request(['GET', key]);
+    let domain: CachedDomain | null = null;
+
+    if (!data) {
+      if (isUserDomain && userId) {
+        domain = await domainService.init(domainId, domainId === 'user' ? 'User Preferences' : 'User State', userId, isAdmin);
+      } else {
+        return null;
+      }
+    } else {
+      domain = parseDomain(data, domainId);
+    }
+
+    if (!domain) return null;
     
     if (!canAccessDomain(domainId, userId, domain.ownerId)) {
       throw new DomainAccessError(domainId, userId);
@@ -254,9 +305,9 @@ export const domainService = {
   /**
    * Add a symbol to a domain.
    * User-specific domains: any logged-in user can modify their own
-   * Global domains: check readOnly flag
+   * Global domains: only admin
    */
-  addSymbol: async (domainId: string, symbol: SymbolDef, userId?: string): Promise<SymbolDef> => {
+  addSymbol: async (domainId: string, symbol: SymbolDef, userId?: string, isAdmin: boolean = false): Promise<SymbolDef> => {
     const key = getDomainKey(domainId, userId);
     let domain: CachedDomain | null = null;
     let data = await redisService.request(['GET', key]);
@@ -264,7 +315,7 @@ export const domainService = {
     if (!data) {
       // Auto-init user domains
       if (isUserSpecificDomain(domainId) && userId) {
-        domain = await domainService.init(domainId, domainId === 'user' ? 'User Preferences' : 'User State', userId);
+        domain = await domainService.init(domainId, domainId === 'user' ? 'User Preferences' : 'User State', userId, isAdmin);
       } else {
         throw new Error(`Domain '${domainId}' not found.`);
       }
@@ -278,7 +329,7 @@ export const domainService = {
       throw new DomainAccessError(domainId, userId);
     }
 
-    ensureWritableDomain(domain, domainId, symbol.id);
+    ensureWritableDomain(domain, domainId, isAdmin, symbol.id);
 
     const existingIndex = domain.symbols.findIndex(s => s.id === symbol.id);
     const now = currentTimestamp();
@@ -306,7 +357,7 @@ export const domainService = {
   /**
    * Remove a symbol from a domain.
    */
-  removeSymbol: async (domainId: string, symbolId: string, userId?: string): Promise<boolean> => {
+  removeSymbol: async (domainId: string, symbolId: string, userId?: string, isAdmin: boolean = false): Promise<boolean> => {
     const key = getDomainKey(domainId, userId);
     const data = await redisService.request(['GET', key]);
     if (!data) return false;
@@ -317,7 +368,7 @@ export const domainService = {
       throw new DomainAccessError(domainId, userId);
     }
 
-    ensureWritableDomain(domain, domainId, symbolId);
+    ensureWritableDomain(domain, domainId, isAdmin, symbolId);
 
     const index = domain.symbols.findIndex(s => s.id === symbolId);
     if (index === -1) return false;
@@ -342,7 +393,7 @@ export const domainService = {
   /**
    * Update a symbol.
    */
-  updateSymbol: async (domainId: string, symbolId: string, updates: Partial<SymbolDef>, userId?: string): Promise<SymbolDef | null> => {
+  updateSymbol: async (domainId: string, symbolId: string, updates: Partial<SymbolDef>, userId?: string, isAdmin: boolean = false): Promise<SymbolDef | null> => {
     const key = getDomainKey(domainId, userId);
     const data = await redisService.request(['GET', key]);
     if (!data) return null;
@@ -353,7 +404,7 @@ export const domainService = {
       throw new DomainAccessError(domainId, userId);
     }
 
-    ensureWritableDomain(domain, domainId, symbolId);
+    ensureWritableDomain(domain, domainId, isAdmin, symbolId);
 
     const index = domain.symbols.findIndex(s => s.id === symbolId);
     if (index === -1) return null;
@@ -370,57 +421,85 @@ export const domainService = {
 
   /**
    * Perform vector search across accessible domains.
+   * Unified signature: search(query, limit, options, userId)
    */
   search: async (
     query: string | null,
-    userIdOrLimit?: string | number,
-    domainIdOrOptions?: string | { time_gte?: string; time_between?: string[] },
-    limitOrUndefined?: number
+    limitOrUserId?: number | string,
+    optionsOrDomainId?: { time_gte?: string; time_between?: string[]; metadata_filter?: any; domains?: string[] } | string,
+    userIdOverride?: string
   ): Promise<VectorSearchResult[]> => {
-    // Handle legacy signature: search(query, limit, options)
-    if (typeof userIdOrLimit === 'number') {
-      const limit = userIdOrLimit;
-      const options = domainIdOrOptions as { time_gte?: string; time_between?: string[] } | undefined;
-      // Legacy search doesn't support userId, search all global domains
-      const domains = await domainService.listDomains();
-      const allResults: VectorSearchResult[] = [];
+    let limit = 10;
+    let userId: string | undefined;
+    let targetDomains: string[] | undefined;
+    let time_gte: string | undefined;
+    let time_between: string[] | undefined;
+    let metadata_filter: any = {};
 
-      // Legacy search across all domains (no domain filtering in vector search)
-      const results = query ? await vectorService.search(query, limit) : [];
-      return results;
+    // 1. Parse Arguments (Handle various call signatures)
+    if (typeof limitOrUserId === 'number') {
+        limit = limitOrUserId;
+        if (typeof optionsOrDomainId === 'object') {
+            targetDomains = optionsOrDomainId.domains;
+            time_gte = optionsOrDomainId.time_gte;
+            time_between = optionsOrDomainId.time_between;
+            metadata_filter = optionsOrDomainId.metadata_filter || {};
+        } else if (typeof optionsOrDomainId === 'string') {
+            targetDomains = [optionsOrDomainId];
+        }
+        userId = userIdOverride;
+    } else {
+        userId = limitOrUserId;
+        if (typeof optionsOrDomainId === 'string') {
+            targetDomains = [optionsOrDomainId];
+        }
+        // ... (other signatures if needed)
     }
 
-    // New signature: search(query, userId?, domainId?, limit?)
-    const userId = userIdOrLimit as string | undefined;
-    const domainId = domainIdOrOptions as string | undefined;
-    const limit = limitOrUndefined ?? 10;
+    // 2. Resolve and Authorize Domains
+    const accessibleDomains = await domainService.listDomains(userId);
+    let finalDomains: string[] = [];
 
-    // If domain specified, verify access and search within that domain
-    if (domainId) {
-      const domain = await domainService.get(domainId, userId);
-      if (!domain || !domain.enabled) return [];
-      // Search with domain filter in metadata
-      const results = query ? await vectorService.search(query, limit, { domain: domainId }) : [];
-      return results;
+    if (targetDomains && targetDomains.length > 0) {
+        // Filter requested domains by access and status
+        for (const dId of targetDomains) {
+            if (accessibleDomains.includes(dId)) {
+                const domain = await domainService.get(dId, userId);
+                if (domain && domain.enabled) finalDomains.push(dId);
+            }
+        }
+    } else {
+        // Use all enabled accessible domains
+        for (const dId of accessibleDomains) {
+            const domain = await domainService.get(dId, userId);
+            if (domain && domain.enabled) finalDomains.push(dId);
+        }
     }
 
-    // Search across all accessible domains
-    const domains = await domainService.listDomains(userId);
-    const allResults: VectorSearchResult[] = [];
-
-    for (const dId of domains) {
-      const domain = await domainService.get(dId, userId);
-      if (domain && domain.enabled) {
-        // Search with domain filter in metadata
-        const results = query ? await vectorService.search(query, limit, { domain: dId }) : [];
-        allResults.push(...results);
-      }
+    if (finalDomains.length === 0) {
+        loggerService.warn(`domainService.search: No enabled/accessible domains for search`, { userId, targetDomains });
+        return [];
     }
 
-    // Sort by score and take top limit
-    return allResults
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit);
+    // 3. Execute Vector Search
+    const searchFilter = { 
+        ...metadata_filter, 
+        domain: finalDomains, // MUST BE 'domain' to match metadata key in vectorService.ts
+        time_gte, 
+        time_between 
+    };
+
+    loggerService.debug(`domainService.search: executing vector search`, { 
+        query, 
+        limit, 
+        domainCount: finalDomains.length,
+        userId 
+    });
+
+    const results = query ? await vectorService.search(query, limit, searchFilter) : [];
+    
+    loggerService.debug(`domainService.search: found ${results.length} results`);
+    return results;
   },
 
   /**
@@ -741,19 +820,19 @@ export const domainService = {
    * Create a new domain (alias for init)
    * Supports both (domainId, name, userId) and (domainId, metadata, userId) signatures
    */
-  createDomain: async (domainId: string, nameOrMetadata: string | { name?: string; description?: string; invariants?: string[] }, userId?: string): Promise<CachedDomain> => {
+  createDomain: async (domainId: string, nameOrMetadata: string | { name?: string; description?: string; invariants?: string[] }, userId?: string, isAdmin: boolean = false): Promise<CachedDomain> => {
     if (typeof nameOrMetadata === 'string') {
-      return domainService.init(domainId, nameOrMetadata, userId);
+      return domainService.init(domainId, nameOrMetadata, userId, isAdmin);
     } else {
       // Object format - extract name or use domainId as name
       const name = nameOrMetadata.name || domainId;
-      const domain = await domainService.init(domainId, name, userId);
+      const domain = await domainService.init(domainId, name, userId, isAdmin);
       // Apply additional metadata if provided
       if (nameOrMetadata.description || nameOrMetadata.invariants) {
         return await domainService.updateDomainMetadata(domainId, {
           description: nameOrMetadata.description,
           invariants: nameOrMetadata.invariants
-        }, userId) || domain;
+        }, userId, isAdmin) || domain;
       }
       return domain;
     }
@@ -780,27 +859,45 @@ export const domainService = {
    * Toggle domain enabled status (alias for setEnabled)
    * Supports both (domainId, userId) and (domainId, enabled, userId) signatures
    */
-  toggleDomain: async (domainId: string, enabledOrUserId?: boolean | string, userId?: string): Promise<CachedDomain | null> => {
+  toggleDomain: async (domainId: string, enabledOrUserId?: boolean | string, userId?: string, isAdmin: boolean = false): Promise<CachedDomain | null> => {
     if (typeof enabledOrUserId === 'boolean') {
       // (domainId, enabled, userId) signature
-      return domainService.setEnabled(domainId, enabledOrUserId, userId);
+      return domainService.setEnabled(domainId, enabledOrUserId, userId, isAdmin);
     } else {
       // (domainId, userId) signature - toggle current state
-      const domain = await domainService.get(domainId, enabledOrUserId as string | undefined);
+      const effectiveUserId = enabledOrUserId as string | undefined;
+      const domain = await domainService.get(domainId, effectiveUserId);
       if (!domain) return null;
-      return domainService.setEnabled(domainId, !domain.enabled, enabledOrUserId as string | undefined);
+      return domainService.setEnabled(domainId, !domain.enabled, effectiveUserId, isAdmin);
     }
   },
 
   /**
    * Update domain metadata
    */
-  updateDomainMetadata: async (domainId: string, metadata: Partial<CachedDomain>, userId?: string): Promise<CachedDomain | null> => {
-    const key = getDomainKey(domainId, userId);
-    const data = await redisService.request(['GET', key]);
-    if (!data) return null;
+  updateDomainMetadata: async (domainId: string, metadata: Partial<CachedDomain>, userId?: string, isAdmin: boolean = false): Promise<CachedDomain | null> => {
+    const isUserDomain = isUserSpecificDomain(domainId);
+    
+    // Global domain metadata updates require admin
+    if (!isUserDomain && !isAdmin) {
+      throw new Error(`Admin privileges required to update metadata for global domain '${domainId}'`);
+    }
 
-    const domain = parseDomain(data, domainId);
+    const key = getDomainKey(domainId, userId);
+    let data = await redisService.request(['GET', key]);
+    let domain: CachedDomain | null = null;
+
+    if (!data) {
+      if (isUserDomain && userId) {
+        domain = await domainService.init(domainId, domainId === 'user' ? 'User Preferences' : 'User State', userId, isAdmin);
+      } else {
+        return null;
+      }
+    } else {
+      domain = parseDomain(data, domainId);
+    }
+
+    if (!domain) return null;
     
     if (!canAccessDomain(domainId, userId, domain.ownerId)) {
       throw new DomainAccessError(domainId, userId);
@@ -812,11 +909,51 @@ export const domainService = {
   },
 
   /**
-   * Delete a domain (only works for user-specific domains)
+   * Delete a domain.
+   * User-specific domains: only owner.
+   * Global domains: only admin.
    */
-  deleteDomain: async (domainId: string, userId?: string): Promise<boolean> => {
-    if (!userId) return false;
-    return domainService.deleteUserDomain(domainId, userId);
+  deleteDomain: async (domainId: string, userId?: string, isAdmin: boolean = false): Promise<boolean> => {
+    const isUserDomain = isUserSpecificDomain(domainId);
+    loggerService.debug(`deleteDomain: Starting deletion for ${domainId}`, { isUserDomain, userId, isAdmin });
+    
+    if (isUserDomain) {
+      if (!userId) throw new Error('User ID required to delete user-specific domain');
+      return await domainService.deleteUserDomain(domainId, userId);
+    }
+
+    // Global domain deletion - requires admin
+    if (!isAdmin) {
+      loggerService.warn(`deleteDomain: Unauthorized attempt to delete global domain ${domainId} by user ${userId}`);
+      throw new Error('Admin privileges required to delete global domains');
+    }
+
+    const key = getDomainKey(domainId);
+    const data = await redisService.request(['GET', key]);
+    if (!data) {
+      loggerService.warn(`deleteDomain: Domain data not found for ${domainId} (key: ${key})`);
+      return false;
+    }
+
+    const domain = parseDomain(data, domainId);
+    ensureWritableDomain(domain, domainId, isAdmin);
+
+    loggerService.info(`deleteDomain: Deleting ${domain.symbols.length} symbols from vector store for domain ${domainId}`);
+    // Remove all symbols from vector store
+    for (const symbol of domain.symbols) {
+      await vectorService.removeSymbol(symbol.id, domainId);
+    }
+
+    // Remove from global domains set
+    const sremResult = await redisService.request(['SREM', KEYS.DOMAINS_SET, domainId]);
+    loggerService.debug(`deleteDomain: SREM result for ${domainId}: ${sremResult}`);
+    
+    // Delete the domain data
+    const delResult = await redisService.request(['DEL', key]);
+    loggerService.debug(`deleteDomain: DEL result for ${key}: ${delResult}`);
+    
+    loggerService.info(`Global domain deleted: ${domainId}`);
+    return true;
   },
 
   /**
@@ -842,8 +979,8 @@ export const domainService = {
   /**
    * Alias for addSymbol
    */
-  upsertSymbol: async (domainId: string, symbol: SymbolDef, userId?: string): Promise<SymbolDef> => {
-    return domainService.addSymbol(domainId, symbol, userId);
+  upsertSymbol: async (domainId: string, symbol: SymbolDef, userId?: string, isAdmin: boolean = false): Promise<SymbolDef> => {
+    return domainService.addSymbol(domainId, symbol, userId, isAdmin);
   },
 
   /**
@@ -853,13 +990,21 @@ export const domainService = {
   bulkUpsert: async (
     domainId: string,
     symbols: SymbolDef[],
-    userIdOrOptions?: string | { bypassValidation?: boolean }
+    userIdOrOptions?: string | { userId?: string, bypassValidation?: boolean, isAdmin?: boolean }
   ): Promise<SymbolDef[]> => {
-    const userId = typeof userIdOrOptions === 'string' ? userIdOrOptions : undefined;
-    // Note: bypassValidation option is noted but not implemented in this version
+    let userId: string | undefined;
+    let isAdmin = false;
+
+    if (typeof userIdOrOptions === 'string') {
+      userId = userIdOrOptions;
+    } else if (typeof userIdOrOptions === 'object') {
+      userId = userIdOrOptions.userId;
+      isAdmin = !!userIdOrOptions.isAdmin;
+    }
+
     const results: SymbolDef[] = [];
     for (const symbol of symbols) {
-      const result = await domainService.addSymbol(domainId, symbol, userId);
+      const result = await domainService.addSymbol(domainId, symbol, userId, isAdmin);
       results.push(result);
     }
     return results;
@@ -869,16 +1014,21 @@ export const domainService = {
    * Alias for removeSymbol
    * Supports both (domainId, symbolId, userId?) and (domainId, symbolId, cascade?) signatures
    */
-  deleteSymbol: async (domainId: string, symbolId: string, userIdOrCascade?: string | boolean): Promise<boolean> => {
+  deleteSymbol: async (domainId: string, symbolId: string, userIdOrCascade?: string | boolean, isAdmin: boolean = false): Promise<boolean> => {
     // If third argument is a boolean, it's cascade (legacy), ignore it for now
     const userId = typeof userIdOrCascade === 'string' ? userIdOrCascade : undefined;
-    return domainService.removeSymbol(domainId, symbolId, userId);
+    return domainService.removeSymbol(domainId, symbolId, userId, isAdmin);
   },
 
   /**
    * Propagate rename across all symbols (placeholder - would need full implementation)
    */
-  propagateRename: async (domainId: string, oldId: string, newId: string, userId?: string): Promise<void> => {
+  propagateRename: async (domainId: string, oldId: string, newId: string, userId?: string, isAdmin: boolean = false): Promise<void> => {
+    const isUserDomain = isUserSpecificDomain(domainId);
+    if (!isUserDomain && !isAdmin) {
+      throw new Error(`Admin privileges required to propagate rename in global domain '${domainId}'`);
+    }
+
     const domain = await domainService.get(domainId, userId);
     if (!domain) throw new Error(`Domain '${domainId}' not found`);
     

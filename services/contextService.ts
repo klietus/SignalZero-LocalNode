@@ -380,6 +380,13 @@ export const contextService = {
   },
 
   /**
+   * Alias for hasCancellationRequest for backward compatibility
+   */
+  async isCancelled(sessionId: string, userId?: string, isAdmin?: boolean): Promise<boolean> {
+    return contextService.hasCancellationRequest(sessionId, userId, isAdmin);
+  },
+
+  /**
    * Clear cancellation request
    */
   async clearCancellation(sessionId: string, userId?: string, isAdmin?: boolean): Promise<void> {
@@ -400,6 +407,41 @@ export const contextService = {
     const history = await loadHistory(sessionId);
     history.push(message);
     await persistHistory(sessionId, history);
+  },
+
+  /**
+   * Check if write operations are allowed for a session
+   */
+  async isWriteAllowed(sessionId: string | undefined, toolName: string): Promise<boolean> {
+    if (!sessionId) return true; // Allow if no session context
+    
+    const session = await loadSession(sessionId);
+    if (!session) return false;
+    
+    // Closed sessions don't allow writes
+    if (session.status === 'closed') return false;
+    
+    // Always allow read operations
+    const readOnlyTools = ['find_symbols', 'load_symbols', 'list_domains', 'list_agents', 'list_agent_executions', 'list_test_runs', 'list_test_failures', 'sys_info', 'web_fetch', 'web_search', 'web_post'];
+    if (readOnlyTools.includes(toolName)) return true;
+    
+    return true;
+  },
+
+  /**
+   * Rename a session
+   */
+  async renameSession(sessionId: string, name: string, userId?: string, isAdmin?: boolean): Promise<ContextSession | null> {
+    const hasAccess = await contextService.canAccessSession(sessionId, userId, isAdmin);
+    if (!hasAccess) return null;
+    
+    const session = await loadSession(sessionId);
+    if (!session) return null;
+
+    session.name = name;
+    session.updatedAt = new Date().toISOString();
+    await persistSession(session);
+    return session;
   },
 
   /**

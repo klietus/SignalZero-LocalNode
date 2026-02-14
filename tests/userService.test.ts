@@ -280,7 +280,7 @@ describe('AuthService with UserService', () => {
       const token = await authService.login('testuser', 'password123');
       expect(token).toBeDefined();
       expect(typeof token).toBe('string');
-      expect(token.length).toBeGreaterThan(0);
+      expect(token!.length).toBeGreaterThan(0);
     });
 
     it('should return null on failed login', async () => {
@@ -296,15 +296,15 @@ describe('AuthService with UserService', () => {
 
     it('should verify valid session', async () => {
       const token = await authService.login('testuser', 'password123');
-      const session = authService.verifySession(token!);
+      const session = await authService.verifySession(token!);
       
       expect(session).toBeDefined();
       expect(session?.username).toBe('testuser');
       expect(session?.userId).toBeDefined();
     });
 
-    it('should reject invalid session', () => {
-      const session = authService.verifySession('invalid_token');
+    it('should reject invalid session', async () => {
+      const session = await authService.verifySession('invalid_token');
       expect(session).toBeNull();
     });
   });

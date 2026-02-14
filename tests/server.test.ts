@@ -8,14 +8,14 @@ import { testService } from '../services/testService.ts';
 import { projectService } from '../services/projectService.ts';
 import { contextService } from '../services/contextService.ts';
 import { authService } from '../services/authService.ts';
-import { loopService } from '../services/loopService.ts';
+import { agentService } from '../services/agentService.js';
 
 // Mock Services
 vi.mock('../services/domainService');
 vi.mock('../services/traceService');
 vi.mock('../services/testService');
 vi.mock('../services/projectService');
-vi.mock('../services/loopService');
+vi.mock('../services/agentService');
 vi.mock('../services/authService', () => ({
     authService: {
         verifySession: vi.fn().mockReturnValue(true),
@@ -135,7 +135,7 @@ describe('Server API Endpoints', () => {
     });
 
     it('POST /api/domains/:id/toggle should toggle domain', async () => {
-        vi.mocked(domainService.toggleDomain).mockResolvedValue(undefined);
+        vi.mocked(domainService.toggleDomain).mockResolvedValue({ id: 'd1', symbols: [], enabled: true } as any);
         
         const res = await request(app)
             .post('/api/domains/d1/toggle')
@@ -202,39 +202,39 @@ describe('Server API Endpoints', () => {
         expect(res.header['content-type']).toBe('application/zip');
     });
 
-    // --- Loop Management Tests ---
-    it('GET /api/loops should list loops', async () => {
-        vi.mocked(loopService.listLoops).mockResolvedValue([{ id: 'l1' } as any]);
-        const res = await request(app).get('/api/loops').set('x-auth-token', AUTH_TOKEN);
+    // --- Agent Management Tests ---
+    it('GET /api/agents should list agents', async () => {
+        vi.mocked(agentService.listAgents).mockResolvedValue([{ id: 'l1' } as any]);
+        const res = await request(app).get('/api/agents').set('x-auth-token', AUTH_TOKEN);
         expect(res.status).toBe(200);
-        expect(res.body).toEqual({ loops: [{ id: 'l1' }] });
+        expect(res.body).toEqual({ agents: [{ id: 'l1' }] });
     });
 
-    it('POST /api/loops should upsert loop', async () => {
-        vi.mocked(loopService.upsertLoop).mockResolvedValue({ id: 'l1' } as any);
-        const res = await request(app).post('/api/loops').set('x-auth-token', AUTH_TOKEN).send({ id: 'l1', schedule: '* * * * *', prompt: 'p' });
-        expect(res.status).toBe(200);
-        expect(res.body).toEqual({ id: 'l1' });
-    });
-
-    it('PUT /api/loops/:id should upsert loop', async () => {
-        vi.mocked(loopService.upsertLoop).mockResolvedValue({ id: 'l1' } as any);
-        const res = await request(app).put('/api/loops/l1').set('x-auth-token', AUTH_TOKEN).send({ schedule: '* * * * *', prompt: 'p' });
+    it('POST /api/agents should upsert agent', async () => {
+        vi.mocked(agentService.upsertAgent).mockResolvedValue({ id: 'l1' } as any);
+        const res = await request(app).post('/api/agents').set('x-auth-token', AUTH_TOKEN).send({ id: 'l1', schedule: '* * * * *', prompt: 'p' });
         expect(res.status).toBe(200);
         expect(res.body).toEqual({ id: 'l1' });
-        expect(loopService.upsertLoop).toHaveBeenCalledWith('l1', '* * * * *', 'p', true);
     });
 
-    it('DELETE /api/loops/:id should delete loop', async () => {
-        vi.mocked(loopService.deleteLoop).mockResolvedValue(true);
-        const res = await request(app).delete('/api/loops/l1').set('x-auth-token', AUTH_TOKEN);
+    it('PUT /api/agents/:id should upsert agent', async () => {
+        vi.mocked(agentService.upsertAgent).mockResolvedValue({ id: 'l1' } as any);
+        const res = await request(app).put('/api/agents/l1').set('x-auth-token', AUTH_TOKEN).send({ schedule: '* * * * *', prompt: 'p' });
         expect(res.status).toBe(200);
-        expect(loopService.deleteLoop).toHaveBeenCalledWith('l1');
+        expect(res.body).toEqual({ id: 'l1' });
+        expect(agentService.upsertAgent).toHaveBeenCalledWith('l1', '* * * * *', 'p', true);
     });
 
-    it('GET /api/loops/logs should return execution logs', async () => {
-        vi.mocked(loopService.getExecutionLogs).mockResolvedValue([{ id: 'e1' } as any]);
-        const res = await request(app).get('/api/loops/logs?loopId=l1').set('x-auth-token', AUTH_TOKEN);
+    it('DELETE /api/agents/:id should delete agent', async () => {
+        vi.mocked(agentService.deleteAgent).mockResolvedValue(true);
+        const res = await request(app).delete('/api/agents/l1').set('x-auth-token', AUTH_TOKEN);
+        expect(res.status).toBe(200);
+        expect(agentService.deleteAgent).toHaveBeenCalledWith('l1');
+    });
+
+    it('GET /api/agents/logs should return execution logs', async () => {
+        vi.mocked(agentService.getExecutionLogs).mockResolvedValue([{ id: 'e1' } as any]);
+        const res = await request(app).get('/api/agents/logs?agentId=l1').set('x-auth-token', AUTH_TOKEN);
         expect(res.status).toBe(200);
         expect(res.body).toEqual({ logs: [{ id: 'e1' }] });
     });

@@ -95,6 +95,21 @@ export const testService = {
     await redisService.request(['DEL', `${KEYS.TEST_SET_PREFIX}${id}`]);
   },
 
+  replaceAllTestSets: async (sets: TestSet[]): Promise<void> => {
+      // 1. Get existing sets
+      const existingIds = await redisService.request(['SMEMBERS', KEYS.TEST_SETS]);
+      // 2. Delete existing
+      if (Array.isArray(existingIds) && existingIds.length > 0) {
+          for (const id of existingIds) {
+              await testService.deleteTestSet(id);
+          }
+      }
+      // 3. Create new
+      for (const set of sets) {
+          await testService.createOrUpdateTestSet(set);
+      }
+  },
+
   // --- Test Run Management ---
 
   listTestRuns: async (): Promise<TestRun[]> => {

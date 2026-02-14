@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import JSZip from 'jszip';
 
-async function exportRun(runId: string) {
+export async function exportRun(runId: string) {
     process.env.REDIS_URL = 'redis://localhost:6380';
     console.log(`Starting export for run: ${runId}`);
 

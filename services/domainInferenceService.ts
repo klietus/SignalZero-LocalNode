@@ -16,8 +16,8 @@ interface SimilarDomain extends DomainDescriptor {
     similarity: number;
 }
 
-const getClient = () => {
-    const { endpoint } = settingsService.getInferenceSettings();
+const getClient = async () => {
+    const { endpoint } = await settingsService.getInferenceSettings();
     const apiKey = settingsService.getApiKey() || "lm-studio";
     return new OpenAI({ baseURL: endpoint, apiKey });
 };
@@ -100,7 +100,7 @@ ${closest.map((d) => `- ${d.id} (${d.similarity.toFixed(3)}): invariants=${d.inv
 Return JSON with the field "invariants" as a non-empty array of concise invariant statements. You may include an optional "reasoning" note, but no additional text.
 `;
 
-        const { provider, model, apiKey } = settingsService.getInferenceSettings();
+        const { provider, model, apiKey } = await settingsService.getInferenceSettings();
         let messageText = "{}";
 
         if (provider === 'gemini') {
@@ -125,7 +125,7 @@ Return JSON with the field "invariants" as a non-empty array of concise invarian
                  throw new Error(`Gemini Inference Failed: ${err.message || String(err)}`);
             }
         } else {
-            const client = getClient();
+            const client = await getClient();
             const response = await client.chat.completions.create({
                 model: model,
                 messages: [{ role: 'user', content: prompt }],

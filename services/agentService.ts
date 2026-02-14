@@ -29,12 +29,13 @@ class AgentService {
         return interval.next().toDate();
     }
 
-    private createAgentPayload(id: string, prompt: string, enabled: boolean, schedule?: string, existing?: AgentDefinition): AgentDefinition {
+    private createAgentPayload(id: string, prompt: string, enabled: boolean, schedule?: string, existing?: AgentDefinition, userId?: string): AgentDefinition {
         const nowIso = new Date().toISOString();
         if (schedule) this.validateSchedule(schedule);
 
         return {
             id,
+            userId: userId || existing?.userId,
             schedule,
             prompt,
             enabled,
@@ -78,12 +79,12 @@ class AgentService {
         }
     }
 
-    async upsertAgent(id: string, prompt: string, enabled: boolean, schedule?: string): Promise<AgentDefinition> {
+    async upsertAgent(id: string, prompt: string, enabled: boolean, schedule?: string, userId?: string): Promise<AgentDefinition> {
         const existing = await this.getAgent(id);
-        const agent = this.createAgentPayload(id, prompt, enabled, schedule, existing || undefined);
+        const agent = this.createAgentPayload(id, prompt, enabled, schedule, existing || undefined, userId);
 
         await this.persistAgent(agent);
-        loggerService.info('AgentService: Upserted agent', { id, enabled, schedule: schedule || 'event-driven' });
+        loggerService.info('AgentService: Upserted agent', { id, enabled, schedule: schedule || 'event-driven', userId });
         return agent;
     }
 
@@ -92,6 +93,21 @@ class AgentService {
         const removed = await redisService.request(['DEL', getLoopKey(id)]);
         loggerService.info('AgentService: Deleted agent', { id });
         return removed > 0;
+    }
+
+    async replaceAllAgents(agents: AgentDefinition[], userId?: string): Promise<void> {
+        const ids = await redisService.request(['SMEMBERS', LOOP_INDEX_KEY]);
+        if (Array.isArray(ids)) {
+            for (const id of ids) {
+                await this.deleteAgent(id);
+            }
+        }
+        // Also clear executions
+        await redisService.request(['DEL', EXECUTION_ZSET_KEY]);
+        
+        for (const agent of agents) {
+            await this.upsertAgent(agent.id, agent.prompt, agent.enabled, agent.schedule, userId || agent.userId);
+        }
     }
 
     private getNextRun(agent: AgentDefinition, reference: Date): Date | null {
@@ -135,11 +151,11 @@ class AgentService {
     }
 
     private async getOrCreateAgentContext(agent: AgentDefinition): Promise<string> {
-        const sessions = await contextService.listSessions();
+        const sessions = await contextService.listSessions(undefined, true);
         const existing = sessions.find(s => s.metadata?.agentId === agent.id && s.status === 'open');
         if (existing) return existing.id;
         
-        const newSession = await contextService.createSession('agent', { agentId: agent.id }, `Agent: ${agent.id}`);
+        const newSession = await contextService.createSession('agent', { agentId: agent.id }, `Agent: ${agent.id}`, undefined);
         return newSession.id;
     }
 
@@ -149,7 +165,7 @@ class AgentService {
         
         if (totalTokens > AGENT_TOKEN_LIMIT) {
             loggerService.warn(`AgentService: Token limit exceeded (${totalTokens} > ${AGENT_TOKEN_LIMIT}). Closing context.`, { contextSessionId });
-            await contextService.closeSession(contextSessionId);
+            await contextService.closeSession(contextSessionId, undefined, true);
         }
     }
 
@@ -162,13 +178,19 @@ class AgentService {
         const contextSessionId = await this.getOrCreateAgentContext(agent);
         
         // Ensure prompt is current in metadata
-        await contextService.updateMetadata(contextSessionId, { agentPrompt: agent.prompt });
+        await contextService.updateSessionMetadata(contextSessionId, { agentPrompt: agent.prompt }, undefined, true);
 
         if (triggerMessage) {
-            await contextService.enqueueMessage(contextSessionId, triggerMessage, 'external-trigger');
+            await contextService.enqueueMessage(contextSessionId, {
+                id: randomUUID(),
+                role: 'user',
+                content: triggerMessage,
+                timestamp: new Date().toISOString(),
+                metadata: { kind: 'external-trigger' }
+            }, undefined, true);
         }
 
-        if (await contextService.hasActiveMessage(contextSessionId)) {
+        if (await contextService.hasActiveMessage(contextSessionId, undefined, true)) {
             loggerService.info("Agent context busy, message queued.", { agentId, contextSessionId });
             return;
         }
@@ -180,13 +202,13 @@ class AgentService {
         const agent = await this.getAgent(agentId);
         if (!agent) return;
 
-        const nextItem = await contextService.popNextMessage(contextSessionId);
+        const nextItem = await contextService.popNextMessage(contextSessionId, undefined, true);
         const inputMessage = nextItem?.message || (agent.schedule ? "Wake up and execute your scheduled task." : null);
         
         if (!inputMessage) return;
 
         const lockId = `agent-exec-${Date.now()}`;
-        await contextService.setActiveMessage(contextSessionId, lockId);
+        await contextService.setActiveMessage(contextSessionId, lockId, undefined, true);
 
         const executionId = `${agent.id}-${Date.now()}`;
         const startedAt = new Date().toISOString();
@@ -205,11 +227,11 @@ class AgentService {
 
         try {
             const baseSystemPrompt = await systemPromptService.loadPrompt(ACTIVATION_PROMPT);
-            const { loopModel } = settingsService.getInferenceSettings();
-            const chat = createFreshChatSession(baseSystemPrompt, contextSessionId, loopModel);
+            const { loopModel } = await settingsService.getInferenceSettings();
+            const chat = await createFreshChatSession(baseSystemPrompt, contextSessionId, loopModel);
             const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), contextSessionId);
             
-            const stream = sendMessageAndHandleTools(chat, inputMessage, toolExecutor, baseSystemPrompt, contextSessionId, lockId);
+            const stream = sendMessageAndHandleTools(chat, inputMessage, toolExecutor, baseSystemPrompt, contextSessionId, lockId, agent.userId || undefined);
             const toolCalls: any[] = [];
 
             for await (const chunk of stream) {
@@ -249,7 +271,7 @@ class AgentService {
             };
 
             await this.persistExecution(executionLog, traces);
-            await contextService.clearActiveMessage(contextSessionId);
+            await contextService.clearActiveMessage(contextSessionId, undefined, true);
             
             this.drainQueue(agentId, contextSessionId);
         }
