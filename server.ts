@@ -15,6 +15,7 @@ import { testService } from './services/testService.js';
 import { ProjectMeta } from './types.js';
 import { loggerService } from './services/loggerService.js';
 import { systemPromptService } from './services/systemPromptService.js';
+import { mcpPromptService } from './services/mcpPromptService.js';
 import { fileURLToPath } from 'url';
 import { agentService } from './services/agentService.js';
 import { contextService } from './services/contextService.js';
@@ -28,10 +29,10 @@ import { vectorService } from './services/vectorService.js';
 import { indexingService } from './services/indexingService.js';
 
 // MCP Session Store
-const mcpSessions = new Map<string, { userId: string; res: express.Response; createdAt: number }>();
+const mcpSessions = new Map<string, { userId: string; userRole: string; res: express.Response; createdAt: number }>();
 
 // MCP Method Handler
-async function handleMCPMethod(method: string, params: any, userId: string): Promise<any> {
+async function handleMCPMethod(method: string, params: any, userId: string, userRole: string): Promise<any> {
     switch (method) {
         case 'initialize':
             return {
@@ -47,18 +48,77 @@ async function handleMCPMethod(method: string, params: any, userId: string): Pro
                 }
             };
 
-        case 'tools/list':
+        case 'prompts/list':
             return {
-                tools: toolDeclarations.map(t => ({
-                    name: t.function.name,
-                    description: t.function.description,
-                    inputSchema: t.function.parameters
-                }))
+                prompts: activeMcpPrompt ? [
+                    {
+                        name: 'project-prompt',
+                        description: 'Custom MCP prompt for this project',
+                        arguments: []
+                    }
+                ] : []
+            };
+
+        case 'prompts/get':
+            if (params.name === 'project-prompt' && activeMcpPrompt) {
+                return {
+                    description: 'Custom MCP prompt for this project',
+                    messages: [
+                        {
+                            role: 'user',
+                            content: {
+                                type: 'text',
+                                text: activeMcpPrompt
+                            }
+                        }
+                    ]
+                };
+            }
+            throw new Error(`Prompt not found: ${params.name}`);
+
+        case 'tools/list':
+            const restrictedTools = [
+                'list_secrets', 'store_secret', 'get_secret',
+                'upsert_agent', 'list_agents', 'list_agent_executions', 'send_agent_message', 'list_agent_contexts',
+                'sys_exec', 'speak', 'send_user_message',
+                'list_test_runs', 'list_test_failures',
+                'write_file', 'web_fetch', 'web_search', 'web_post', 'symbol_transaction'
+            ];
+            const adminOnlyTools = ['upsert_symbols', 'delete_symbols', 'create_domain'];
+            const isAdmin = userRole === 'admin';
+
+            return {
+                tools: toolDeclarations
+                    .filter(t => !restrictedTools.includes(t.function.name))
+                    .filter(t => isAdmin || !adminOnlyTools.includes(t.function.name))
+                    .map(t => ({
+                        name: t.function.name,
+                        description: t.function.description,
+                        inputSchema: t.function.parameters
+                    }))
             };
 
         case 'tools/call': {
             const { name, arguments: toolArgs } = params;
-            const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), undefined, userId, true);
+            const restrictedTools = [
+                'list_secrets', 'store_secret', 'get_secret',
+                'upsert_agent', 'list_agents', 'list_agent_executions', 'send_agent_message', 'list_agent_contexts',
+                'sys_exec', 'speak', 'send_user_message',
+                'list_test_runs', 'list_test_failures',
+                'write_file', 'web_fetch', 'web_search', 'web_post', 'symbol_transaction'
+            ];
+            const adminOnlyTools = ['upsert_symbols', 'delete_symbols', 'create_domain'];
+            const isAdmin = userRole === 'admin';
+            
+            if (restrictedTools.includes(name)) {
+                throw new Error(`Tool ${name} is restricted on this MCP server.`);
+            }
+
+            if (adminOnlyTools.includes(name) && !isAdmin) {
+                throw new Error(`Tool ${name} requires admin privileges.`);
+            }
+
+            const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), undefined, userId, isAdmin);
             try {
                 const result = await toolExecutor(name, toolArgs);
                 return {
@@ -620,7 +680,12 @@ app.get('/api/index/status', async (req, res) => {
 });
 
 // Initialize Chat
-let activeSystemPrompt = ACTIVATION_PROMPT;
+export let activeSystemPrompt = ACTIVATION_PROMPT;
+export let activeMcpPrompt = '';
+
+export function resetActiveMcpPrompt() { activeMcpPrompt = ''; }
+export function setActiveMcpPrompt(prompt: string) { activeMcpPrompt = prompt; }
+export function resetActiveSystemPrompt() { activeSystemPrompt = ACTIVATION_PROMPT; }
 
 // Chat Endpoint
 app.post('/api/chat', async (req: AuthenticatedRequest, res) => {
@@ -659,7 +724,7 @@ app.post('/api/chat', async (req: AuthenticatedRequest, res) => {
     // Lock the context
     await contextService.setActiveMessage(contextSession.id, messageId || 'unknown', userId, isAdmin);
 
-    const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), contextSession.id, req.user.userId, isAdmin);
+    const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), contextSession.id, userId, isAdmin);
     
     // Fire and forget
     processMessageAsync(contextSession.id, message, toolExecutor, activeSystemPrompt, messageId, userId);
@@ -780,6 +845,24 @@ app.post('/api/system/prompt', async (req, res) => {
         }
     } else {
         res.status(400).json({ error: 'Prompt is required' });
+    }
+});
+
+// MCP Prompt
+app.get('/api/mcp/prompt', (req, res) => {
+    res.json({ prompt: activeMcpPrompt });
+});
+
+app.post('/api/mcp/prompt', async (req, res) => {
+    const { prompt } = req.body;
+    // prompt can be empty string to clear it
+    try {
+        await mcpPromptService.setPrompt(prompt || '');
+        activeMcpPrompt = prompt || '';
+        res.json({ status: 'MCP prompt updated' });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: 'Failed to persist MCP prompt' });
     }
 });
 
@@ -1191,7 +1274,7 @@ app.delete('/api/tests/sets/:id', async (req, res) => {
 });
 
 // Start Test Run
-app.post('/api/tests/runs', async (req, res) => {
+app.post('/api/tests/runs', async (req: AuthenticatedRequest, res) => {
     const { testSetId, compareWithBaseModel } = req.body;
     if (!testSetId) {
         res.status(400).json({ error: 'testSetId is required' });
@@ -1361,7 +1444,7 @@ app.post('/api/project/export', async (req, res) => {
     };
 
     try {
-        const blob = await projectService.export(projectMeta, activeSystemPrompt);
+        const blob = await projectService.export(projectMeta, activeSystemPrompt, activeMcpPrompt);
         const arrayBuffer = await blob.arrayBuffer();
         const buffer = Buffer.from(arrayBuffer);
 
@@ -1393,6 +1476,12 @@ app.post('/api/project/import', async (req, res) => {
             activeSystemPrompt = result.systemPrompt;
             await systemPromptService.setPrompt(result.systemPrompt);
             resetChatSession();
+        }
+
+        // Update active MCP prompt
+        if (result.mcpPrompt !== undefined) {
+            activeMcpPrompt = result.mcpPrompt;
+            await mcpPromptService.setPrompt(result.mcpPrompt);
         }
 
         res.json({ status: 'success', stats: result.stats });
@@ -1638,6 +1727,7 @@ app.get('/mcp/sse', async (req, res) => {
     // Store session
     mcpSessions.set(sessionId, {
         userId: user.id,
+        userRole: user.role,
         res,
         createdAt: Date.now()
     });
@@ -1663,7 +1753,7 @@ app.post('/mcp/sse', async (req: AuthenticatedRequest, res) => {
     loggerService.debug(`MCP: Received POST to SSE endpoint`, { method, id });
     
     try {
-        const result = await handleMCPMethod(method, params, user.id);
+        const result = await handleMCPMethod(method, params, user.id, user.role);
         return res.json({ jsonrpc: '2.0', result, id });
     } catch (e: any) {
         // Some methods like notifications/initialized might not return a result
@@ -1702,7 +1792,7 @@ app.post('/mcp/messages', async (req: AuthenticatedRequest, res) => {
     }
     
     try {
-        const result = await handleMCPMethod(method, params, session.userId);
+        const result = await handleMCPMethod(method, params, session.userId, session.userRole);
         loggerService.debug(`MCP: Sending result`, { method, id, sessionId });
         res.json({ jsonrpc: '2.0', result, id });
     } catch (e: any) {
@@ -1757,6 +1847,15 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
                 loggerService.info("System Prompt loaded from Redis");
             } catch (error) {
                 loggerService.error("Failed to load system prompt during startup", { error });
+            }
+
+            // Load persisted MCP prompt
+            try {
+                const prompt = await mcpPromptService.loadPrompt('');
+                activeMcpPrompt = prompt;
+                loggerService.info("MCP Prompt loaded from Redis");
+            } catch (error) {
+                loggerService.error("Failed to load MCP prompt during startup", { error });
             }
         } else {
             loggerService.error("Redis Connection: FAILED after retries");
