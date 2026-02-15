@@ -164,8 +164,8 @@ Return JSON with the field "invariants" as a non-empty array of concise invarian
         };
     },
 
-    async createDomainWithInference(domainId: string, description: string, displayName?: string) {
-        const exists = await domainService.hasDomain(domainId);
+    async createDomainWithInference(domainId: string, description: string, displayName?: string, userId?: string, isAdmin: boolean = false) {
+        const exists = await domainService.hasDomain(domainId, userId);
         if (exists) {
             throw new Error(`Domain '${domainId}' already exists.`);
         }
@@ -175,7 +175,7 @@ Return JSON with the field "invariants" as a non-empty array of concise invarian
             name: displayName || domainId,
             description,
             invariants: inference.invariants,
-        });
+        }, userId, isAdmin);
 
         return {
             domain: created,

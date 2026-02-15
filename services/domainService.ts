@@ -491,7 +491,7 @@ export const domainService = {
   search: async (
     query: string | null,
     limitOrUserId?: number | string,
-    optionsOrDomainId?: { time_gte?: string; time_between?: string[]; metadata_filter?: any; domains?: string[] } | string,
+    optionsOrDomainId?: { time_gte?: string; time_between?: string[]; metadata_filter?: any; domains?: string[]; limit?: number } | string,
     userIdOverride?: string
   ): Promise<VectorSearchResult[]> => {
     let limit = 10;

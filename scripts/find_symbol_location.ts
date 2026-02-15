@@ -12,7 +12,7 @@ async function findSymbol() {
             const data = await redisService.request(['GET', key]);
             if (data) {
                 const domain = JSON.parse(data);
-                if (domain.symbols && domain.symbols.find(s => s.id === symbolId)) {
+                if (domain.symbols && domain.symbols.find((s: any) => s.id === symbolId)) {
                     console.log(`FOUND in global domain: ${domainId} (Key: ${key})`);
                 }
             }
@@ -29,7 +29,7 @@ async function findSymbol() {
             const data = await redisService.request(['GET', key]);
             if (data) {
                 const domain = JSON.parse(data);
-                if (domain.symbols && domain.symbols.find(s => s.id === symbolId)) {
+                if (domain.symbols && domain.symbols.find((s: any) => s.id === symbolId)) {
                     console.log(`FOUND in user domain: ${key}`);
                 }
             }

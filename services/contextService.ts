@@ -441,6 +441,8 @@ export const contextService = {
     if (!session) return null;
 
     session.name = name;
+    if (!session.metadata) session.metadata = {};
+    session.metadata.name = name;
     session.updatedAt = new Date().toISOString();
     await persistSession(session);
     return session;
