@@ -1,13 +1,13 @@
 {
   "redis": {
-    "server": "initial-host",
-    "port": 6379,
-    "password": "updated-pw"
+    "server": "new-redis.com",
+    "port": 6380,
+    "password": "new-password"
   },
   "chroma": {
-    "url": "http://initial-chroma",
-    "collection": "updated-collection",
-    "useExternal": true
+    "url": "http://localhost:8000",
+    "collection": "default",
+    "useExternal": false
   },
   "inference": {
     "provider": "local",

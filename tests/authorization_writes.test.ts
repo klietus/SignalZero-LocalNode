@@ -11,6 +11,7 @@ import { vectorService } from '../services/vectorService.ts';
 vi.mock('../services/vectorService', () => ({
     vectorService: {
         indexSymbol: vi.fn().mockResolvedValue(true),
+        indexBatch: vi.fn().mockResolvedValue(0),
         removeSymbol: vi.fn().mockResolvedValue(true),
         search: vi.fn().mockResolvedValue([]),
         resetCollection: vi.fn().mockResolvedValue(true)

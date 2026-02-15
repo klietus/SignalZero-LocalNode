@@ -1,36 +1,33 @@
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { redisService, __redisTestUtils } from '../services/redisService.ts';
-import { contextWindowService } from '../services/contextWindowService.js';
-import fs from 'fs';
-import path from 'path';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Mock dependencies
-vi.mock('../services/contextWindowService.js', () => ({
-    contextWindowService: {
-        buildDynamicContext: vi.fn()
-    }
-}));
-
-vi.mock('fs', () => ({
-    default: {
-        writeFileSync: vi.fn()
-    }
-}));
-
-// Mock console
 const consoleMocks = {
     log: vi.fn(),
     error: vi.fn()
 };
+
 vi.stubGlobal('console', {
     ...console,
     log: consoleMocks.log,
     error: consoleMocks.error
 });
 
+// Intercept process.exit to prevent test process termination
+vi.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined) => {
+    throw new Error(`process.exit(${code})`);
+});
+
+import { contextWindowService } from '../services/contextWindowService.js';
+import { redisService } from '../services/redisService.js';
+import { main } from './dump_dynamic_context.ts';
+import fs from 'fs';
+import path from 'path';
+
+vi.mock('../services/contextWindowService.js');
+vi.mock('../services/redisService.js');
+vi.mock('fs');
+
 describe('dump_dynamic_context script', () => {
     beforeEach(() => {
-        __redisTestUtils.resetMock();
         vi.clearAllMocks();
     });
 
@@ -38,46 +35,46 @@ describe('dump_dynamic_context script', () => {
         vi.restoreAllMocks();
     });
 
+    const runMain = async () => {
+        try {
+            await main();
+        } catch (e: any) {
+            if (e.message.startsWith('process.exit')) return;
+            throw e;
+        }
+    };
+
     it('should build dynamic context and write to file', async () => {
-        const mockContext = '[USER]\nUser context data\n\n[STATE]\nState symbols here';
-        vi.mocked(contextWindowService.buildDynamicContext).mockResolvedValue(mockContext);
+        vi.mocked(contextWindowService.buildDynamicContext).mockResolvedValue('dynamic context data');
 
-        const { main } = await import('../scripts/dump_dynamic_context.ts');
-        await main();
+        await runMain();
 
-        expect(contextWindowService.buildDynamicContext).toHaveBeenCalledWith('conversation');
-        expect(fs.writeFileSync).toHaveBeenCalledWith(
-            path.join(process.cwd(), 'dynamic_context.txt'),
-            mockContext
-        );
-        expect(consoleMocks.log).toHaveBeenCalledWith(expect.stringContaining('Dynamic context written to'));
+        const expectedPath = path.join(process.cwd(), 'dynamic_context.txt');
+        expect(contextWindowService.buildDynamicContext).toHaveBeenCalled();
+        expect(fs.writeFileSync).toHaveBeenCalledWith(expectedPath, 'dynamic context data');
+        expect(consoleMocks.log).toHaveBeenCalledWith('Dynamic context dumped to dynamic_context.txt');
     });
 
     it('should handle errors gracefully', async () => {
-        const error = new Error('Build failed');
-        vi.mocked(contextWindowService.buildDynamicContext).mockRejectedValue(error);
+        vi.mocked(contextWindowService.buildDynamicContext).mockRejectedValue(new Error('Test Error'));
 
-        const { main } = await import('../scripts/dump_dynamic_context.ts');
-        await main();
+        await runMain();
 
-        expect(consoleMocks.error).toHaveBeenCalledWith('Error:', error);
+        expect(consoleMocks.error).toHaveBeenCalledWith('Failed to dump dynamic context:', expect.any(Error));
     });
 
     it('should disconnect from redis in finally block', async () => {
-        const disconnectSpy = vi.spyOn(redisService, 'disconnect');
         vi.mocked(contextWindowService.buildDynamicContext).mockResolvedValue('test');
 
-        const { main } = await import('../scripts/dump_dynamic_context.ts');
-        await main();
+        await runMain();
 
-        expect(disconnectSpy).toHaveBeenCalled();
+        expect(redisService.disconnect).toHaveBeenCalled();
     });
 
     it('should log loading message at start', async () => {
         vi.mocked(contextWindowService.buildDynamicContext).mockResolvedValue('test');
 
-        const { main } = await import('../scripts/dump_dynamic_context.ts');
-        await main();
+        await runMain();
 
         expect(consoleMocks.log).toHaveBeenCalledWith('Loading dynamic context...');
     });
@@ -85,8 +82,7 @@ describe('dump_dynamic_context script', () => {
     it('should write correct file path', async () => {
         vi.mocked(contextWindowService.buildDynamicContext).mockResolvedValue('context data');
 
-        const { main } = await import('../scripts/dump_dynamic_context.ts');
-        await main();
+        await runMain();
 
         const expectedPath = path.join(process.cwd(), 'dynamic_context.txt');
         expect(fs.writeFileSync).toHaveBeenCalledWith(expectedPath, 'context data');

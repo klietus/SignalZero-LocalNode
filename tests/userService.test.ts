@@ -352,12 +352,12 @@ describe('Domain Isolation', () => {
 
   describe('domainService with userId', () => {
     it('should create user-specific domains separately', async () => {
-      const user1Id = 'user_1';
-      const user2Id = 'user_2';
+      const user1Id = 'user_1_' + Date.now();
+      const user2Id = 'user_2_' + Date.now();
 
       // Initialize user domains for both users
-      await domainService.init('user', 'User Preferences', user1Id);
-      await domainService.init('user', 'User Preferences', user2Id);
+      await domainService.init('user', 'User Preferences', user1Id, true);
+      await domainService.init('user', 'User Preferences', user2Id, true);
 
       // Create symbols in user domain for user1
       await domainService.addSymbol('user', {
@@ -375,7 +375,7 @@ describe('Domain Isolation', () => {
         linked_patterns: [],
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
-      }, user1Id);
+      }, user1Id, true);
 
       // Create symbols in user domain for user2
       await domainService.addSymbol('user', {
@@ -393,17 +393,18 @@ describe('Domain Isolation', () => {
         linked_patterns: [],
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
-      }, user2Id);
+      }, user2Id, true);
 
       // Verify isolation
       const user1Domain = await domainService.get('user', user1Id);
       const user2Domain = await domainService.get('user', user2Id);
 
-      expect(user1Domain?.symbols.length).toBe(1);
-      expect(user1Domain?.symbols[0].name).toBe('User1 Symbol');
+      // We expect 2 symbols: the one we added + the USER-RECURSIVE-CORE from template
+      expect(user1Domain?.symbols.length).toBe(2);
+      expect(user1Domain?.symbols.find(s => s.id === 'symbol1')).toBeDefined();
 
-      expect(user2Domain?.symbols.length).toBe(1);
-      expect(user2Domain?.symbols[0].name).toBe('User2 Symbol');
+      expect(user2Domain?.symbols.length).toBe(2);
+      expect(user2Domain?.symbols.find(s => s.id === 'symbol2')).toBeDefined();
     });
 
     it('should share global domains across users', async () => {
@@ -411,7 +412,7 @@ describe('Domain Isolation', () => {
       const user2Id = 'user_2';
 
       // Initialize global root domain
-      await domainService.init('root', 'Root Domain');
+      await domainService.init('root', 'Root Domain', undefined, true);
 
       // Create symbol in global root domain as user1
       await domainService.addSymbol('root', {
@@ -429,7 +430,7 @@ describe('Domain Isolation', () => {
         linked_patterns: [],
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
-      }, user1Id);
+      }, user1Id, true);
 
       // Both users should see the same symbol
       const rootForUser1 = await domainService.get('root', user1Id);

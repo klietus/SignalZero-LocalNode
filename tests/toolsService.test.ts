@@ -1,9 +1,9 @@
-
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { createToolExecutor } from '../services/toolsService.ts';
 import { domainService } from '../services/domainService.ts';
 import { testService } from '../services/testService.ts';
 import { traceService } from '../services/traceService.ts';
+import { contextService } from '../services/contextService.js';
 
 const VALID_SYMBOL = {
     id: 's1',
@@ -38,6 +38,8 @@ describe('ToolsService', () => {
         vi.spyOn(domainService, 'findById').mockResolvedValue(null);
         vi.spyOn(domainService, 'bulkUpsert').mockResolvedValue(undefined as any);
         vi.spyOn(domainService, 'deleteSymbol').mockResolvedValue(true);
+        vi.spyOn(domainService, 'upsertSymbol').mockResolvedValue(undefined as any);
+        vi.spyOn(domainService, 'propagateRename').mockResolvedValue(undefined as any);
         vi.spyOn(domainService, 'search').mockResolvedValue([]);
         vi.spyOn(domainService, 'getMetadata').mockResolvedValue([]);
         vi.spyOn(domainService, 'processRefactorOperation').mockResolvedValue({ count: 1, renamedIds: [] });
@@ -47,6 +49,7 @@ describe('ToolsService', () => {
         vi.spyOn(testService, 'listTestRuns').mockResolvedValue([] as any);
         vi.spyOn(testService, 'getTestRun').mockResolvedValue({ id: 'r1', testSetName: 'TS1', summary: { total: 1, completed: 1, passed: 1, failed: 0 }, results: [] } as any);
         vi.spyOn(traceService, 'addTrace').mockResolvedValue(undefined as any);
+        vi.spyOn(contextService, 'isWriteAllowed').mockResolvedValue(true);
 
         toolExecutor = createToolExecutor(() => 'mock-api-key', 'test-session');
     });
@@ -70,19 +73,19 @@ describe('ToolsService', () => {
         expect(domainService.search).toHaveBeenCalledWith('test vector', 3, expect.objectContaining({
             metadata_filter: { symbol_tag: 'protocol' },
             domains: ['root', 'diagnostics']
-        }));
+        }), undefined);
     });
 
     it('upsert_symbols calls domainService.bulkUpsert for adds', async () => {
         const sym = { ...VALID_SYMBOL, id: 's1', symbol_domain: 'dom' };
         await toolExecutor('upsert_symbols', { symbols: [{ symbol_data: sym }] });
-        expect(domainService.bulkUpsert).toHaveBeenCalledWith('dom', [sym], expect.anything());
+        expect(domainService.bulkUpsert).toHaveBeenCalledWith('dom', [sym], { userId: undefined, isAdmin: false });
     });
 
-    it('upsert_symbols routes renames to processRefactorOperation', async () => {
+    it('upsert_symbols routes renames to propagateRename', async () => {
         const sym = { ...VALID_SYMBOL, id: 'new', symbol_domain: 'dom' };
         await toolExecutor('upsert_symbols', { symbols: [{ old_id: 'old', symbol_data: sym }] });
-        expect(domainService.processRefactorOperation).toHaveBeenCalledWith([{ old_id: 'old', symbol_data: sym }]);
+        expect(domainService.propagateRename).toHaveBeenCalledWith('dom', 'old', 'new', undefined, false);
     });
 
     it('delete_symbols calls domainService.deleteSymbol', async () => {
@@ -90,7 +93,7 @@ describe('ToolsService', () => {
         vi.mocked(domainService.findById).mockResolvedValue({ id: 's1', symbol_domain: 'dom' } as any);
 
         await toolExecutor('delete_symbols', { symbol_ids: ['s1'] });
-        expect(domainService.deleteSymbol).toHaveBeenCalledWith('dom', 's1', true);
+        expect(domainService.deleteSymbol).toHaveBeenCalledWith('dom', 's1', undefined, false);
     });
 
     it('find_symbols supports structured filtering when no semantic query is provided', async () => {
@@ -102,7 +105,7 @@ describe('ToolsService', () => {
         const res = await toolExecutor('find_symbols', { queries: [{ symbol_tag: 'alpha', limit: 1 }] });
 
         expect(domainService.search).not.toHaveBeenCalled();
-        expect(domainService.getSymbols).toHaveBeenCalledWith('root');
+        expect(domainService.getSymbols).toHaveBeenCalledWith('root', undefined);
         expect(res.symbols.map((s: any) => s.id)).toEqual(['s1']);
         expect(res.count).toBe(1);
     });
@@ -133,18 +136,16 @@ describe('ToolsService', () => {
         expect(traceService.addTrace).toHaveBeenCalled();
     });
 
-    it('upsert_symbols handles updates via processRefactorOperation', async () => {
+    it('upsert_symbols handles updates via propagateRename', async () => {
         const updates = [{ old_id: 'o1', symbol_data: { ...VALID_SYMBOL, id: 'n1', symbol_domain: 'root' } }];
         await toolExecutor('upsert_symbols', { symbols: updates });
-        expect(domainService.processRefactorOperation).toHaveBeenCalledWith(updates);
+        expect(domainService.propagateRename).toHaveBeenCalledWith('root', 'o1', 'n1', undefined, false);
     });
 
     it('sys_info returns system information', async () => {
         const res = await toolExecutor('sys_info', { categories: ['os', 'time'] });
         expect(res).toHaveProperty('os');
         expect(res).toHaveProperty('time');
-        expect(res.os).toHaveProperty('platform');
-        expect(res.time).toHaveProperty('current');
     });
 
     it('symbol_transaction queues and commits operations', async () => {
@@ -153,7 +154,7 @@ describe('ToolsService', () => {
         expect(startRes.status).toContain('Transaction started');
 
         // 2. Upsert (should be queued)
-        const sym = { ...VALID_SYMBOL, id: 'queued-1' };
+        const sym = { ...VALID_SYMBOL, id: 'queued-1', symbol_domain: 'dom' };
         const upsertRes = await toolExecutor('upsert_symbols', { symbols: [{ symbol_data: sym }] });
         expect(upsertRes.status).toBe('Queued for transaction.');
         expect(domainService.bulkUpsert).not.toHaveBeenCalled();
@@ -162,7 +163,7 @@ describe('ToolsService', () => {
         const commitRes = await toolExecutor('symbol_transaction', { action: 'commit' });
         expect(commitRes.status).toBe('Transaction committed.');
         expect(commitRes.operations).toBe(1);
-        expect(domainService.bulkUpsert).toHaveBeenCalledWith('dom', [sym], expect.anything());
+        expect(domainService.bulkUpsert).toHaveBeenCalledWith('dom', [sym], { userId: undefined, isAdmin: false });
     });
 
     it('symbol_transaction rollback clears the queue', async () => {

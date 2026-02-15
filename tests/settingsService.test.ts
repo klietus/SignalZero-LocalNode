@@ -123,7 +123,7 @@ describe('SettingsService', () => {
         expect(process.env.CHROMA_COLLECTION).toBe('default');
     });
 
-    it('should aggregate system settings including inference settings', () => {
+    it('should aggregate system settings including inference settings', async () => {
         process.env.REDIS_SERVER = 'redis-host';
         process.env.REDIS_PORT = '6390';
         process.env.REDIS_PASSWORD = 'pw';
@@ -135,7 +135,7 @@ describe('SettingsService', () => {
         process.env.INFERENCE_API_KEY = '';
         delete process.env.INFERENCE_LOOP_MODEL;
 
-        const systemSettings = settingsService.getSystemSettings();
+        const systemSettings = await settingsService.getSystemSettings();
 
         expect(systemSettings).toEqual({
             redis: {
@@ -154,19 +154,24 @@ describe('SettingsService', () => {
                 provider: 'local',
                 apiKey: '',
                 loopModel: 'Meta-Llama-3-70B-Instruct',
-                visionModel: 'zai-org/glm-4.6v-flash'
+                visionModel: 'zai-org/glm-4.6v-flash',
+                savedConfigs: expect.any(Object)
             },
             googleSearch: {
                 apiKey: '',
                 cx: ''
             },
+            voice: {
+                pulseServer: '',
+                wakeWord: 'axiom'
+            },
             adminUser: undefined
         });
     });
 
-    it('should set system settings and merge partial updates', () => {
+    it('should set system settings and merge partial updates', async () => {
         process.env.INFERENCE_API_KEY = '';
-        settingsService.setSystemSettings({
+        await settingsService.setSystemSettings({
             redis: {
                 server: 'initial-host',
                 port: 6379,
@@ -183,13 +188,14 @@ describe('SettingsService', () => {
             }
         });
 
-        settingsService.setSystemSettings({
+        await settingsService.setSystemSettings({
             redis: { password: 'updated-pw' },
             chroma: { collection: 'updated-collection' },
             inference: { model: 'Meta-Llama-3-70B-Instruct' }
         });
 
-        expect(settingsService.getSystemSettings()).toEqual({
+        const settings = await settingsService.getSystemSettings();
+        expect(settings).toEqual({
             redis: {
                 server: 'initial-host',
                 port: 6379,
@@ -206,11 +212,16 @@ describe('SettingsService', () => {
                 provider: 'local',
                 apiKey: '',
                 loopModel: 'Meta-Llama-3-70B-Instruct',
-                visionModel: 'zai-org/glm-4.6v-flash'
+                visionModel: 'zai-org/glm-4.6v-flash',
+                savedConfigs: expect.any(Object)
             },
             googleSearch: {
                 apiKey: '',
                 cx: ''
+            },
+            voice: {
+                pulseServer: '',
+                wakeWord: 'axiom'
             },
             adminUser: undefined
         });

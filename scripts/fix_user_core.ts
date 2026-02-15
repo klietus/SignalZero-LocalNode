@@ -1,4 +1,5 @@
 import { redisService } from '../services/redisService.js';
+import { fileURLToPath } from 'url';
 
 export async function fixUserCore() {
     try {
@@ -39,4 +40,6 @@ export async function fixUserCore() {
     }
 }
 
-fixUserCore();
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+    fixUserCore();
+}

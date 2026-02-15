@@ -16,7 +16,10 @@ describe('ContextService', () => {
     it('should filter tool_result messages from history', async () => {
         const sessionId = 'test-session';
         const historyKey = `context:history:${sessionId}`;
+        const sessionKey = `context:session:${sessionId}`;
         
+        await redisService.request(['SET', sessionKey, JSON.stringify({ id: sessionId, type: 'conversation', status: 'open' })]);
+
         const mockHistory = [
             { role: 'user', content: 'hello', timestamp: new Date().toISOString() },
             { role: 'assistant', content: 'searching...', timestamp: new Date().toISOString(), metadata: { kind: 'assistant_response' } },
@@ -26,7 +29,7 @@ describe('ContextService', () => {
 
         await redisService.request(['SET', historyKey, JSON.stringify(mockHistory)]);
 
-        const history = await contextService.getHistory(sessionId);
+        const history = await contextService.getHistory(sessionId, undefined, true);
         
         expect(history).toHaveLength(3);
         expect(history.find(m => m.metadata?.kind === 'tool_result')).toBeUndefined();
@@ -38,7 +41,10 @@ describe('ContextService', () => {
     it('should return all messages if none are tool_result', async () => {
         const sessionId = 'test-session-2';
         const historyKey = `context:history:${sessionId}`;
+        const sessionKey = `context:session:${sessionId}`;
         
+        await redisService.request(['SET', sessionKey, JSON.stringify({ id: sessionId, type: 'conversation', status: 'open' })]);
+
         const mockHistory = [
             { role: 'user', content: 'hello', timestamp: new Date().toISOString() },
             { role: 'assistant', content: 'hi', timestamp: new Date().toISOString() }
@@ -46,7 +52,7 @@ describe('ContextService', () => {
 
         await redisService.request(['SET', historyKey, JSON.stringify(mockHistory)]);
 
-        const history = await contextService.getHistory(sessionId);
+        const history = await contextService.getHistory(sessionId, undefined, true);
         expect(history).toHaveLength(2);
     });
 });
