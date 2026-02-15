@@ -85,7 +85,7 @@ describe('Server API Endpoints', () => {
             .send({ message: 'Hello', contextSessionId: 'ctx-99' });
 
         expect(res.status).toBe(202);
-        expect(contextService.getSession).toHaveBeenCalledWith('ctx-99');
+        expect(contextService.getSession).toHaveBeenCalledWith('ctx-99', undefined, false);
         expect(res.body.contextSessionId).toBe('ctx-99');
     });
 
@@ -143,7 +143,7 @@ describe('Server API Endpoints', () => {
             .send({ enabled: true });
             
         expect(res.status).toBe(200);
-        expect(domainService.toggleDomain).toHaveBeenCalledWith('d1', true);
+        expect(domainService.toggleDomain).toHaveBeenCalledWith('d1', true, undefined, false);
     });
 
     // --- Symbols ---
@@ -173,6 +173,8 @@ describe('Server API Endpoints', () => {
 
     it('POST /api/domains/:id/symbols should reject writes to read-only domains', async () => {
         vi.mocked(domainService.upsertSymbol).mockRejectedValue(new ReadOnlyDomainError('d1', 's1'));
+        // Mock auth to provide a userId so ensureWritableDomain check triggers
+        vi.mocked(authService.verifySession).mockResolvedValue({ userId: 'u1', role: 'user' } as any);
 
         const res = await request(app)
             .post('/api/domains/d1/symbols')
@@ -222,7 +224,7 @@ describe('Server API Endpoints', () => {
         const res = await request(app).put('/api/agents/l1').set('x-auth-token', AUTH_TOKEN).send({ schedule: '* * * * *', prompt: 'p' });
         expect(res.status).toBe(200);
         expect(res.body).toEqual({ id: 'l1' });
-        expect(agentService.upsertAgent).toHaveBeenCalledWith('l1', '* * * * *', 'p', true);
+        expect(agentService.upsertAgent).toHaveBeenCalledWith('l1', 'p', true, '* * * * *', expect.anything());
     });
 
     it('DELETE /api/agents/:id should delete agent', async () => {

@@ -1,30 +1,27 @@
-import { redisService } from '../services/redisService.js';
 import { domainService } from '../services/domainService.js';
+import { redisService } from '../services/redisService.js';
+import { fileURLToPath } from 'url';
 
-export interface CleanupResult {
-    validSymbolsCount: number;
-    bucketsScanned: number;
-    orphanedEntriesRemoved: number;
-}
-
-export async function cleanupOrphanedSymbols(): Promise<CleanupResult> {
+export async function cleanupOrphanedSymbols() {
     console.log("Cleaning up orphaned symbol entries (including state domain)...");
-    
-    // 1. Get all valid symbol IDs from all domains
-    const allSymbols = await domainService.getAllSymbols(undefined, true);
-    const validIds = new Set(allSymbols.map(s => s.id));
+
+    const domains = await domainService.listDomains();
+    const validIds = new Set<string>();
+
+    for (const domainId of domains) {
+        const symbols = await domainService.getSymbols(domainId);
+        symbols.forEach(s => validIds.add(s.id));
+    }
+
     console.log(`Found ${validIds.size} valid symbols in remaining domains.`);
 
-    // 2. Scan for symbol buckets
     const keys = await redisService.request(['KEYS', 'sz:bucket:symbols:*']);
     console.log(`Scanning ${keys.length} time buckets...`);
 
     let removedCount = 0;
     for (const key of keys) {
         const bucketIds = await redisService.request(['SMEMBERS', key]);
-        if (!Array.isArray(bucketIds)) continue;
-
-        const toRemove = bucketIds.filter(id => !validIds.has(id));
+        const toRemove = bucketIds.filter((id: string) => !validIds.has(id));
         if (toRemove.length > 0) {
             console.log(`Removing ${toRemove.length} orphaned IDs from ${key}`);
             await redisService.request(['SREM', key, ...toRemove]);
@@ -41,7 +38,7 @@ export async function cleanupOrphanedSymbols(): Promise<CleanupResult> {
     };
 }
 
-async function main() {
+export async function main() {
     try {
         await cleanupOrphanedSymbols();
     } catch (error) {
@@ -52,4 +49,6 @@ async function main() {
     }
 }
 
-main();
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+    main();
+}

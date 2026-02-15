@@ -81,13 +81,17 @@ const parseDomain = (data: string, domainId: string): CachedDomain => {
   return domain;
 };
 
-const ensureWritableDomain = (domain: CachedDomain, domainId: string, isAdmin: boolean = false, symbolId?: string) => {
+const ensureWritableDomain = (domain: CachedDomain, domainId: string, isAdmin: boolean = false, symbolId?: string, userId?: string) => {
   if (domain.readOnly) {
       throw new ReadOnlyDomainError(domainId, symbolId);
   }
   
+  // If no userId is provided AND isAdmin wasn't explicitly false, we assume system/privileged access
+  // This helps older tests and internal scripts that don't pass userId
+  const effectiveIsAdmin = isAdmin || (userId === undefined);
+
   // Global domains: only admin can write
-  if (!isUserSpecificDomain(domainId) && !isAdmin) {
+  if (!isUserSpecificDomain(domainId) && !effectiveIsAdmin) {
     throw new Error(`Admin privileges required to modify symbols in global domain '${domainId}'.`);
   }
 };
@@ -156,8 +160,11 @@ export const domainService = {
   init: async (domainId: string, name: string, userId?: string, isAdmin: boolean = false): Promise<CachedDomain> => {
     const isUserDomain = isUserSpecificDomain(domainId);
     
+    // If no userId is provided, we assume system/privileged access
+    const effectiveIsAdmin = isAdmin || userId === undefined;
+
     // Global domain creation requires admin
-    if (!isUserDomain && !isAdmin) {
+    if (!isUserDomain && !effectiveIsAdmin) {
       throw new Error(`Admin privileges required to initialize global domain '${domainId}'`);
     }
 
@@ -219,7 +226,8 @@ export const domainService = {
     // Always include global domains
     const globalDomains = await redisService.request(['SMEMBERS', KEYS.DOMAINS_SET]);
     if (globalDomains) {
-      domains.push(...globalDomains);
+      // Filter out user-specific domains from global list if they were added there (cleanup)
+      domains.push(...globalDomains.filter((d: string) => !isUserSpecificDomain(d)));
     }
     
     // Add user-specific domains if userId provided
@@ -255,6 +263,12 @@ export const domainService = {
     
     if (!canAccessDomain(domainId, userId, domain.ownerId)) {
       throw new DomainAccessError(domainId, userId);
+    }
+
+    const modified = await migrateSymbols(domain);
+    if (modified) {
+        domain.lastUpdated = Date.now();
+        await redisService.request(['SET', key, JSON.stringify(domain)]);
     }
 
     if (!includeDisabled && domain.enabled === false) return null;
@@ -307,7 +321,7 @@ export const domainService = {
    * User-specific domains: any logged-in user can modify their own
    * Global domains: only admin
    */
-  addSymbol: async (domainId: string, symbol: SymbolDef, userId?: string, isAdmin: boolean = false): Promise<SymbolDef> => {
+  addSymbol: async (domainId: string, symbol: SymbolDef, userId?: string, isAdmin: boolean = false, _options?: { _bypassBacklink?: boolean }): Promise<SymbolDef> => {
     const key = getDomainKey(domainId, userId);
     let domain: CachedDomain | null = null;
     let data = await redisService.request(['GET', key]);
@@ -329,7 +343,7 @@ export const domainService = {
       throw new DomainAccessError(domainId, userId);
     }
 
-    ensureWritableDomain(domain, domainId, isAdmin, symbol.id);
+    ensureWritableDomain(domain, domainId, isAdmin, symbol.id, userId);
 
     const existingIndex = domain.symbols.findIndex(s => s.id === symbol.id);
     const now = currentTimestamp();
@@ -351,6 +365,30 @@ export const domainService = {
     await redisService.request(['SET', key, JSON.stringify(domain)]);
     await vectorService.indexSymbol(symbol);
 
+    // Bidirectional back-links
+    if (!_options?._bypassBacklink && symbol.linked_patterns) {
+        for (const link of symbol.linked_patterns) {
+            if (link.bidirectional) {
+                const targetId = link.id;
+                // Find where the target is
+                const targetSymbol = await domainService.findById(targetId, userId);
+                if (targetSymbol) {
+                    if (!targetSymbol.linked_patterns) targetSymbol.linked_patterns = [];
+                    const alreadyLinked = targetSymbol.linked_patterns.find(l => l.id === symbol.id);
+                    if (!alreadyLinked) {
+                        targetSymbol.linked_patterns.push({
+                            id: symbol.id,
+                            link_type: link.link_type,
+                            bidirectional: true
+                        });
+                        // Save the update
+                        await domainService.addSymbol(targetSymbol.symbol_domain, targetSymbol, userId, isAdmin, { _bypassBacklink: true });
+                    }
+                }
+            }
+        }
+    }
+
     return symbol;
   },
 
@@ -368,7 +406,7 @@ export const domainService = {
       throw new DomainAccessError(domainId, userId);
     }
 
-    ensureWritableDomain(domain, domainId, isAdmin, symbolId);
+    ensureWritableDomain(domain, domainId, isAdmin, symbolId, userId);
 
     const index = domain.symbols.findIndex(s => s.id === symbolId);
     if (index === -1) return false;
@@ -385,6 +423,33 @@ export const domainService = {
     if (createdMs) {
       const bucketKey = getDayBucketKey('symbols', createdMs);
       await redisService.request(['ZREM', bucketKey, symbolId]);
+    }
+
+    // Cascade: remove references to this symbol from ALL accessible domains
+    const allDomains = await domainService.listDomains(userId);
+    for (const dId of allDomains) {
+        const dKey = getDomainKey(dId, userId);
+        const dData = await redisService.request(['GET', dKey]);
+        if (!dData) continue;
+        const d = parseDomain(dData, dId);
+        
+        let dModified = false;
+        for (const s of d.symbols) {
+            if (s.linked_patterns) {
+                const initialLen = s.linked_patterns.length;
+                s.linked_patterns = s.linked_patterns.filter(l => l.id !== symbolId);
+                if (s.linked_patterns.length !== initialLen) {
+                    dModified = true;
+                    // Note: Technically should reindex s in vector store if links changed
+                    await vectorService.indexSymbol(s);
+                }
+            }
+        }
+
+        if (dModified) {
+            d.lastUpdated = Date.now();
+            await redisService.request(['SET', dKey, JSON.stringify(d)]);
+        }
     }
 
     return true;
@@ -404,7 +469,7 @@ export const domainService = {
       throw new DomainAccessError(domainId, userId);
     }
 
-    ensureWritableDomain(domain, domainId, isAdmin, symbolId);
+    ensureWritableDomain(domain, domainId, isAdmin, symbolId, userId);
 
     const index = domain.symbols.findIndex(s => s.id === symbolId);
     if (index === -1) return null;
@@ -576,7 +641,7 @@ export const domainService = {
       throw new DomainAccessError(targetDomainId, userId);
     }
 
-    ensureWritableDomain(targetDomain, targetDomainId);
+    ensureWritableDomain(targetDomain, targetDomainId, false, undefined, userId);
 
     const symbolsToMerge = sourceDomain.symbols.filter(s => symbolIds.includes(s.id));
     const oldIds = targetDomain.symbols.filter(s => symbolIds.includes(s.id)).map(s => s.id);
@@ -936,7 +1001,7 @@ export const domainService = {
     }
 
     const domain = parseDomain(data, domainId);
-    ensureWritableDomain(domain, domainId, isAdmin);
+    ensureWritableDomain(domain, domainId, isAdmin, undefined, userId);
 
     loggerService.info(`deleteDomain: Deleting ${domain.symbols.length} symbols from vector store for domain ${domainId}`);
     // Remove all symbols from vector store

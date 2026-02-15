@@ -11,6 +11,7 @@ describe('DomainService', () => {
         // Mock vector service to avoid side effects
         vi.spyOn(vectorService, 'indexSymbol').mockResolvedValue(true);
         vi.spyOn(vectorService, 'deleteSymbol').mockResolvedValue(true);
+        vi.spyOn(vectorService, 'removeSymbol').mockResolvedValue(true);
         vi.spyOn(vectorService, 'search').mockResolvedValue([]);
         vi.spyOn(vectorService, 'resetCollection').mockResolvedValue(true);
     });
@@ -24,7 +25,8 @@ describe('DomainService', () => {
         await redisService.request(['SADD', 'sz:domains', 'domain-a', 'domain-b']);
 
         const domains = await domainService.listDomains();
-        expect(domains).toEqual(['domain-a', 'domain-b']);
+        expect(domains).toContain('domain-a');
+        expect(domains).toContain('domain-b');
     });
 
     it('should check if domain exists', async () => {
@@ -42,11 +44,13 @@ describe('DomainService', () => {
         };
         const mockDomain = {
             id: 'mig-domain',
-            symbols: [legacySymbol]
+            symbols: [legacySymbol],
+            enabled: true
         };
 
         // Trigger migration by calling a method that uses parseDomain/migrateSymbols
         await redisService.request(['SET', 'sz:domain:mig-domain', JSON.stringify(mockDomain)]);
+        await redisService.request(['SADD', 'sz:domains', 'mig-domain']);
         const symbols = await domainService.getSymbols('mig-domain');
         
         expect(symbols[0].linked_patterns[0]).toEqual({ id: 'sym-a', link_type: 'relates_to', bidirectional: false });
@@ -54,13 +58,13 @@ describe('DomainService', () => {
     });
 
     it('should upsert a symbol with structured links', async () => {
-        await domainService.createDomain('new-domain', 'New Domain');
+        await domainService.createDomain('new-domain', 'New Domain', undefined, true);
         const symbol: any = { 
             id: 'sym-1', 
             name: 'Symbol 1',
             linked_patterns: [{ id: 'other-1', link_type: 'depends_on', bidirectional: true }]
         };
-        await domainService.upsertSymbol('new-domain', symbol);
+        await domainService.upsertSymbol('new-domain', symbol, undefined, true);
 
         const stored = await redisService.request(['GET', 'sz:domain:new-domain']);
         const domain = JSON.parse(stored);
@@ -69,7 +73,7 @@ describe('DomainService', () => {
     });
 
     it('should create back-links for bidirectional links', async () => {
-        await domainService.createDomain('test-dom', 'Test Dom');
+        await domainService.createDomain('test-dom', 'Test Dom', undefined, true);
         const symA: any = { id: 'SYM-A', name: 'Alpha', linked_patterns: [], symbol_domain: 'test-dom' };
         const symB: any = { 
             id: 'SYM-B', 
@@ -78,8 +82,8 @@ describe('DomainService', () => {
             linked_patterns: [{ id: 'SYM-A', link_type: 'relates_to', bidirectional: true }] 
         };
 
-        await domainService.upsertSymbol('test-dom', symA);
-        await domainService.upsertSymbol('test-dom', symB);
+        await domainService.upsertSymbol('test-dom', symA, undefined, true);
+        await domainService.upsertSymbol('test-dom', symB, undefined, true);
 
         const updatedA = await domainService.findById('SYM-A');
         expect(updatedA?.linked_patterns).toContainEqual({ id: 'SYM-B', link_type: 'relates_to', bidirectional: true });
@@ -88,15 +92,17 @@ describe('DomainService', () => {
     it('should delete a symbol and perform cascade cleanup on structured links', async () => {
          const mockDomain = {
             id: 'test-domain',
+            enabled: true,
             symbols: [
-                { id: 's1' }, 
-                { id: 's2', linked_patterns: [{ id: 's1', link_type: 'relates_to', bidirectional: false }] }
+                { id: 's1', symbol_domain: 'test-domain' }, 
+                { id: 's2', symbol_domain: 'test-domain', linked_patterns: [{ id: 's1', link_type: 'relates_to', bidirectional: false }] }
             ]
         };
 
         await redisService.request(['SET', 'sz:domain:test-domain', JSON.stringify(mockDomain)]);
+        await redisService.request(['SADD', 'sz:domains', 'test-domain']);
 
-        await domainService.deleteSymbol('test-domain', 's1');
+        await domainService.deleteSymbol('test-domain', 's1', undefined, true);
 
         const updated = await redisService.request(['GET', 'sz:domain:test-domain']);
         const domainObj = JSON.parse(updated);

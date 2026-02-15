@@ -33,8 +33,8 @@ describe('agentService', () => {
             responsePreview: 'ok'
         };
 
-        await redisService.request(['ZADD', 'sz:agents:executions', Date.parse(now), execution.id]);
-        await redisService.request(['SET', `sz:agents:execution:${execution.id}`, JSON.stringify(execution)]);
+        await redisService.request(['ZADD', 'sz:loops:executions', Date.parse(now), execution.id]);
+        await redisService.request(['SET', `sz:loops:execution:${execution.id}`, JSON.stringify(execution)]);
 
         const logs = await agentService.getExecutionLogs('agent-logs');
         expect(logs).toHaveLength(1);
@@ -44,9 +44,9 @@ describe('agentService', () => {
     it('replaces all agents and clears executions', async () => {
         await agentService.upsertAgent('existing', 'old', true, '* * * * *');
         const now = new Date().toISOString();
-        await redisService.request(['ZADD', 'sz:agents:executions', Date.parse(now), 'exec-old']);
-        await redisService.request(['SET', 'sz:agents:execution:exec-old', JSON.stringify({ id: 'exec-old' })]);
-        await redisService.request(['SET', 'sz:agents:execution:exec-old:traces', JSON.stringify([])]);
+        await redisService.request(['ZADD', 'sz:loops:executions', Date.parse(now), 'exec-old']);
+        await redisService.request(['SET', 'sz:loops:execution:exec-old', JSON.stringify({ id: 'exec-old' })]);
+        await redisService.request(['SET', 'sz:loops:execution:exec-old:traces', JSON.stringify([])]);
 
         const imported = [{
             id: 'new-agent',

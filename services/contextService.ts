@@ -204,7 +204,9 @@ export const contextService = {
     const hasAccess = await contextService.canAccessSession(sessionId, userId, isAdmin);
     if (!hasAccess) return [];
     
-    return loadHistory(sessionId);
+    const history = await loadHistory(sessionId);
+    // Filter out tool_result messages for the chat history (handled by ChatMessage component internally if needed, but usually we hide raw tool results from main history view)
+    return history.filter(m => m.role !== 'tool' && m.metadata?.kind !== 'tool_result');
   },
 
   async getUnfilteredHistory(sessionId: string, userId?: string, isAdmin?: boolean): Promise<ContextMessage[]> {

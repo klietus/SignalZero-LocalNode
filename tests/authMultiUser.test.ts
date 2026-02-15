@@ -237,8 +237,8 @@ describe('Domain Isolation', () => {
 
   it('should isolate user-specific domains between users', async () => {
     // Initialize user domains
-    await domainService.init('user', 'User Preferences', 'user_1');
-    await domainService.init('user', 'User Preferences', 'user_2');
+    await domainService.init('user', 'User Preferences', 'user_1', true);
+    await domainService.init('user', 'User Preferences', 'user_2', true);
 
     // User 1 creates a symbol in their user domain
     await domainService.addSymbol('user', {
@@ -257,7 +257,7 @@ describe('Domain Isolation', () => {
       data: { source: 'user', verification: 'none', status: 'active', payload: { theme: 'dark' } },
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
-    }, 'user_1');
+    }, 'user_1', true);
 
     // User 2 creates a symbol in their user domain
     await domainService.addSymbol('user', {
@@ -276,22 +276,23 @@ describe('Domain Isolation', () => {
       data: { source: 'user', verification: 'none', status: 'active', payload: { theme: 'light' } },
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
-    }, 'user_2');
+    }, 'user_2', true);
 
     // Each user should only see their own preferences
     const user1Domain = await domainService.get('user', 'user_1');
     const user2Domain = await domainService.get('user', 'user_2');
 
-    expect(user1Domain?.symbols).toHaveLength(1);
-    expect(user1Domain?.symbols[0].data?.payload.theme).toBe('dark');
+    // Count is 2 because of USER-RECURSIVE-CORE template symbol
+    expect(user1Domain?.symbols).toHaveLength(2);
+    expect(user1Domain?.symbols.find(s => s.id === 'preference1')).toBeDefined();
 
-    expect(user2Domain?.symbols).toHaveLength(1);
-    expect(user2Domain?.symbols[0].data?.payload.theme).toBe('light');
+    expect(user2Domain?.symbols).toHaveLength(2);
+    expect(user2Domain?.symbols.find(s => s.id === 'preference2')).toBeDefined();
   });
 
   it('should share global domains across all users', async () => {
     // Initialize global cyber_sec domain
-    await domainService.init('cyber_sec', 'Cyber Security');
+    await domainService.init('cyber_sec', 'Cyber Security', undefined, true);
 
     // Create cyber_sec symbol (global domain)
     await domainService.addSymbol('cyber_sec', {
@@ -309,7 +310,7 @@ describe('Domain Isolation', () => {
       linked_patterns: [],
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
-    }, 'user_1');
+    }, 'user_1', true);
 
     // Both users should see the same CVE
     const metadata1 = await domainService.getMetadata('user_1');

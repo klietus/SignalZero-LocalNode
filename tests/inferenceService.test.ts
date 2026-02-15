@@ -200,6 +200,6 @@ describe('InferenceService', () => {
 
         expect(contextService.recordMessage).toHaveBeenCalledWith('sess-1', expect.objectContaining({
             content: expect.stringContaining('Attached file content')
-        }));
+        }), undefined, true);
     });
 });
