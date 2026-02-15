@@ -153,7 +153,7 @@ describe('Server API Endpoints', () => {
         const res = await request(app).get('/api/symbols/search?q=test').set('x-auth-token', AUTH_TOKEN);
         expect(res.status).toBe(200);
         expect(res.body).toHaveLength(1);
-        expect(domainService.search).toHaveBeenCalledWith('test', 5, { time_gte: undefined, time_between: undefined });
+        expect(domainService.search).toHaveBeenCalledWith('test', undefined, { limit: 5, time_gte: undefined, time_between: undefined });
     });
 
     it('GET /api/symbols/search should require query or time filter', async () => {

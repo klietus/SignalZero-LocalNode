@@ -515,10 +515,18 @@ export const domainService = {
         userId = userIdOverride;
     } else {
         userId = limitOrUserId;
-        if (typeof optionsOrDomainId === 'string') {
+        if (typeof optionsOrDomainId === 'object') {
+            targetDomains = optionsOrDomainId.domains;
+            time_gte = optionsOrDomainId.time_gte;
+            time_between = optionsOrDomainId.time_between;
+            metadata_filter = optionsOrDomainId.metadata_filter || {};
+            // If limit is in options (extended signature support)
+            if ((optionsOrDomainId as any).limit) {
+                limit = (optionsOrDomainId as any).limit;
+            }
+        } else if (typeof optionsOrDomainId === 'string') {
             targetDomains = [optionsOrDomainId];
         }
-        // ... (other signatures if needed)
     }
 
     // 2. Resolve and Authorize Domains
@@ -793,6 +801,8 @@ export const domainService = {
         name: d.name || domainId,
         enabled: d.enabled,
         count: d.symbols.length,
+        personaCount: d.symbols.filter(s => s.kind === 'persona').length,
+        latticeCount: d.symbols.filter(s => s.kind === 'lattice').length,
         lastUpdated: d.lastUpdated,
         description: d.description || "",
         invariants: d.invariants || [],
@@ -1034,10 +1044,10 @@ export const domainService = {
   },
 
   /**
-   * Get symbols from a specific domain
+   * Get symbols from a specific domain (includes disabled)
    */
   getSymbols: async (domainId: string, userId?: string): Promise<SymbolDef[]> => {
-    const domain = await domainService.get(domainId, userId);
+    const domain = await domainService.get(domainId, userId, true);
     return domain?.symbols || [];
   },
 
