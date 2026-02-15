@@ -939,9 +939,10 @@ app.get('/api/contexts/:id/history', async (req: AuthenticatedRequest, res) => {
 // --- Domain Management ---
 
 // List all domains (Metadata)
-app.get('/api/domains', async (req, res) => {
+app.get('/api/domains', async (req: AuthenticatedRequest, res) => {
     try {
-        const domains = await domainService.getMetadata();
+        const userId = req.user?.userId;
+        const domains = await domainService.getMetadata(userId);
         res.json(domains);
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
@@ -968,9 +969,10 @@ app.post('/api/domains', async (req: AuthenticatedRequest, res) => {
 });
 
 // Check domain existence
-app.get('/api/domains/:id/exists', async (req, res) => {
+app.get('/api/domains/:id/exists', async (req: AuthenticatedRequest, res) => {
     try {
-        const exists = await domainService.hasDomain(req.params.id);
+        const userId = req.user?.userId;
+        const exists = await domainService.hasDomain(req.params.id, userId);
         res.json({ exists });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
@@ -979,9 +981,10 @@ app.get('/api/domains/:id/exists', async (req, res) => {
 });
 
 // Check domain enabled status
-app.get('/api/domains/:id/enabled', async (req, res) => {
+app.get('/api/domains/:id/enabled', async (req: AuthenticatedRequest, res) => {
     try {
-        const enabled = await domainService.isEnabled(req.params.id);
+        const userId = req.user?.userId;
+        const enabled = await domainService.isEnabled(req.params.id, userId);
         res.json({ enabled });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
@@ -1052,14 +1055,16 @@ app.post('/api/admin/clear-all', async (req: AuthenticatedRequest, res) => {
 // --- Symbol Management ---
 
 // Search symbols (Vector) - Must be before /:id route
-app.get('/api/symbols/search', async (req, res) => {
+app.get('/api/symbols/search', async (req: AuthenticatedRequest, res) => {
     const { q, limit, time_gte, time_between } = req.query;
+    const userId = req.user?.userId;
     if (!q && !time_gte && !time_between) {
         res.status(400).json({ error: 'Provide a query or time filter (time_gte or time_between) to search symbols.' });
         return;
     }
     try {
-        const results = await domainService.search(q as string | null, limit ? Number(limit) : 5, {
+        const results = await domainService.search(q as string | null, userId, {
+            limit: limit ? Number(limit) : 5,
             time_gte: time_gte as string | undefined,
             time_between: typeof time_between === 'string' ? (time_between as string).split(',') : (time_between as string[] | undefined),
         });
@@ -1113,9 +1118,10 @@ app.post('/api/symbols/compress', async (req, res) => {
 });
 
 // Get symbol by ID (Global)
-app.get('/api/symbols/:id', async (req, res) => {
+app.get('/api/symbols/:id', async (req: AuthenticatedRequest, res) => {
     try {
-        const symbol = await domainService.findById(req.params.id);
+        const userId = req.user?.userId;
+        const symbol = await domainService.findById(req.params.id, userId);
         if (symbol) res.json(symbol);
         else res.status(404).json({ error: 'Symbol not found' });
     } catch (e) {
@@ -1125,9 +1131,10 @@ app.get('/api/symbols/:id', async (req, res) => {
 });
 
 // Get all symbols in domain
-app.get('/api/domains/:id/symbols', async (req, res) => {
+app.get('/api/domains/:id/symbols', async (req: AuthenticatedRequest, res) => {
     try {
-        const symbols = await domainService.getSymbols(req.params.id);
+        const userId = req.user?.userId;
+        const symbols = await domainService.getSymbols(req.params.id, userId);
         res.json(symbols);
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
@@ -1136,11 +1143,13 @@ app.get('/api/domains/:id/symbols', async (req, res) => {
 });
 
 // Query/Filter symbols in domain
-app.get('/api/domains/:id/query', async (req, res) => {
+app.get('/api/domains/:id/query', async (req: AuthenticatedRequest, res) => {
     const { tag, limit, lastId } = req.query;
+    const userId = req.user?.userId;
     try {
         const result = await domainService.query(
             req.params.id,
+            userId,
             tag as string,
             limit ? Number(limit) : 20,
             lastId as string
