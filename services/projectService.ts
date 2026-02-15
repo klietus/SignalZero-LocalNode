@@ -3,6 +3,7 @@ import { testService } from './testService.ts';
 import { agentService } from './agentService.js';
 import { ProjectMeta, ProjectImportStats } from '../types.ts';
 import { systemPromptService } from './systemPromptService.ts';
+import { mcpPromptService } from './mcpPromptService.ts';
 import JSZip from 'jszip';
 
 export const projectService = {
@@ -15,7 +16,7 @@ export const projectService = {
         // ...
     },
 
-    async export(meta: ProjectMeta, systemPrompt: string): Promise<Blob> {
+    async export(meta: ProjectMeta, systemPrompt: string, mcpPrompt: string): Promise<Blob> {
         const zip = new JSZip();
         
         // Meta
@@ -24,10 +25,16 @@ export const projectService = {
         // System Prompt
         zip.file('system_prompt.txt', systemPrompt);
 
+        // MCP Prompt
+        zip.file('mcp_prompt.txt', mcpPrompt);
+
         // Domains & Symbols
-        const domains = await domainService.listDomains();
+        const allDomains = await domainService.listDomains();
+        // Filter out user-specific domains (user, state) to only export global ones
+        const globalDomains = allDomains.filter(d => d !== 'user' && d !== 'state');
+        
         const domainsFolder = zip.folder('domains');
-        for (const d of domains) {
+        for (const d of globalDomains) {
             const domainMeta = await domainService.getDomain(d); // Contains invariants
             const symbols = await domainService.getSymbols(d);
             if (domainsFolder) {
@@ -50,7 +57,7 @@ export const projectService = {
         return zip.generateAsync({ type: 'blob' });
     },
 
-    async import(buffer: Buffer): Promise<{ stats: ProjectImportStats, systemPrompt?: string }> {
+    async import(buffer: Buffer): Promise<{ stats: ProjectImportStats, systemPrompt?: string, mcpPrompt?: string }> {
         const zip = await JSZip.loadAsync(buffer);
         
         let meta: ProjectMeta = { name: 'Imported', version: '1.0', created_at: '', updated_at: '', author: '' };
@@ -62,6 +69,11 @@ export const projectService = {
         let systemPrompt: string | undefined;
         if (zip.file('system_prompt.txt')) {
             systemPrompt = await zip.file('system_prompt.txt')?.async('string');
+        }
+
+        let mcpPrompt: string | undefined;
+        if (zip.file('mcp_prompt.txt')) {
+            mcpPrompt = await zip.file('mcp_prompt.txt')?.async('string');
         }
 
         // Domains
@@ -126,7 +138,8 @@ export const projectService = {
                 domains,
                 totalSymbols
             },
-            systemPrompt
+            systemPrompt,
+            mcpPrompt
         };
     }
 };
