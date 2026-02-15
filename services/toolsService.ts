@@ -1625,7 +1625,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           if (!targetId) return { error: "No context specified" };
           
           try {
-              const result = await contextService.renameSession(targetId, name);
+              const result = await contextService.renameSession(targetId, name, userId, isAdmin);
               if (!result) return { error: "Context not found" };
               return { status: "success", id: targetId, new_name: name };
           } catch (e: any) {
@@ -1635,7 +1635,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
 
       case 'list_agent_contexts': {
           try {
-              const sessions = await contextService.listSessions();
+              const sessions = await contextService.listSessions(userId, isAdmin);
               return {
                   contexts: sessions.map(s => ({
                       id: s.id,
