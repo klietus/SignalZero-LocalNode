@@ -1,7 +1,7 @@
 
-import { TraceData } from '../types.ts';
-import { currentTimestamp, decodeTimestamp, getDayBucketKey } from './timeService.ts';
-import { redisService } from './redisService.ts';
+import { TraceData } from '../types.js';
+import { currentTimestamp, decodeTimestamp, getDayBucketKey } from './timeService.js';
+import { redisService } from './redisService.js';
 
 type TraceListener = (traces: TraceData[]) => void;
 

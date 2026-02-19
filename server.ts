@@ -33,6 +33,7 @@ const mcpSessions = new Map<string, { userId: string; userRole: string; res: exp
 
 // MCP Method Handler
 async function handleMCPMethod(method: string, params: any, userId: string, userRole: string): Promise<any> {
+    loggerService.info(`MCP Method Call: ${method}`, { userId, userRole, params });
     switch (method) {
         case 'initialize':
             return {
@@ -50,17 +51,17 @@ async function handleMCPMethod(method: string, params: any, userId: string, user
 
         case 'prompts/list':
             return {
-                prompts: activeMcpPrompt ? [
+                prompts: [
                     {
                         name: 'project-prompt',
                         description: 'Custom MCP prompt for this project',
                         arguments: []
                     }
-                ] : []
+                ]
             };
 
         case 'prompts/get':
-            if (params.name === 'project-prompt' && activeMcpPrompt) {
+            if (params.name === 'project-prompt') {
                 return {
                     description: 'Custom MCP prompt for this project',
                     messages: [
@@ -68,7 +69,7 @@ async function handleMCPMethod(method: string, params: any, userId: string, user
                             role: 'user',
                             content: {
                                 type: 'text',
-                                text: activeMcpPrompt
+                                text: activeMcpPrompt || 'No prompt set.'
                             }
                         }
                     ]
@@ -684,7 +685,29 @@ export let activeSystemPrompt = ACTIVATION_PROMPT;
 export let activeMcpPrompt = '';
 
 export function resetActiveMcpPrompt() { activeMcpPrompt = ''; }
-export function setActiveMcpPrompt(prompt: string) { activeMcpPrompt = prompt; }
+export function setActiveMcpPrompt(prompt: string) { 
+    activeMcpPrompt = prompt; 
+    notifyMcpClients('notifications/prompts/list_changed', {});
+}
+
+// Helper to notify all active MCP SSE clients
+function notifyMcpClients(method: string, params: any) {
+    const message = JSON.stringify({
+        jsonrpc: '2.0',
+        method,
+        params
+    });
+    
+    mcpSessions.forEach((session, sessionId) => {
+        try {
+            session.res.write(`data: ${message}\n\n`);
+            loggerService.debug(`MCP: Sent notification ${method} to session ${sessionId}`);
+        } catch (e) {
+            loggerService.error(`MCP: Failed to send notification to session ${sessionId}`, { error: e });
+        }
+    });
+}
+
 export function resetActiveSystemPrompt() { activeSystemPrompt = ACTIVATION_PROMPT; }
 
 // Chat Endpoint
@@ -858,7 +881,7 @@ app.post('/api/mcp/prompt', async (req, res) => {
     // prompt can be empty string to clear it
     try {
         await mcpPromptService.setPrompt(prompt || '');
-        activeMcpPrompt = prompt || '';
+        setActiveMcpPrompt(prompt || '');
         res.json({ status: 'MCP prompt updated' });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
@@ -1494,9 +1517,12 @@ app.post('/api/project/import', async (req, res) => {
         }
 
         res.json({ status: 'success', stats: result.stats });
-    } catch (e) {
-        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
-        res.status(500).json({ error: String(e) });
+    } catch (e: any) {
+        loggerService.error(`Error in ${req.method} ${req.url}: ${e.message}`, { 
+            error: e.message,
+            stack: e.stack
+        });
+        res.status(500).json({ error: String(e), stack: e.stack });
     }
 });
 

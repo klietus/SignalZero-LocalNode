@@ -94,7 +94,8 @@ describe('ProjectService', () => {
         expect(result.stats.agentCount).toBe(1);
         
         expect(domainService.clearAll).toHaveBeenCalled();
-        expect(domainService.bulkUpsert).toHaveBeenCalledWith('d1', expect.anything(), { bypassValidation: true });
+        expect(domainService.createDomain).toHaveBeenCalledWith('d1', expect.anything(), undefined, true);
+        expect(domainService.bulkUpsert).toHaveBeenCalledWith('d1', expect.anything(), { bypassValidation: true, isAdmin: true });
         expect(testService.replaceAllTestSets).toHaveBeenCalled();
         expect(agentService.upsertAgent).toHaveBeenCalled();
     });

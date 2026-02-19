@@ -1,9 +1,9 @@
-import { domainService } from './domainService.ts';
-import { testService } from './testService.ts';
+import { domainService } from './domainService.js';
+import { testService } from './testService.js';
 import { agentService } from './agentService.js';
-import { ProjectMeta, ProjectImportStats } from '../types.ts';
-import { systemPromptService } from './systemPromptService.ts';
-import { mcpPromptService } from './mcpPromptService.ts';
+import { ProjectMeta, ProjectImportStats } from '../types.js';
+import { systemPromptService } from './systemPromptService.js';
+import { mcpPromptService } from './mcpPromptService.js';
 import JSZip from 'jszip';
 
 export const projectService = {
@@ -88,9 +88,9 @@ export const projectService = {
             const data = JSON.parse(text);
             const { meta: dMeta, symbols } = data;
             
-            await domainService.createDomain(dMeta.id, dMeta);
+            await domainService.createDomain(dMeta.id, dMeta, undefined, true);
             if (Array.isArray(symbols)) {
-                await domainService.bulkUpsert(dMeta.id, symbols, { bypassValidation: true });
+                await domainService.bulkUpsert(dMeta.id, symbols, { bypassValidation: true, isAdmin: true });
                 totalSymbols += symbols.length;
                 domains.push({ id: dMeta.id, name: dMeta.name, symbolCount: symbols.length });
             }

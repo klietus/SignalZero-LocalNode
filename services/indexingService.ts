@@ -1,6 +1,6 @@
-import { domainService } from './domainService.ts';
-import { vectorService } from './vectorService.ts';
-import { loggerService } from './loggerService.ts';
+import { domainService } from './domainService.js';
+import { vectorService } from './vectorService.js';
+import { loggerService } from './loggerService.js';
 
 interface IndexQueueState {
     pending: number;

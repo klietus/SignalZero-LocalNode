@@ -1,9 +1,9 @@
-import { UserProfile } from '../types.ts';
+import { UserProfile } from '../types.js';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
-import { redisService } from './redisService.ts';
-import { loggerService } from './loggerService.ts';
+import { redisService } from './redisService.js';
+import { loggerService } from './loggerService.js';
 
 dotenv.config();
 

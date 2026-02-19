@@ -39,7 +39,8 @@ vi.mock('../services/contextService', () => ({
         recordMessage: vi.fn(),
         cleanupTestSessions: vi.fn().mockResolvedValue(0),
         clearCancellation: vi.fn(),
-        isCancelled: vi.fn().mockResolvedValue(false)
+        isCancelled: vi.fn().mockResolvedValue(false),
+        popNextMessage: vi.fn().mockResolvedValue(null)
     }
 }));
 

@@ -6,13 +6,13 @@ import type {
   ChatCompletionMessageParam,
   ChatCompletionMessageToolCall,
 } from "openai/resources/chat/completions";
-import { toolDeclarations } from "./toolsService.ts";
-import { ACTIVATION_PROMPT } from "../symbolic_system/activation_prompt.ts";
-import { EvaluationMetrics, TestMeta, SymbolDef } from "../types.ts";
-import { domainService } from "./domainService.ts";
-import { embedText } from "./embeddingService.ts";
-import { buildSystemMetadataBlock } from "./timeService.ts";
-import { settingsService } from "./settingsService.ts";
+import { toolDeclarations } from "./toolsService.js";
+import { ACTIVATION_PROMPT } from "../symbolic_system/activation_prompt.js";
+import { EvaluationMetrics, TestMeta, SymbolDef } from "../types.js";
+import { domainService } from "./domainService.js";
+import { embedText } from "./embeddingService.js";
+import { buildSystemMetadataBlock } from "./timeService.js";
+import { settingsService } from "./settingsService.js";
 import { loggerService } from './loggerService.ts';
 import { contextService } from './contextService.js';
 import { contextWindowService } from './contextWindowService.js';

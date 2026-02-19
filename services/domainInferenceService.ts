@@ -1,9 +1,9 @@
 import OpenAI from "openai";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { domainService } from "./domainService.ts";
-import { embedText } from "./embeddingService.ts";
-import { settingsService } from "./settingsService.ts";
-import { loggerService } from "./loggerService.ts";
+import { domainService } from "./domainService.js";
+import { embedText } from "./embeddingService.js";
+import { settingsService } from "./settingsService.js";
+import { loggerService } from "./loggerService.js";
 
 interface DomainDescriptor {
     id: string;

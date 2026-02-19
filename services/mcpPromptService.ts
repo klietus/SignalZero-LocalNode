@@ -1,5 +1,5 @@
-import { redisService } from './redisService.ts';
-import { loggerService } from './loggerService.ts';
+import { redisService } from './redisService.js';
+import { loggerService } from './loggerService.js';
 
 const MCP_PROMPT_KEY = 'sz:mcp:prompt';
 

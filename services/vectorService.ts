@@ -1,7 +1,7 @@
 import { ChromaClient, type Collection, type EmbeddingFunction, type Where } from 'chromadb';
-import { embedTexts, resetEmbeddingCache } from './embeddingService.ts';
-import { SymbolDef, VectorSearchResult } from '../types.ts';
-import { settingsService } from './settingsService.ts';
+import { embedTexts, resetEmbeddingCache } from './embeddingService.js';
+import { SymbolDef, VectorSearchResult } from '../types.js';
+import { settingsService } from './settingsService.js';
 
 let chromaClient: ChromaClient | null = null;
 let cachedCollection: Collection | null = null;
