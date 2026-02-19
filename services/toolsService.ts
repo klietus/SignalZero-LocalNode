@@ -930,7 +930,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
 
           const missingDomains: string[] = [];
           await Promise.all(Array.from(domainsToCheck).map(async (domain) => {
-              const exists = await domainService.hasDomain(domain);
+              const exists = await domainService.hasDomain(domain, userId);
               if (!exists) missingDomains.push(domain);
           }));
 
