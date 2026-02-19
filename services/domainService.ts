@@ -1,9 +1,9 @@
-import { SymbolDef, VectorSearchResult, isUserSpecificDomain } from '../types.ts';
-import { vectorService } from './vectorService.ts';
-import { redisService } from './redisService.ts';
-import { loggerService } from './loggerService.ts';
-import { currentTimestamp, decodeTimestamp, getBucketKeysFromTimestamps, getDayBucketKey } from './timeService.ts';
-import { USER_DOMAIN_TEMPLATE, STATE_DOMAIN_TEMPLATE } from '../symbolic_system/domain_templates.ts';
+import { SymbolDef, VectorSearchResult, isUserSpecificDomain } from '../types.js';
+import { vectorService } from './vectorService.js';
+import { redisService } from './redisService.js';
+import { loggerService } from './loggerService.js';
+import { currentTimestamp, decodeTimestamp, getBucketKeysFromTimestamps, getDayBucketKey } from './timeService.js';
+import { USER_DOMAIN_TEMPLATE, STATE_DOMAIN_TEMPLATE } from '../symbolic_system/domain_templates.js';
 
 // Redis Keys Configuration
 const KEYS = {
