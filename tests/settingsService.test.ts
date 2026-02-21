@@ -161,11 +161,13 @@ describe('SettingsService', () => {
                 apiKey: '',
                 cx: ''
             },
+            serpApi: {
+                apiKey: ''
+            },
             voice: {
                 pulseServer: '',
                 wakeWord: 'axiom'
-            },
-            adminUser: undefined
+            }
         });
     });
 
@@ -219,11 +221,13 @@ describe('SettingsService', () => {
                 apiKey: '',
                 cx: ''
             },
+            serpApi: {
+                apiKey: ''
+            },
             voice: {
                 pulseServer: '',
                 wakeWord: 'axiom'
-            },
-            adminUser: undefined
+            }
         });
     });
 });
