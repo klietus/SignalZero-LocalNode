@@ -327,9 +327,12 @@ export const domainService = {
     let data = await redisService.request(['GET', key]);
 
     if (!data) {
-      // Auto-init user domains
+      // Auto-init user domains or global domains (if admin)
       if (isUserSpecificDomain(domainId) && userId) {
         domain = await domainService.init(domainId, domainId === 'user' ? 'User Preferences' : 'User State', userId, isAdmin);
+      } else if (!isUserSpecificDomain(domainId) && isAdmin) {
+        // Global domain auto-init during symbol add
+        domain = await domainService.init(domainId, domainId, userId, isAdmin);
       } else {
         throw new Error(`Domain '${domainId}' not found.`);
       }
@@ -963,8 +966,12 @@ export const domainService = {
     let domain: CachedDomain | null = null;
 
     if (!data) {
+      // Auto-initialize if domain doesn't exist
       if (isUserDomain && userId) {
         domain = await domainService.init(domainId, domainId === 'user' ? 'User Preferences' : 'User State', userId, isAdmin);
+      } else if (!isUserDomain && isAdmin) {
+        // Global domain auto-init during metadata update
+        domain = await domainService.init(domainId, metadata.name || domainId, userId, isAdmin);
       } else {
         return null;
       }
