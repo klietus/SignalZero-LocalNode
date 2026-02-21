@@ -605,8 +605,8 @@ app.get('/api/settings', async (req, res) => {
 
 app.post('/api/settings', async (req, res) => {
     try {
-        const { redis, chroma, inference, googleSearch } = req.body || {};
-        await settingsService.setSystemSettings({ redis, chroma, inference, googleSearch });
+        const { redis, chroma, inference } = req.body || {};
+        await settingsService.setSystemSettings({ redis, chroma, inference });
         const updated = await settingsService.getSystemSettings();
         res.json(updated);
     } catch (e) {

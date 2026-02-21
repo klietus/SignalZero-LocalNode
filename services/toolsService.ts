@@ -402,13 +402,13 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'web_search',
-      description: 'Perform a Google Custom Search for a query and return structured JSON results. This tool can be used in parallel with any other tool.',
+      description: 'Perform a web search for a query and return structured JSON results via SerpApi. This tool can be used in parallel with any other tool.',
       parameters: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: 'The search query to look up on Google Custom Search.'
+            description: 'The search query to look up.'
           },
           queries: {
             type: 'array',
@@ -1370,56 +1370,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
             return { batch_results: results };
           }
 
-          const searchSettings = await settingsService.getGoogleSearchSettings();
-          const apiKey = searchSettings.apiKey || process.env.GOOGLE_CUSTOM_SEARCH_KEY || process.env.GOOGLE_SEARCH_KEY || process.env.API_KEY;
-          const searchEngineId = searchSettings.cx || process.env.GOOGLE_CSE_ID || process.env.GOOGLE_SEARCH_ENGINE_ID || process.env.GOOGLE_CUSTOM_SEARCH_CX;
-
-          if (!apiKey) return { error: 'Web search failed: Neither SerpApi nor Google Search are configured. Please configure them in Settings.' };
-          if (!searchEngineId) return { error: 'Google Custom Search failed: Missing Search Engine ID (CX). Please configure it in Settings.' };
-
-          const executeSearch = async (q: string) => {
-              try {
-                  const searchUrl = new URL('https://customsearch.googleapis.com/customsearch/v1');
-                  searchUrl.searchParams.set('key', apiKey);
-                  searchUrl.searchParams.set('cx', searchEngineId);
-                  searchUrl.searchParams.set('q', q);
-                  searchUrl.searchParams.set('num', '10');
-                  if (image_search) searchUrl.searchParams.set('searchType', 'image');
-
-                  const response = await fetch(searchUrl.toString(), {
-                      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SignalZeroBot/1.0; +https://signalzero.ai)', 'Accept': 'application/json' }
-                  });
-
-                  if (!response.ok) {
-                      const errorBody = await response.text();
-                      loggerService.error("web_search HTTP error", { status: response.status, body: errorBody });
-                      return { query: q, error: `HTTP ${response.status}: ${errorBody}` };
-                  }
-
-                  const bodyText = await response.text();
-                  const json = JSON.parse(bodyText);
-                  const items = Array.isArray(json.items) ? json.items : [];
-                  
-                  return {
-                      query: q,
-                      total_results: json.searchInformation?.totalResults,
-                      results: items.map((item: any) => ({
-                          title: item.title,
-                          snippet: item.snippet || item.htmlSnippet,
-                          url: item.link,
-                          display_link: item.displayLink,
-                          mime: item.mime
-                      }))
-                  };
-              } catch (e: any) {
-                  return { query: q, error: e.message || String(e) };
-              }
-          };
-
-          const results = await Promise.all(queryList.map(executeSearch));
-          
-          if (results.length === 1) return results[0];
-          return { batch_results: results };
+          return { error: 'Web search failed: SerpApi is not configured. Please configure it in Settings.' };
       }
 
       case 'store_secret': {

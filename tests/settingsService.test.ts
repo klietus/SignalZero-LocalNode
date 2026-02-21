@@ -157,10 +157,6 @@ describe('SettingsService', () => {
                 visionModel: 'zai-org/glm-4.6v-flash',
                 savedConfigs: expect.any(Object)
             },
-            googleSearch: {
-                apiKey: '',
-                cx: ''
-            },
             serpApi: {
                 apiKey: ''
             },
@@ -216,10 +212,6 @@ describe('SettingsService', () => {
                 loopModel: 'Meta-Llama-3-70B-Instruct',
                 visionModel: 'zai-org/glm-4.6v-flash',
                 savedConfigs: expect.any(Object)
-            },
-            googleSearch: {
-                apiKey: '',
-                cx: ''
             },
             serpApi: {
                 apiKey: ''
