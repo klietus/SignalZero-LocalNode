@@ -26,10 +26,6 @@
       }
     }
   },
-  "googleSearch": {
-    "apiKey": "",
-    "cx": ""
-  },
   "voice": {
     "pulseServer": "",
     "wakeWord": "axiom"

@@ -75,10 +75,6 @@ export interface SystemSettings {
   inference?: Partial<InferenceSettings>;
   voice?: VoiceSettings;
   adminUser?: AdminUser;
-  googleSearch?: {
-    apiKey?: string;
-    cx?: string;
-  };
   serpApi?: {
     apiKey?: string;
   };
@@ -162,7 +158,6 @@ export const migrateSettingsToRedis = async (): Promise<boolean> => {
   const settingsToMigrate: SystemSettings = {
     inference: fileSettings.inference,
     voice: fileSettings.voice,
-    googleSearch: fileSettings.googleSearch,
     // Don't migrate: redis, chroma, adminUser (userService handles users now)
   };
   
@@ -402,31 +397,6 @@ export const settingsService = {
     }
   },
 
-  // --- Google Search Settings (Stored in Redis) ---
-  getGoogleSearchSettings: async (): Promise<{ apiKey: string; cx: string }> => {
-    const settings = await getSettings();
-    return {
-      apiKey: settings.googleSearch?.apiKey || process.env.GOOGLE_CUSTOM_SEARCH_KEY || '',
-      cx: settings.googleSearch?.cx || process.env.GOOGLE_CSE_ID || '',
-    };
-  },
-
-  setGoogleSearchSettings: async (settings: { apiKey?: string; cx?: string }) => {
-    const current = await getSettings();
-    current.googleSearch = {
-      apiKey: settings.apiKey ?? current.googleSearch?.apiKey ?? '',
-      cx: settings.cx ?? current.googleSearch?.cx ?? '',
-    };
-    await saveToRedis(current);
-    
-    if (settings.apiKey !== undefined) process.env.GOOGLE_CUSTOM_SEARCH_KEY = settings.apiKey;
-    if (settings.cx !== undefined) process.env.GOOGLE_CSE_ID = settings.cx;
-    
-    if (!isStateless()) {
-      saveToFile(current);
-    }
-  },
-
   // --- SerpApi Settings (Stored in Redis) ---
   getSerpApiSettings: async (): Promise<{ apiKey: string }> => {
     const settings = await getSettings();
@@ -492,9 +462,8 @@ export const settingsService = {
 
   // --- Aggregated Settings ---
   get: async (): Promise<SystemSettings> => {
-    const [inference, googleSearch, serpApi, voice] = await Promise.all([
+    const [inference, serpApi, voice] = await Promise.all([
       settingsService.getInferenceSettings(),
-      settingsService.getGoogleSearchSettings(),
       settingsService.getSerpApiSettings(),
       settingsService.getVoiceSettings(),
     ]);
@@ -514,7 +483,6 @@ export const settingsService = {
         useExternal: vectorSettings.useExternal,
       },
       inference,
-      googleSearch,
       serpApi,
       voice,
     };
@@ -547,10 +515,6 @@ export const settingsService = {
         ...currentInference,
         ...settings.inference as InferenceSettings,
       });
-    }
-
-    if (settings.googleSearch) {
-      await settingsService.setGoogleSearchSettings(settings.googleSearch);
     }
 
     if (settings.serpApi) {
