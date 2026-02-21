@@ -79,6 +79,9 @@ export interface SystemSettings {
     apiKey?: string;
     cx?: string;
   };
+  serpApi?: {
+    apiKey?: string;
+  };
 }
 
 // In-memory cache for settings (reduces Redis calls)
@@ -424,6 +427,28 @@ export const settingsService = {
     }
   },
 
+  // --- SerpApi Settings (Stored in Redis) ---
+  getSerpApiSettings: async (): Promise<{ apiKey: string }> => {
+    const settings = await getSettings();
+    return {
+      apiKey: settings.serpApi?.apiKey || process.env.SERPAPI_API_KEY || '',
+    };
+  },
+
+  setSerpApiSettings: async (settings: { apiKey?: string }) => {
+    const current = await getSettings();
+    current.serpApi = {
+      apiKey: settings.apiKey ?? current.serpApi?.apiKey ?? '',
+    };
+    await saveToRedis(current);
+    
+    if (settings.apiKey !== undefined) process.env.SERPAPI_API_KEY = settings.apiKey;
+    
+    if (!isStateless()) {
+      saveToFile(current);
+    }
+  },
+
   // --- Voice Settings (Stored in Redis) ---
   getVoiceSettings: async (): Promise<VoiceSettings> => {
     const settings = await getSettings();
@@ -467,9 +492,10 @@ export const settingsService = {
 
   // --- Aggregated Settings ---
   get: async (): Promise<SystemSettings> => {
-    const [inference, googleSearch, voice] = await Promise.all([
+    const [inference, googleSearch, serpApi, voice] = await Promise.all([
       settingsService.getInferenceSettings(),
       settingsService.getGoogleSearchSettings(),
+      settingsService.getSerpApiSettings(),
       settingsService.getVoiceSettings(),
     ]);
     
@@ -489,6 +515,7 @@ export const settingsService = {
       },
       inference,
       googleSearch,
+      serpApi,
       voice,
     };
   },
@@ -524,6 +551,10 @@ export const settingsService = {
 
     if (settings.googleSearch) {
       await settingsService.setGoogleSearchSettings(settings.googleSearch);
+    }
+
+    if (settings.serpApi) {
+      await settingsService.setSerpApiSettings(settings.serpApi);
     }
 
     if (settings.voice) {

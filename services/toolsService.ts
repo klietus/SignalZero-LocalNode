@@ -1323,11 +1323,58 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
 
           loggerService.info(`web_search executing ${queryList.length} queries`, { queries: queryList });
 
+          const serpSettings = await settingsService.getSerpApiSettings();
+          const serpApiKey = serpSettings.apiKey || process.env.SERPAPI_API_KEY;
+
+          if (serpApiKey) {
+            const executeSerpSearch = async (q: string) => {
+              try {
+                const searchUrl = new URL('https://serpapi.com/search');
+                searchUrl.searchParams.set('api_key', serpApiKey);
+                searchUrl.searchParams.set('engine', 'google');
+                searchUrl.searchParams.set('q', q);
+                searchUrl.searchParams.set('num', '10');
+                if (image_search) searchUrl.searchParams.set('tbm', 'isch');
+
+                const response = await fetch(searchUrl.toString(), {
+                  headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SignalZeroBot/1.0; +https://signalzero.ai)', 'Accept': 'application/json' }
+                });
+
+                if (!response.ok) {
+                  const errorBody = await response.text();
+                  loggerService.error("web_search (SerpApi) HTTP error", { status: response.status, body: errorBody });
+                  return { query: q, error: `SerpApi HTTP ${response.status}: ${errorBody}` };
+                }
+
+                const json = await response.json();
+                const items = Array.isArray(json.organic_results) ? json.organic_results : [];
+                
+                return {
+                  query: q,
+                  total_results: json.search_information?.total_results,
+                  results: items.map((item: any) => ({
+                    title: item.title,
+                    snippet: item.snippet || item.about_this_result?.source?.description,
+                    url: item.link,
+                    display_link: item.displayed_link,
+                    position: item.position
+                  }))
+                };
+              } catch (e: any) {
+                return { query: q, error: e.message || String(e) };
+              }
+            };
+
+            const results = await Promise.all(queryList.map(executeSerpSearch));
+            if (results.length === 1) return results[0];
+            return { batch_results: results };
+          }
+
           const searchSettings = await settingsService.getGoogleSearchSettings();
           const apiKey = searchSettings.apiKey || process.env.GOOGLE_CUSTOM_SEARCH_KEY || process.env.GOOGLE_SEARCH_KEY || process.env.API_KEY;
           const searchEngineId = searchSettings.cx || process.env.GOOGLE_CSE_ID || process.env.GOOGLE_SEARCH_ENGINE_ID || process.env.GOOGLE_CUSTOM_SEARCH_CX;
 
-          if (!apiKey) return { error: 'Google Custom Search failed: Missing API Key. Please configure it in Settings.' };
+          if (!apiKey) return { error: 'Web search failed: Neither SerpApi nor Google Search are configured. Please configure them in Settings.' };
           if (!searchEngineId) return { error: 'Google Custom Search failed: Missing Search Engine ID (CX). Please configure it in Settings.' };
 
           const executeSearch = async (q: string) => {
