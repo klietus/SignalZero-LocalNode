@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import multer from 'multer';
 import { randomUUID } from 'crypto';
-import { getChatSession, resetChatSession, sendMessageAndHandleTools, runSignalZeroTest, processMessageAsync } from './services/inferenceService.js';
+import { getChatSession, resetChatSession, sendMessageAndHandleTools, runSignalZeroTest, processMessageAsync, normalizeMessages } from './services/inferenceService.js';
 import { createToolExecutor, toolDeclarations } from './services/toolsService.js';
 import { settingsService } from './services/settingsService.js';
 import { ACTIVATION_PROMPT } from './symbolic_system/activation_prompt.js';
@@ -81,9 +81,9 @@ async function handleMCPMethod(method: string, params: any, userId: string, user
             const restrictedTools = [
                 'list_secrets', 'store_secret', 'get_secret',
                 'upsert_agent', 'list_agents', 'list_agent_executions', 'send_agent_message', 'list_agent_contexts',
-                'sys_exec', 'speak', 'send_user_message',
+                'speak', 'send_user_message',
                 'list_test_runs', 'list_test_failures',
-                'write_file', 'web_fetch', 'web_search', 'web_post', 'symbol_transaction'
+                'web_fetch', 'web_search', 'web_post', 'symbol_transaction'
             ];
             const adminOnlyTools = ['upsert_symbols', 'delete_symbols', 'create_domain'];
             const isAdmin = userRole === 'admin';
@@ -104,9 +104,9 @@ async function handleMCPMethod(method: string, params: any, userId: string, user
             const restrictedTools = [
                 'list_secrets', 'store_secret', 'get_secret',
                 'upsert_agent', 'list_agents', 'list_agent_executions', 'send_agent_message', 'list_agent_contexts',
-                'sys_exec', 'speak', 'send_user_message',
+                'speak', 'send_user_message',
                 'list_test_runs', 'list_test_failures',
-                'write_file', 'web_fetch', 'web_search', 'web_post', 'symbol_transaction'
+                'web_fetch', 'web_search', 'web_post', 'symbol_transaction'
             ];
             const adminOnlyTools = ['upsert_symbols', 'delete_symbols', 'create_domain'];
             const isAdmin = userRole === 'admin';
@@ -170,11 +170,12 @@ async function handleMCPMethod(method: string, params: any, userId: string, user
         case 'context/build':
             const contextSessionId = params.sessionId || randomUUID();
             const systemPrompt = params.systemPrompt || ACTIVATION_PROMPT;
-            const context = await contextWindowService.constructContextWindow(
+            const contextRaw = await contextWindowService.constructContextWindow(
                 contextSessionId,
                 systemPrompt,
                 userId
             );
+            const context = normalizeMessages(contextRaw);
             return { contextSessionId, context };
 
         case 'ping':

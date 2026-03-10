@@ -162,9 +162,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
                 query: { type: 'string', description: 'Semantic search string. Only applied if provided.' },
                 symbol_domains: { type: 'array', items: { type: 'string' }, description: 'Filter by multiple domains. Defaults to all domains if omitted.' },
                 symbol_tag: { type: 'string', description: 'Filter by symbol tag. Only applied if provided.' },
-                metadata_filter: { type: 'object', additionalProperties: true, description: 'Direct metadata key-value filters. Only applied if provided.' },
-                limit: { type: 'integer', description: 'Maximum symbols to return for this specific query (default 10, max 20).' },
-                time_gte: { type: 'string', description: "Filter by creation time >= timestamp. Only applied if provided." },
+                limit: { type: 'integer', description: 'Maximum symbols to return for this specific query (default 10, max 20).' },                time_gte: { type: 'string', description: "Filter by creation time >= timestamp. Only applied if provided." },
                 time_between: { type: 'array', items: { type: 'string' }, description: "Filter by creation time range [start, end]. Only applied if provided." },
                 fetch_all: { type: 'boolean', description: "Fetch all matching symbols for this query (bypass limit)." }
               }
@@ -213,21 +211,26 @@ export const toolDeclarations: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'upsert_symbols',
-      description: 'Upsert multiple symbols at once. Supports updates, renames (with old_id), and new symbol additions. This tool can be used in parallel with any other tool.',
+      description: 'Upsert multiple symbols at once. Supports updates, renames (with old_id), and new symbol additions. This tool can be used in parallel with any other tool. Supports providing a direct list of symbol objects or a list of wrap objects { old_id?, symbol_data }.',
       parameters: {
         type: 'object',
         properties: {
           symbols: {
             type: 'array',
-            description: 'List of symbol upsert operations.',
+            description: 'List of symbol upsert operations. Can be a list of symbol objects or a list of objects with symbol_data.',
             items: {
-              type: 'object',
-              properties: {
-                old_id: { type: 'string', description: 'Optional existing ID for rename or update. If omitted, a new symbol will be added.' },
-                // Explicitly reuse the full schema here so the model doesn\'t send empty objects
-                symbol_data: SYMBOL_DATA_SCHEMA
-              },
-              required: ['symbol_data']
+              oneOf: [
+                {
+                  type: 'object',
+                  properties: {
+                    old_id: { type: 'string', description: 'Optional existing ID for rename or update. If omitted, a new symbol will be added.' },
+                    // Explicitly reuse the full schema here so the model doesn\'t send empty objects
+                    symbol_data: SYMBOL_DATA_SCHEMA
+                  },
+                  required: ['symbol_data']
+                },
+                SYMBOL_DATA_SCHEMA
+              ]
             }
           }
         },
@@ -542,23 +545,6 @@ export const toolDeclarations: ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'sys_exec',
-      description: 'Execute a shell command on the system. This tool can be used in parallel with any other tool. CAUTION: This runs with the permissions of the container user.',
-      parameters: {
-        type: 'object',
-        properties: {
-          command: {
-            type: 'string',
-            description: 'The shell command to execute.'
-          }
-        },
-        required: ['command']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
       name: 'speak',
       description: 'Convert text to speech. This tool can be used in parallel with any other tool.',
       parameters: {
@@ -580,27 +566,6 @@ export const toolDeclarations: ChatCompletionTool[] = [
           }
         },
         required: ['text']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'write_file',
-      description: 'Write text content to a file on the local filesystem. Overwrites existing files. This tool can be used in parallel with any other tool.',
-      parameters: {
-        type: 'object',
-        properties: {
-          file_path: {
-            type: 'string',
-            description: 'The path to the file to write (e.g., "./data/output.txt" or "/app/logs/test.log").'
-          },
-          content: {
-            type: 'string',
-            description: 'The text content to write to the file.'
-          }
-        },
-        required: ['file_path', 'content']
       }
     }
   },
@@ -716,12 +681,12 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
         let anyFetchAll = false;
 
         for (const queryConfig of queryList) {
-            const { query, symbol_domains, symbol_tag, limit, fetch_all, time_gte, time_between, metadata_filter } = queryConfig;
-            
+            const { query, symbol_domains, symbol_tag, limit, fetch_all, time_gte, time_between } = queryConfig;
+
             if (fetch_all) anyFetchAll = true;
 
             const maxLimit = fetch_all ? 1000 : Math.min(limit || 10, 50);
-            
+
             // Default to all domains if none specified
             let targetDomains: string[];
             if (symbol_domains && Array.isArray(symbol_domains)) {
@@ -730,9 +695,8 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                 targetDomains = await domainService.listDomains(userId);
             }
 
-            const mergedMetadataFilter: Record<string, unknown> = { ...(metadata_filter || {}) };
+            const mergedMetadataFilter: Record<string, unknown> = {};
             if (symbol_tag) mergedMetadataFilter.symbol_tag = symbol_tag;
-
             const matchesMetadata = (symbol: any, filter?: Record<string, unknown>): boolean => {
                 if (!filter || Object.keys(filter).length === 0) return true;
                 return Object.entries(filter).every(([key, value]) => {
@@ -854,7 +818,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           const bypass_validation = false;
 
           loggerService.info(`upsert_symbols called with ${symbols?.length || 0} symbols`, {
-              symbolIds: Array.isArray(symbols) ? symbols.map((s: any) => s.symbol_data?.id) : []
+              symbolIds: Array.isArray(symbols) ? symbols.map((s: any) => s.symbol_data?.id || s.id) : []
           });
 
           if (!symbols || !Array.isArray(symbols) || symbols.length === 0) {
@@ -867,10 +831,22 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           const domainsToCheck = new Set<string>();
 
           for (const entry of symbols) {
-              const { symbol_data, old_id } = entry || {};
+              let symbol_data: SymbolDef;
+              let old_id: string | undefined;
+
+              if (entry && typeof entry === 'object' && 'symbol_data' in entry) {
+                  // Old format: { symbol_data: SymbolDef, old_id?: string }
+                  symbol_data = entry.symbol_data;
+                  old_id = entry.old_id;
+              } else {
+                  // New format: entry is SymbolDef directly
+                  symbol_data = entry as SymbolDef;
+                  old_id = undefined;
+              }
+
               if (!symbol_data || typeof symbol_data !== 'object') {
-                  loggerService.warn("upsert_symbols failed: Missing symbol_data in entry", { entry });
-                  return { error: "Each entry must include symbol_data" };
+                  loggerService.warn("upsert_symbols failed: Invalid symbol data in entry", { entry });
+                  return { error: "Each entry must be a symbol object or include symbol_data" };
               }
 
               const s = symbol_data;
@@ -1504,28 +1480,6 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           return info;
       }
 
-      case 'sys_exec': {
-          const { command } = args;
-          if (!command) return { error: "Missing command" };
-
-          try {
-              const { stdout, stderr } = await execAsync(command, { maxBuffer: 1024 * 1024 });
-              return {
-                  status: 'success',
-                  stdout: stdout ? stdout.trim() : '',
-                  stderr: stderr ? stderr.trim() : ''
-              };
-          } catch (error: any) {
-              return {
-                  status: 'error',
-                  error: error.message,
-                  code: error.code,
-                  stdout: error.stdout ? String(error.stdout).trim() : undefined,
-                  stderr: error.stderr ? String(error.stderr).trim() : undefined
-              };
-          }
-      }
-
       case 'speak': {
           const { text, voice } = args;
           if (!text) return { error: "Missing text" };
@@ -1556,21 +1510,6 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
               };
           } catch (error: any) {
               return { error: `Speech generation failed: ${error.message}` };
-          }
-      }
-
-      case 'write_file': {
-          const { file_path, content } = args;
-          if (!file_path || typeof file_path !== 'string') return { error: "Missing file_path" };
-          if (content === undefined || typeof content !== 'string') return { error: "Missing content" };
-
-          try {
-              const dir = path.dirname(file_path);
-              await fs.promises.mkdir(dir, { recursive: true });
-              await fs.promises.writeFile(file_path, content, 'utf-8');
-              return { status: 'success', file_path, size: content.length };
-          } catch (error: any) {
-              return { error: `Failed to write file: ${error.message}` };
           }
       }
 

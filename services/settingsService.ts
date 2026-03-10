@@ -48,7 +48,7 @@ export interface InferenceSettings {
   apiKey: string;
   endpoint: string;
   model: string;
-  loopModel: string;
+  agentModel: string;
   visionModel: string;
   savedConfigs?: Record<string, InferenceConfiguration>;
 }
@@ -57,7 +57,7 @@ export interface InferenceConfiguration {
   apiKey: string;
   endpoint: string;
   model: string;
-  loopModel: string;
+  agentModel: string;
   visionModel: string;
 }
 
@@ -362,7 +362,7 @@ export const settingsService = {
       apiKey: saved.apiKey || process.env.INFERENCE_API_KEY || '',
       endpoint: saved.endpoint || process.env.INFERENCE_ENDPOINT || 'http://localhost:1234/v1',
       model: saved.model || process.env.INFERENCE_MODEL || 'openai/gpt-oss-120b',
-      loopModel: saved.loopModel || process.env.INFERENCE_LOOP_MODEL || saved.model || process.env.INFERENCE_MODEL || 'openai/gpt-oss-120b',
+      agentModel: saved.agentModel || process.env.INFERENCE_AGENT_MODEL || saved.model || process.env.INFERENCE_MODEL || 'openai/gpt-oss-120b',
       visionModel: saved.visionModel || process.env.INFERENCE_VISION_MODEL || 'zai-org/glm-4.6v-flash',
       savedConfigs: saved.savedConfigs || {},
     };
@@ -376,7 +376,7 @@ export const settingsService = {
       apiKey: settings.apiKey,
       endpoint: settings.endpoint,
       model: settings.model,
-      loopModel: settings.loopModel,
+      agentModel: settings.agentModel,
       visionModel: settings.visionModel,
       savedConfigs: settings.savedConfigs || current.inference?.savedConfigs || {},
     };
@@ -388,7 +388,7 @@ export const settingsService = {
     process.env.INFERENCE_API_KEY = settings.apiKey;
     process.env.INFERENCE_ENDPOINT = settings.endpoint;
     process.env.INFERENCE_MODEL = settings.model;
-    process.env.INFERENCE_LOOP_MODEL = settings.loopModel;
+    process.env.INFERENCE_AGENT_MODEL = settings.agentModel;
     process.env.INFERENCE_VISION_MODEL = settings.visionModel;
     
     // Local mode: also save to file

@@ -227,8 +227,8 @@ class AgentService {
 
         try {
             const baseSystemPrompt = await systemPromptService.loadPrompt(ACTIVATION_PROMPT);
-            const { loopModel } = await settingsService.getInferenceSettings();
-            const chat = await createFreshChatSession(baseSystemPrompt, contextSessionId, loopModel);
+            const { agentModel } = await settingsService.getInferenceSettings();
+            const chat = await createFreshChatSession(baseSystemPrompt, contextSessionId, agentModel);
             const toolExecutor = createToolExecutor(() => settingsService.getApiKey(), contextSessionId);
             
             const stream = sendMessageAndHandleTools(chat, inputMessage, toolExecutor, baseSystemPrompt, contextSessionId, lockId, agent.userId || undefined);
@@ -273,18 +273,49 @@ class AgentService {
             await this.persistExecution(executionLog, traces);
             await contextService.clearActiveMessage(contextSessionId, undefined, true);
             
-            this.drainQueue(agentId, contextSessionId);
+            // Check if there are more messages to process
+            const hasMore = await contextService.hasQueuedMessages(contextSessionId, undefined, true);
+            if (hasMore) {
+                // Use setImmediate to avoid deep recursion
+                setImmediate(() => {
+                    this.drainQueue(agentId, contextSessionId).catch(err => 
+                        loggerService.error("Error in deferred drainQueue", { agentId, err })
+                    );
+                });
+            }
         }
     }
 
     private async schedulerTick() {
         try {
-            const agents = (await this.listAgents()).filter((a) => a.enabled && a.schedule);
+            const allAgents = await this.listAgents();
             const now = new Date();
-            for (const agent of agents) {
-                const nextRun = this.getNextRun(agent, now);
-                if (nextRun && nextRun.getTime() <= now.getTime()) {
-                    this.executeAgent(agent.id).catch(e => loggerService.error("Scheduled execution error", e));
+            
+            for (const agent of allAgents) {
+                if (!agent.enabled) continue;
+
+                let shouldRun = false;
+
+                // 1. Scheduled Run
+                if (agent.schedule) {
+                    const nextRun = this.getNextRun(agent, now);
+                    if (nextRun && nextRun.getTime() <= now.getTime()) {
+                        shouldRun = true;
+                    }
+                }
+
+                // 2. Queue-based Run (for event-driven agents)
+                if (!shouldRun) {
+                    const contextSessionId = await this.getOrCreateAgentContext(agent);
+                    const hasMore = await contextService.hasQueuedMessages(contextSessionId, undefined, true);
+                    const isBusy = await contextService.hasActiveMessage(contextSessionId, undefined, true);
+                    if (hasMore && !isBusy) {
+                        shouldRun = true;
+                    }
+                }
+
+                if (shouldRun) {
+                    this.executeAgent(agent.id).catch(e => loggerService.error("Agent execution error", { agentId: agent.id, error: e }));
                 }
             }
         } catch (error: any) {
@@ -303,13 +334,16 @@ class AgentService {
         const ids: string[] = await redisService.request(['ZRANGEBYSCORE', EXECUTION_ZSET_KEY, '-inf', '+inf']);
         const ordered = Array.isArray(ids) ? ids.slice().reverse() : [];
         const results: (AgentExecutionLog & { traces?: TraceData[] })[] = [];
+        
         for (const id of ordered) {
             if (results.length >= limit) break;
             const payload = await redisService.request(['GET', getExecutionKey(id)]);
             if (!payload) continue;
             try {
                 const parsed = JSON.parse(payload);
-                const recordAgentId = parsed.agentId || parsed.loopId;
+                // Be permissive with ID matching for compatibility
+                const recordAgentId = parsed.agentId || parsed.loopId || parsed.id?.split('-')[0];
+                
                 if (!agentId || recordAgentId === agentId) {
                     if (includeTraces) {
                         const tracePayload = await redisService.request(['GET', getTraceKey(id)]);
