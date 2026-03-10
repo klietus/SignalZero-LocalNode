@@ -312,6 +312,42 @@ export const generateGapSynthesis = async (
 };
 
 
+export const normalizeMessages = (messages: ChatCompletionMessageParam[]): ChatCompletionMessageParam[] => {
+  if (messages.length === 0) return messages;
+
+  const normalized: ChatCompletionMessageParam[] = [];
+  let systemContent = "";
+  
+  // 1. Collect all system messages and merge them
+  const otherMessages = messages.filter(m => {
+      if (m.role === 'system') {
+          if (typeof m.content === 'string') {
+              systemContent += (systemContent ? "\n\n" : "") + m.content;
+          }
+          return false;
+      }
+      return true;
+  });
+
+  if (systemContent) {
+      normalized.push({ role: 'system', content: systemContent });
+  }
+
+  // 2. Merge consecutive messages with the same role
+  for (const msg of otherMessages) {
+      const last = normalized[normalized.length - 1];
+      if (last && last.role === msg.role && last.role !== 'tool' && !last.tool_calls && !msg.tool_calls) {
+          if (typeof last.content === 'string' && typeof msg.content === 'string') {
+              last.content += "\n\n" + msg.content;
+              continue;
+          }
+      }
+      normalized.push(msg);
+  }
+
+  return normalized;
+};
+
 // Wrap the stream processing to catch and log errors
 const streamAssistantResponse = async function* (
   messages: ChatCompletionMessageParam[],
@@ -322,7 +358,8 @@ const streamAssistantResponse = async function* (
   assistantMessage?: ChatCompletionMessageParam;
 }> {
     try {
-        for await (const chunk of _streamAssistantResponseInternal(messages, model)) {
+        const normalized = normalizeMessages(messages);
+        for await (const chunk of _streamAssistantResponseInternal(normalized, model)) {
             yield chunk;
         }
     } catch (error: any) {

@@ -58,7 +58,7 @@ describe('ToolsService', () => {
         vi.restoreAllMocks();
     });
 
-    it('find_symbols routes semantic search to domainService.search with metadata filter', async () => {
+    it('find_symbols routes semantic search to domainService.search with tag filter', async () => {
         vi.mocked(domainService.hasDomain).mockResolvedValue(true);
 
         await toolExecutor('find_symbols', {
@@ -66,7 +66,7 @@ describe('ToolsService', () => {
                 query: 'test vector',
                 symbol_domains: ['root', 'diagnostics'],
                 limit: 3,
-                metadata_filter: { symbol_tag: 'protocol' }
+                symbol_tag: 'protocol'
             }]
         });
 

@@ -138,7 +138,7 @@ export const contextService = {
     const session = await loadSession(id);
     if (!session) return null;
     
-    // Admin can access any session
+    // Admin can access any session (including agent sessions)
     if (isAdmin) return session;
     
     // User can only access their own sessions
@@ -161,7 +161,10 @@ export const contextService = {
     const session = await loadSession(id);
     if (!session) return false;
     
+    // Admin can access any session
     if (isAdmin) return true;
+    
+    // Regular users can only access their own non-agent sessions
     if (userId && session.userId === userId && session.type !== 'agent') return true;
     
     return false;
@@ -285,6 +288,7 @@ export const contextService = {
     const hasAccess = await contextService.canAccessSession(sessionId, userId, isAdmin);
     if (!hasAccess) return [];
     
+    const session = await loadSession(sessionId);
     const history = await loadHistory(sessionId);
     const groups: ContextHistoryGroup[] = [];
     let currentGroup: ContextHistoryGroup | null = null;
@@ -302,13 +306,17 @@ export const contextService = {
         };
       } else if (currentGroup) {
         currentGroup.assistantMessages.push(message);
-        if (message.role === 'model' && message.isStreaming) {
+        if ((message.role === 'model' || message.role === 'assistant') && message.isStreaming) {
           currentGroup.status = 'processing';
         }
       }
     }
 
     if (currentGroup) {
+      // If the session has an active message that matches this group's correlation ID, mark it as processing
+      if (session?.activeMessageId && currentGroup.correlationId === session.activeMessageId) {
+          currentGroup.status = 'processing';
+      }
       groups.push(currentGroup);
     }
 
