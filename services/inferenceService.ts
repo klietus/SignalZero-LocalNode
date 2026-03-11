@@ -969,6 +969,8 @@ export async function* sendMessageAndHandleTools(
 
     // --- EXECUTE TOOLS ---
     const toolResponses: ChatCompletionMessageParam[] = [];
+    const narrativesToAppend: string[] = [];
+
     for (const call of yieldedToolCalls || []) {
       if (!call.function?.name) continue;
 
@@ -978,8 +980,15 @@ export async function* sendMessageAndHandleTools(
           toolName = toolName.slice(0, -1);
       }
 
+      const { data: args, error: parseError } = parseToolArguments(call.function.arguments || "");
+
       if (toolName === 'log_trace') {
           hasLoggedTrace = true;
+          // Extract narrative if present in the trace object
+          if (args?.trace?.narrative) {
+              narrativesToAppend.push(args.trace.narrative);
+              delete args.trace.narrative;
+          }
       }
       if (toolName === 'speak') {
           hasCalledSpeak = true;
@@ -991,8 +1000,6 @@ export async function* sendMessageAndHandleTools(
       if (SYMBOL_TOOLS.includes(toolName)) {
           hasUsedSymbolTools = true;
       }
-
-      const { data: args, error: parseError } = parseToolArguments(call.function.arguments || "");
 
       if (parseError) {
         const errorPayload = { 
@@ -1077,6 +1084,23 @@ export async function* sendMessageAndHandleTools(
       // Actually, they need to be in contextMessages for the NEXT loop.
       // sendMessageAndHandleTools manages this by calling constructContextWindow.
       // So they MUST be recorded.
+    }
+
+    // Append any extracted narratives from log_trace as a separate assistant turn
+    if (narrativesToAppend.length > 0) {
+        const combinedNarrative = narrativesToAppend.join("\n\n");
+        yield { text: combinedNarrative };
+        
+        if (contextSessionId) {
+            await contextService.recordMessage(contextSessionId, {
+                id: randomUUID(),
+                role: "assistant",
+                content: combinedNarrative,
+                timestamp: new Date().toISOString(),
+                metadata: { kind: "assistant_narrative", source: "log_trace_extraction" },
+                correlationId: correlationId
+            }, undefined, true);
+        }
     }
 
     // Check if we should end the turn:
