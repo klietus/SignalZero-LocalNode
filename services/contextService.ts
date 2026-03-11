@@ -1,5 +1,6 @@
 import { redisService } from './redisService.js';
 import { loggerService } from './loggerService.js';
+import { symbolCacheService } from './symbolCacheService.js';
 import { ContextMessage, ContextSession, ContextHistoryGroup } from '../types.js';
 
 const CONTEXT_INDEX_KEY = 'context:index';
@@ -59,6 +60,10 @@ const closeSessionInternal = async (session: ContextSession): Promise<ContextSes
   };
 
   await persistSession(closed);
+  
+  // Clear symbol cache for archived session
+  await symbolCacheService.clearCache(session.id);
+  
   return closed;
 };
 
