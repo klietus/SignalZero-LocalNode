@@ -85,48 +85,21 @@ describe('Turn Ending Logic', () => {
         (symbolCacheService.getSymbols as any).mockResolvedValue([{ id: 'S1' }]);
     });
 
-    it('should end the turn immediately after log_trace call', async () => {
+    it('should end the turn immediately after log_trace call and separate narrative', async () => {
         const chatState = { messages: [], systemInstruction: 'Instruction', model: 'test-model' };
         const toolExecutor = vi.fn().mockResolvedValue({ status: 'ok' });
 
-        // First turn response with log_trace
+        // Turn response with text AND log_trace
         sendMessageStreamMock.mockResolvedValueOnce({
             stream: (async function* () {
                 yield {
-                    text: () => "Analyzing...",
+                    text: () => "This is the narrative text.",
                     functionCalls: () => [
-                        { name: 'log_trace', args: { activation_path: [] } }
+                        { name: 'log_trace', args: { trace: { activation_path: [] } } }
                     ],
                     candidates: [{ content: { parts: [
-                        { text: "Analyzing..." },
-                        { functionCall: { name: 'log_trace', args: { activation_path: [] } } }
-                    ] } }]
-                };
-            })()
-        });
-
-        const generator = sendMessageAndHandleTools(chatState as any, 'Hello', toolExecutor, 'Instruction', 'sess-1');
-        for await (const _ of generator) {}
-
-        expect(toolExecutor).toHaveBeenCalledWith('log_trace', expect.anything());
-        // Loop terminated after first turn
-        expect(sendMessageStreamMock).toHaveBeenCalledTimes(1);
-    });
-
-    it('should extract narrative from log_trace and yield it', async () => {
-        const chatState = { messages: [], systemInstruction: 'Instruction', model: 'test-model' };
-        const toolExecutor = vi.fn().mockResolvedValue({ status: 'ok' });
-
-        // First turn response with log_trace AND narrative
-        sendMessageStreamMock.mockResolvedValueOnce({
-            stream: (async function* () {
-                yield {
-                    text: () => "",
-                    functionCalls: () => [
-                        { name: 'log_trace', args: { trace: { narrative: "This is the extracted narrative.", activation_path: [] } } }
-                    ],
-                    candidates: [{ content: { parts: [
-                        { functionCall: { name: 'log_trace', args: { trace: { narrative: "This is the extracted narrative.", activation_path: [] } } } }
+                        { text: "This is the narrative text." },
+                        { functionCall: { name: 'log_trace', args: { trace: { activation_path: [] } } } }
                     ] } }]
                 };
             })()
@@ -139,15 +112,87 @@ describe('Turn Ending Logic', () => {
             results.push(part);
         }
 
-        // 1. Check that narrative was yielded
-        expect(results.some(r => r.text === 'This is the extracted narrative.')).toBe(true);
+        // 1. Check that narrative was yielded to the user
+        expect(results.some(r => r.text === 'This is the narrative text.')).toBe(true);
 
-        // 2. Check that log_trace was called WITHOUT narrative
-        expect(toolExecutor).toHaveBeenCalledWith('log_trace', expect.objectContaining({
-            trace: expect.not.objectContaining({ narrative: expect.anything() })
-        }));
+        // 2. Check recordMessage calls: 
+        // 1 user message, 1 assistant (tools), 1 assistant (narrative), 1 tool result
+        // Total should be 4
+        expect(contextService.recordMessage).toHaveBeenCalledTimes(4);
+        
+        // User Message
+        expect(contextService.recordMessage).toHaveBeenCalledWith('sess-1', expect.objectContaining({
+            role: 'user',
+            content: 'Hello'
+        }), undefined, true);
 
-        // 3. Check that turn ended
+        // Assistant Tool Turn: content should be empty because log_trace was present
+        expect(contextService.recordMessage).toHaveBeenCalledWith('sess-1', expect.objectContaining({
+            role: 'assistant',
+            content: '',
+            metadata: expect.objectContaining({ kind: 'assistant_response' })
+        }), undefined, true);
+
+        // Assistant Narrative Turn: content should be the text
+        expect(contextService.recordMessage).toHaveBeenCalledWith('sess-1', expect.objectContaining({
+            role: 'assistant',
+            content: 'This is the narrative text.',
+            metadata: expect.objectContaining({ kind: 'assistant_narrative' })
+        }), undefined, true);
+
+        // Tool Result Turn
+        expect(contextService.recordMessage).toHaveBeenCalledWith('sess-1', expect.objectContaining({
+            role: 'tool',
+            toolName: 'log_trace'
+        }), undefined, true);
+
+        // 3. Check that loop terminated
         expect(sendMessageStreamMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('should continue the loop if no log_trace call is present but other tools are', async () => {
+        const chatState = { messages: [], systemInstruction: 'Instruction', model: 'test-model' };
+        const toolExecutor = vi.fn().mockResolvedValue({ status: 'ok' });
+
+        // First turn calls find_symbols (but NO log_trace)
+        sendMessageStreamMock.mockResolvedValueOnce({
+            stream: (async function* () {
+                yield {
+                    text: () => "I will search now.",
+                    functionCalls: () => [{ name: 'find_symbols', args: { queries: [] } }],
+                    candidates: [{ content: { parts: [
+                        { text: "I will search now." },
+                        { functionCall: { name: 'find_symbols', args: { queries: [] } } }
+                    ] } }]
+                };
+            })()
+        });
+
+        // Second turn returns log_trace
+        sendMessageStreamMock.mockResolvedValueOnce({
+            stream: (async function* () {
+                yield {
+                    text: () => "Found it. Logging trace.",
+                    functionCalls: () => [{ name: 'log_trace', args: { trace: { activation_path: [] } } }],
+                    candidates: [{ content: { parts: [
+                        { text: "Found it. Logging trace." },
+                        { functionCall: { name: 'log_trace', args: { trace: { activation_path: [] } } } }
+                    ] } }]
+                };
+            })()
+        });
+
+        const generator = sendMessageAndHandleTools(chatState as any, 'Hello', toolExecutor, 'Instruction', 'sess-1');
+        for await (const _ of generator) {}
+
+        // Should have called sendMessageStream twice
+        expect(sendMessageStreamMock).toHaveBeenCalledTimes(2);
+        
+        // Verify find_symbols turn kept its text because NO log_trace was in THAT turn
+        expect(contextService.recordMessage).toHaveBeenCalledWith('sess-1', expect.objectContaining({
+            role: 'assistant',
+            content: 'I will search now.',
+            metadata: expect.objectContaining({ kind: 'assistant_response' })
+        }), undefined, true);
     });
 });
