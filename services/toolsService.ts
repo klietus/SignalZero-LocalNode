@@ -661,7 +661,26 @@ export const toolDeclarations: ChatCompletionTool[] = [
 
 // 2. Define the execution logic
 export const createToolExecutor = (getApiKey: () => string | null, contextSessionId?: string, userId?: string, isAdmin: boolean = false) => {
-  const executor = async (name: string, args: any): Promise<any> => {
+
+    const sanitizeSymbol = (item: any) => {
+        // Normalize: If item is a search result wrapper with .symbol, extract it. Otherwise use item.
+        const s = item.symbol ? { ...item.symbol } : { ...item };
+
+        // Explicitly remove sensitive or irrelevant metadata
+        delete s.score;
+        delete s.created_at;
+        delete s.last_accessed_at;
+
+        // Remove irrelevant attributes based on kind
+        if (s.kind !== 'persona') delete s.persona;
+        if (s.kind !== 'lattice') delete s.lattice;
+        if (s.kind !== 'data') delete s.data;
+
+        return s;
+    };
+
+    return async (name: string, args: any): Promise<any> => {
+
     console.log(`[ToolExecutor] Executing ${name} with`, args);
 
     const writeAllowed = await contextService.isWriteAllowed(contextSessionId, name);
@@ -754,22 +773,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
             resultList = resultList.slice(0, GLOBAL_SYMBOL_LIMIT);
         }
 
-        const sanitizedSymbols = resultList.map((item: any) => {
-            // Normalize: If item is a search result wrapper with .symbol, extract it. Otherwise use item.
-            const s = item.symbol ? { ...item.symbol } : { ...item };
-            
-            // Explicitly remove score if present on the symbol object or wrapper copy
-            if ('score' in s) delete s.score;
-            if ('created_at' in s) delete s.created_at;
-            if ('last_accessed_at' in s) delete s.last_accessed_at;
-
-            // Remove irrelevant attributes based on kind
-            if (s.kind !== 'persona') delete s.persona;
-            if (s.kind !== 'lattice') delete s.lattice;
-            if (s.kind !== 'data') delete s.data;
-            
-            return s;
-        });
+        const sanitizedSymbols = resultList.map((item: any) => sanitizeSymbol(item));
 
         loggerService.info(`find_symbols returning ${sanitizedSymbols.length} unique symbols across ${queryList.length} queries.`);
 
@@ -789,7 +793,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
 
           for (const id of ids) {
               const sym = await domainService.findById(id, userId);
-              if (sym) found.push(sym);
+              if (sym) found.push(sanitizeSymbol(sym));
               else missing.push(id);
           }
 
