@@ -900,12 +900,17 @@ export async function* sendMessageAndHandleTools(
         let auditMessage = "";
 
         // Check 1: Missing Grounding Operation
-        if (!hasCalledGroundingTool) {
+        // Only fire if the model hasn't called a grounding tool THIS turn AND the symbol cache is empty
+        const cachedSymbols = await symbolCacheService.getSymbols(contextSessionId);
+        const hasExistingCache = cachedSymbols.length > 0;
+
+        if (!hasCalledGroundingTool && !hasExistingCache) {
             auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You attempted to respond without exploring the symbolic context. You must execute `find_symbols` or `load_domains` to ground your response in the active symbolic context. Even if you believe you know the symbols, you must verify them via a query.  Do not acknowledge this message or repeat previous information.  Emit a correction if it would have changed with the grounding.\n";
             auditTriggered = true;
         }
 
         // Check 2: Missing Trace (Only if search passed, or append to it)
+        // If we have an existing cache, we still need a trace for the new response.
         if (!hasLoggedTrace) {
             auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You generated a narrative response but failed to log a symbolic trace. You must call `log_trace` to bind the proceeding narrative to retrieved symbols from the symbol store.  This trace must be comprehensive and contain all symbols used in the response.  This audit message is not a driver for symbolic analysis.\n";
             auditTriggered = true;
