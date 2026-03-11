@@ -420,7 +420,36 @@ export const contextService = {
     if (!hasAccess) throw new Error('Access denied');
     
     const history = await loadHistory(sessionId);
-    history.push(message);
+
+    // Auto-split: if assistant message has log_trace AND content, split them
+    const hasLogTrace = message.toolCalls?.some(tc => {
+        let name = tc.name || "";
+        if (name.endsWith('?')) name = name.slice(0, -1);
+        return name === 'log_trace';
+    });
+
+    if (message.role === 'assistant' && hasLogTrace && message.content?.trim().length > 0) {
+        const { content, ...toolTurn } = message;
+        
+        // 1. Record tool turn (no content)
+        history.push({
+            ...toolTurn,
+            content: ""
+        } as ContextMessage);
+
+        // 2. Record narrative turn (no tools)
+        history.push({
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: content,
+            timestamp: new Date().toISOString(),
+            correlationId: message.correlationId,
+            metadata: { ...message.metadata, kind: "assistant_narrative", source: "auto_split" }
+        } as ContextMessage);
+    } else {
+        history.push(message);
+    }
+
     await persistHistory(sessionId, history);
   },
 

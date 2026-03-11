@@ -947,20 +947,11 @@ export async function* sendMessageAndHandleTools(
         }
     }
 
-    const hasLogTraceInTurn = (yieldedToolCalls || []).some(call => {
-        let name = call.function?.name || "";
-        if (name.endsWith('?')) name = name.slice(0, -1);
-        return name === 'log_trace';
-    });
-
     if (contextSessionId) {
-      // If turn contains log_trace, the text is treated as narrative and separated from the tool turn.
-      const assistantContent = hasLogTraceInTurn ? "" : textAccumulatedInTurn;
-
       await contextService.recordMessage(contextSessionId, {
         id: randomUUID(),
         role: "assistant",
-        content: assistantContent,
+        content: textAccumulatedInTurn,
         timestamp: new Date().toISOString(),
         toolCalls: (nextAssistant as any).tool_calls?.map((call: any) => ({
           id: call.id,
@@ -971,18 +962,6 @@ export async function* sendMessageAndHandleTools(
         metadata: { kind: "assistant_response" },
         correlationId: correlationId
       }, undefined, true);
-
-      // Append narrative as a separate non-tool assistant message
-      if (hasLogTraceInTurn && textAccumulatedInTurn.trim().length > 0) {
-          await contextService.recordMessage(contextSessionId, {
-              id: randomUUID(),
-              role: "assistant",
-              content: textAccumulatedInTurn,
-              timestamp: new Date().toISOString(),
-              metadata: { kind: "assistant_narrative", source: "turn_separation" },
-              correlationId: correlationId
-          }, undefined, true);
-      }
     }
 
     // Success or unrecoverable audit: clear transient messages
