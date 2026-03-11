@@ -720,7 +720,8 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                     time_gte,
                     time_between,
                     metadata_filter: Object.keys(mergedMetadataFilter).length > 0 ? mergedMetadataFilter : undefined,
-                    domains: targetDomains
+                    domains: targetDomains,
+                    contextSessionId: contextSessionId || undefined
                 }, userId); // Pass userId to search
                 
                 results.forEach((r: any) => {
@@ -921,7 +922,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
               for (const [domain, domainSymbols] of Object.entries(upsertByDomain)) {
                   if (domainSymbols.length === 0) continue;
                   loggerService.info(`upsert_symbols processing batch for domain ${domain}`, { count: domainSymbols.length });
-                  await domainService.bulkUpsert(domain, domainSymbols, { userId, isAdmin });
+                  await domainService.bulkUpsert(domain, domainSymbols, { userId, isAdmin, contextSessionId });
                   upserted.push({ domain, count: domainSymbols.length });
               }
 
@@ -934,7 +935,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                       // 2. Delete old
                       await domainService.deleteSymbol(domainId, refactor.old_id, userId, isAdmin);
                       // 3. Upsert new
-                      await domainService.upsertSymbol(domainId, refactor.symbol_data, userId, isAdmin);
+                      await domainService.upsertSymbol(domainId, refactor.symbol_data, userId, isAdmin, contextSessionId);
                   }
               }
 

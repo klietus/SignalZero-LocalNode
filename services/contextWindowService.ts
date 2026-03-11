@@ -1,6 +1,7 @@
 
 import { contextService } from './contextService.js';
 import { domainService } from './domainService.js';
+import { symbolCacheService } from './symbolCacheService.js';
 import { SymbolDef, ContextMessage, isUserSpecificDomain, ContextKind } from '../types.js';
 import { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { loggerService } from './loggerService.js';
@@ -123,7 +124,7 @@ export class ContextWindowService {
     messages.push(...historyMessages);
 
     // 4. Dynamic Symbolic Context (Volatile)
-    const dynamicContext = await this.buildDynamicContext(type, effectiveUserId);
+    const dynamicContext = await this.buildDynamicContext(type, effectiveUserId, contextSessionId);
     
     // Generate fresh system metadata
     const systemMetadata = buildSystemMetadataBlock({
@@ -372,7 +373,7 @@ export class ContextWindowService {
    * Fetches dynamic symbols (Identity, Preferences, Recent State) that change frequently.
    * User and state domains are filtered by userId.
    */
-  private async buildDynamicContext(type: ContextKind = 'conversation', userId?: string): Promise<string> {
+  private async buildDynamicContext(type: ContextKind = 'conversation', userId?: string, sessionId?: string): Promise<string> {
       try {
           const results: string[] = [];
           let userCoreCount = 0;
@@ -419,11 +420,22 @@ export class ContextWindowService {
 
           results.push(`\n[STATE]\n${stateFormatted}`);
 
+          // Symbol Cache Injection
+          let cacheCount = 0;
+          if (sessionId) {
+              const cachedSymbols = await symbolCacheService.getSymbols(sessionId);
+              if (cachedSymbols.length > 0) {
+                  cacheCount = cachedSymbols.length;
+                  results.push(`\n[SYMBOL CACHE]\n${this.formatSymbols(cachedSymbols)}`);
+              }
+          }
+
           const fullContext = results.join('');
           loggerService.info(`Built Dynamic Context`, { 
               type,
               userCoreSymbols: userCoreCount, 
               stateSymbols: recentStateSymbols.length, 
+              symbolCacheCount: cacheCount,
               chars: fullContext.length 
           });
           return fullContext;
