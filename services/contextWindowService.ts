@@ -389,37 +389,6 @@ export class ContextWindowService {
               results.push(`[USER]\n${this.formatSymbols(userSymbols)}`);
           }
 
-          // Query 6: Recent State Domain Symbols (Last 5 by date time)
-          // For user-specific state domain, pass userId to get user's private state
-          const stateDomain = await domainService.get('state', userId);
-          const stateSymbols = stateDomain?.symbols || [];
-          const recentStateSymbols = stateSymbols
-              .sort((a, b) => {
-                  const getT = (s?: string) => {
-                      if (!s) return 0;
-                      // Handle ISO string or timestamp
-                      const date = new Date(s);
-                      return !isNaN(date.getTime()) ? date.getTime() : 0;
-                  };
-                  // Sort DESC (Newest First)
-                  return getT(b.created_at) - getT(a.created_at);
-              })
-              .slice(0, 5);
-          
-          // Custom formatter for state symbols to include timestamp
-          const stateFormatted = recentStateSymbols.map(s => {
-              // Reuse base logic but append timestamp
-              const base = this.formatSymbols([s]).trim(); 
-              // formatSymbols returns a block, possibly with newlines if multiple.
-              // Since we map 1 by 1, it should be a single line (or block).
-              // We want to inject the timestamp. 
-              // DSL is: | ID | Name | Triad | Kind | Content |
-              // We will append | CreatedAt |
-              return `${base.slice(0, -1)} ${s.created_at} |`;
-          }).join('\n');
-
-          results.push(`\n[STATE]\n${stateFormatted}`);
-
           // Symbol Cache Injection
           let cacheCount = 0;
           if (sessionId) {
@@ -434,7 +403,6 @@ export class ContextWindowService {
           loggerService.info(`Built Dynamic Context`, { 
               type,
               userCoreSymbols: userCoreCount, 
-              stateSymbols: recentStateSymbols.length, 
               symbolCacheCount: cacheCount,
               chars: fullContext.length 
           });
