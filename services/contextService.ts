@@ -2,6 +2,7 @@ import { redisService } from './redisService.js';
 import { loggerService } from './loggerService.js';
 import { symbolCacheService } from './symbolCacheService.js';
 import { ContextMessage, ContextSession, ContextHistoryGroup } from '../types.js';
+import { randomUUID } from 'crypto';
 
 const CONTEXT_INDEX_KEY = 'context:index';
 const USER_CONTEXT_INDEX_PREFIX = 'context:user:'; // context:user:{userId} -> Set of context IDs
@@ -439,7 +440,7 @@ export const contextService = {
 
         // 2. Record narrative turn (no tools)
         history.push({
-            id: crypto.randomUUID(),
+            id: randomUUID(),
             role: "assistant",
             content: content,
             timestamp: new Date().toISOString(),

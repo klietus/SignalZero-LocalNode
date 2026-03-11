@@ -1082,12 +1082,12 @@ export async function* sendMessageAndHandleTools(
 
     // Check if we should end the turn:
     // 1. No tool calls were made in this turn.
-    // 2. A log_trace tool call was made (narrative output follows symbolic trace).
-    const shouldEndTurn = !yieldedToolCalls || yieldedToolCalls.length === 0 || hasLoggedTrace;
+    // 2. A log_trace tool call was made AND we have narrative text (narrative output follows symbolic trace).
+    const shouldEndTurn = !yieldedToolCalls || yieldedToolCalls.length === 0 || (hasLoggedTrace && textAccumulatedInTurn.trim().length > 0);
 
     if (shouldEndTurn) {
         if (hasLoggedTrace) {
-            loggerService.info("Ending turn due to symbolic trace detection.", { contextSessionId });
+            loggerService.info("Ending turn due to symbolic trace and narrative completion.", { contextSessionId });
         }
         break;
     }
