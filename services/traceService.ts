@@ -2,6 +2,7 @@
 import { TraceData } from '../types.js';
 import { currentTimestamp, decodeTimestamp, getDayBucketKey } from './timeService.js';
 import { redisService } from './redisService.js';
+import { symbolCacheService } from './symbolCacheService.js';
 
 type TraceListener = (traces: TraceData[]) => void;
 
@@ -29,6 +30,15 @@ class TraceService {
     if (normalizedTrace.sessionId) {
         await redisService.request(['SADD', `sz:session_traces:${normalizedTrace.sessionId}`, normalizedTrace.id]);
         await redisService.request(['EXPIRE', `sz:session_traces:${normalizedTrace.sessionId}`, '604800']);
+
+        // Touch symbols in the cache to reset their turn count
+        if (normalizedTrace.activation_path && normalizedTrace.activation_path.length > 0) {
+            for (const step of normalizedTrace.activation_path) {
+                if (step.symbol_id) {
+                    await symbolCacheService.touchSymbol(normalizedTrace.sessionId, step.symbol_id);
+                }
+            }
+        }
     }
 
     const createdMs = decodeTimestamp(normalizedTrace.created_at);

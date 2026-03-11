@@ -1,6 +1,7 @@
 import { SymbolDef, VectorSearchResult, isUserSpecificDomain } from '../types.js';
 import { vectorService } from './vectorService.js';
 import { redisService } from './redisService.js';
+import { symbolCacheService } from './symbolCacheService.js';
 import { loggerService } from './loggerService.js';
 import { currentTimestamp, decodeTimestamp, getBucketKeysFromTimestamps, getDayBucketKey } from './timeService.js';
 import { USER_DOMAIN_TEMPLATE, STATE_DOMAIN_TEMPLATE } from '../symbolic_system/domain_templates.js';
@@ -321,7 +322,7 @@ export const domainService = {
    * User-specific domains: any logged-in user can modify their own
    * Global domains: only admin
    */
-  addSymbol: async (domainId: string, symbol: SymbolDef, userId?: string, isAdmin: boolean = false, _options?: { _bypassBacklink?: boolean }): Promise<SymbolDef> => {
+  addSymbol: async (domainId: string, symbol: SymbolDef, userId?: string, isAdmin: boolean = false, _options?: { _bypassBacklink?: boolean, contextSessionId?: string }): Promise<SymbolDef> => {
     const key = getDomainKey(domainId, userId);
     let domain: CachedDomain | null = null;
     let data = await redisService.request(['GET', key]);
@@ -368,6 +369,11 @@ export const domainService = {
     await redisService.request(['SET', key, JSON.stringify(domain)]);
     await vectorService.indexSymbol(symbol);
 
+    // Update session symbol cache if session ID provided
+    if (_options?.contextSessionId) {
+        await symbolCacheService.upsertSymbol(_options.contextSessionId, symbol);
+    }
+
     // Bidirectional back-links
     if (!_options?._bypassBacklink && symbol.linked_patterns) {
         for (const link of symbol.linked_patterns) {
@@ -384,8 +390,8 @@ export const domainService = {
                             link_type: link.link_type,
                             bidirectional: true
                         });
-                        // Save the update
-                        await domainService.addSymbol(targetSymbol.symbol_domain, targetSymbol, userId, isAdmin, { _bypassBacklink: true });
+                        // Save the update, propagating the contextSessionId
+                        await domainService.addSymbol(targetSymbol.symbol_domain, targetSymbol, userId, isAdmin, { _bypassBacklink: true, contextSessionId: _options?.contextSessionId });
                     }
                 }
             }
@@ -494,7 +500,7 @@ export const domainService = {
   search: async (
     query: string | null,
     limitOrUserId?: number | string,
-    optionsOrDomainId?: { time_gte?: string; time_between?: string[]; metadata_filter?: any; domains?: string[]; limit?: number } | string,
+    optionsOrDomainId?: { time_gte?: string; time_between?: string[]; metadata_filter?: any; domains?: string[]; limit?: number; contextSessionId?: string } | string,
     userIdOverride?: string
   ): Promise<VectorSearchResult[]> => {
     let limit = 10;
@@ -503,6 +509,7 @@ export const domainService = {
     let time_gte: string | undefined;
     let time_between: string[] | undefined;
     let metadata_filter: any = {};
+    let contextSessionId: string | undefined;
 
     // 1. Parse Arguments (Handle various call signatures)
     if (typeof limitOrUserId === 'number') {
@@ -512,6 +519,7 @@ export const domainService = {
             time_gte = optionsOrDomainId.time_gte;
             time_between = optionsOrDomainId.time_between;
             metadata_filter = optionsOrDomainId.metadata_filter || {};
+            contextSessionId = optionsOrDomainId.contextSessionId;
         } else if (typeof optionsOrDomainId === 'string') {
             targetDomains = [optionsOrDomainId];
         }
@@ -523,6 +531,7 @@ export const domainService = {
             time_gte = optionsOrDomainId.time_gte;
             time_between = optionsOrDomainId.time_between;
             metadata_filter = optionsOrDomainId.metadata_filter || {};
+            contextSessionId = optionsOrDomainId.contextSessionId;
             // If limit is in options (extended signature support)
             if ((optionsOrDomainId as any).limit) {
                 limit = (optionsOrDomainId as any).limit;
@@ -575,6 +584,20 @@ export const domainService = {
     const results = query ? await vectorService.search(query, limit, searchFilter) : [];
     
     loggerService.debug(`domainService.search: found ${results.length} results`);
+
+    // 4. Cache Filtering (Exclude symbols already in session cache)
+    if (contextSessionId && results.length > 0) {
+        const initialCount = results.length;
+        const cachedSymbols = await symbolCacheService.getSymbols(contextSessionId);
+        const cachedIds = new Set(cachedSymbols.map(s => s.id));
+        
+        const filtered = results.filter(r => !cachedIds.has(r.id));
+        if (filtered.length < initialCount) {
+            loggerService.info(`domainService.search: filtered out ${initialCount - filtered.length} symbols present in session cache ${contextSessionId}`);
+            return filtered;
+        }
+    }
+
     return results;
   },
 
@@ -1061,8 +1084,8 @@ export const domainService = {
   /**
    * Alias for addSymbol
    */
-  upsertSymbol: async (domainId: string, symbol: SymbolDef, userId?: string, isAdmin: boolean = false): Promise<SymbolDef> => {
-    return domainService.addSymbol(domainId, symbol, userId, isAdmin);
+  upsertSymbol: async (domainId: string, symbol: SymbolDef, userId?: string, isAdmin: boolean = false, contextSessionId?: string): Promise<SymbolDef> => {
+    return domainService.addSymbol(domainId, symbol, userId, isAdmin, { contextSessionId });
   },
 
   /**
@@ -1072,21 +1095,23 @@ export const domainService = {
   bulkUpsert: async (
     domainId: string,
     symbols: SymbolDef[],
-    userIdOrOptions?: string | { userId?: string, bypassValidation?: boolean, isAdmin?: boolean }
+    userIdOrOptions?: string | { userId?: string, bypassValidation?: boolean, isAdmin?: boolean, contextSessionId?: string }
   ): Promise<SymbolDef[]> => {
     let userId: string | undefined;
     let isAdmin = false;
+    let contextSessionId: string | undefined;
 
     if (typeof userIdOrOptions === 'string') {
       userId = userIdOrOptions;
     } else if (typeof userIdOrOptions === 'object') {
       userId = userIdOrOptions.userId;
       isAdmin = !!userIdOrOptions.isAdmin;
+      contextSessionId = userIdOrOptions.contextSessionId;
     }
 
     const results: SymbolDef[] = [];
     for (const symbol of symbols) {
-      const result = await domainService.addSymbol(domainId, symbol, userId, isAdmin);
+      const result = await domainService.addSymbol(domainId, symbol, userId, isAdmin, { contextSessionId });
       results.push(result);
     }
     return results;

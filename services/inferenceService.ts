@@ -15,6 +15,7 @@ import { buildSystemMetadataBlock } from "./timeService.js";
 import { settingsService } from "./settingsService.js";
 import { loggerService } from './loggerService.ts';
 import { contextService } from './contextService.js';
+import { symbolCacheService } from './symbolCacheService.js';
 import { contextWindowService } from './contextWindowService.js';
 import { redisService } from './redisService.js';
 
@@ -754,6 +755,9 @@ export async function* sendMessageAndHandleTools(
           ...(attachments.length > 0 ? { attachments } : {})
       },
     }, userId, true);
+
+    // Increment turn count for all symbols in the cache for this session
+    await symbolCacheService.incrementTurns(contextSessionId);
   }
 
   let loops = 0;
