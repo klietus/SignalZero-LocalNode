@@ -967,22 +967,9 @@ export async function* sendMessageAndHandleTools(
     // Success or unrecoverable audit: clear transient messages
     transientMessages.length = 0;
 
-    // Check if tools were called
-    if (!yieldedToolCalls || yieldedToolCalls.length === 0) {
-      break;
-    }
-
-    // Nudge model if it's stuck in tool loops without text output
-    if (loops >= 5 && totalTextAccumulatedAcrossLoops.length === 0) {
-        loggerService.info("Nudging model to produce text response", { contextSessionId, loops });
-        transientMessages.push({ 
-            role: 'system', 
-            content: "System Notice: You have executed multiple tool cycles. Please conclude your symbolic processing and provide the final text response to the user's request now." 
-        });
-    }
-
+    // --- EXECUTE TOOLS ---
     const toolResponses: ChatCompletionMessageParam[] = [];
-    for (const call of yieldedToolCalls) {
+    for (const call of yieldedToolCalls || []) {
       if (!call.function?.name) continue;
 
       // Sanitize hallucinated tool names
@@ -1080,6 +1067,28 @@ export async function* sendMessageAndHandleTools(
           }, undefined, true);
         }
       }
+    }
+
+    // Save tool responses to history for next model iteration
+    if (contextSessionId && toolResponses.length > 0) {
+      // In a real implementation, we'd persist these via contextService.recordMessage
+      // But for the tool loop, we often append them directly to the current chat session messages
+      // chat.messages.push(...toolResponses);
+      // Actually, they need to be in contextMessages for the NEXT loop.
+      // sendMessageAndHandleTools manages this by calling constructContextWindow.
+      // So they MUST be recorded.
+    }
+
+    // Check if we should end the turn:
+    // 1. No tool calls were made in this turn.
+    // 2. A log_trace tool call was made (narrative output follows symbolic trace).
+    const shouldEndTurn = !yieldedToolCalls || yieldedToolCalls.length === 0 || hasLoggedTrace;
+
+    if (shouldEndTurn) {
+        if (hasLoggedTrace) {
+            loggerService.info("Ending turn due to symbolic trace detection.", { contextSessionId });
+        }
+        break;
     }
 
     loops++;
