@@ -947,11 +947,20 @@ export async function* sendMessageAndHandleTools(
         }
     }
 
+    const hasLogTraceInTurn = (yieldedToolCalls || []).some(call => {
+        let name = call.function?.name || "";
+        if (name.endsWith('?')) name = name.slice(0, -1);
+        return name === 'log_trace';
+    });
+
     if (contextSessionId) {
+      // If turn contains log_trace, the text is treated as narrative and separated from the tool turn.
+      const assistantContent = hasLogTraceInTurn ? "" : textAccumulatedInTurn;
+
       await contextService.recordMessage(contextSessionId, {
         id: randomUUID(),
         role: "assistant",
-        content: textAccumulatedInTurn,
+        content: assistantContent,
         timestamp: new Date().toISOString(),
         toolCalls: (nextAssistant as any).tool_calls?.map((call: any) => ({
           id: call.id,
@@ -962,6 +971,18 @@ export async function* sendMessageAndHandleTools(
         metadata: { kind: "assistant_response" },
         correlationId: correlationId
       }, undefined, true);
+
+      // Append narrative as a separate non-tool assistant message
+      if (hasLogTraceInTurn && textAccumulatedInTurn.trim().length > 0) {
+          await contextService.recordMessage(contextSessionId, {
+              id: randomUUID(),
+              role: "assistant",
+              content: textAccumulatedInTurn,
+              timestamp: new Date().toISOString(),
+              metadata: { kind: "assistant_narrative", source: "turn_separation" },
+              correlationId: correlationId
+          }, undefined, true);
+      }
     }
 
     // Success or unrecoverable audit: clear transient messages
@@ -969,7 +990,6 @@ export async function* sendMessageAndHandleTools(
 
     // --- EXECUTE TOOLS ---
     const toolResponses: ChatCompletionMessageParam[] = [];
-    const narrativesToAppend: string[] = [];
 
     for (const call of yieldedToolCalls || []) {
       if (!call.function?.name) continue;
@@ -980,15 +1000,8 @@ export async function* sendMessageAndHandleTools(
           toolName = toolName.slice(0, -1);
       }
 
-      const { data: args, error: parseError } = parseToolArguments(call.function.arguments || "");
-
       if (toolName === 'log_trace') {
           hasLoggedTrace = true;
-          // Extract narrative if present in the trace object
-          if (args?.trace?.narrative) {
-              narrativesToAppend.push(args.trace.narrative);
-              delete args.trace.narrative;
-          }
       }
       if (toolName === 'speak') {
           hasCalledSpeak = true;
@@ -1000,6 +1013,8 @@ export async function* sendMessageAndHandleTools(
       if (SYMBOL_TOOLS.includes(toolName)) {
           hasUsedSymbolTools = true;
       }
+
+      const { data: args, error: parseError } = parseToolArguments(call.function.arguments || "");
 
       if (parseError) {
         const errorPayload = { 
@@ -1084,23 +1099,6 @@ export async function* sendMessageAndHandleTools(
       // Actually, they need to be in contextMessages for the NEXT loop.
       // sendMessageAndHandleTools manages this by calling constructContextWindow.
       // So they MUST be recorded.
-    }
-
-    // Append any extracted narratives from log_trace as a separate assistant turn
-    if (narrativesToAppend.length > 0) {
-        const combinedNarrative = narrativesToAppend.join("\n\n");
-        yield { text: combinedNarrative };
-        
-        if (contextSessionId) {
-            await contextService.recordMessage(contextSessionId, {
-                id: randomUUID(),
-                role: "assistant",
-                content: combinedNarrative,
-                timestamp: new Date().toISOString(),
-                metadata: { kind: "assistant_narrative", source: "log_trace_extraction" },
-                correlationId: correlationId
-            }, undefined, true);
-        }
     }
 
     // Check if we should end the turn:
