@@ -113,41 +113,41 @@ describe('Turn Ending Logic', () => {
         expect(sendMessageStreamMock).toHaveBeenCalledTimes(1);
     });
 
-    it('should continue the loop if no log_trace call is present but other tools are', async () => {
+    it('should extract narrative from log_trace and yield it', async () => {
         const chatState = { messages: [], systemInstruction: 'Instruction', model: 'test-model' };
         const toolExecutor = vi.fn().mockResolvedValue({ status: 'ok' });
 
-        // First turn calls find_symbols (but NO log_trace)
+        // First turn response with log_trace AND narrative
         sendMessageStreamMock.mockResolvedValueOnce({
             stream: (async function* () {
                 yield {
                     text: () => "",
-                    functionCalls: () => [{ name: 'find_symbols', args: { queries: [] } }],
-                    candidates: [{ content: { parts: [{ functionCall: { name: 'find_symbols', args: { queries: [] } } }] } }]
-                };
-            })()
-        });
-
-        // Second turn returns log_trace
-        sendMessageStreamMock.mockResolvedValueOnce({
-            stream: (async function* () {
-                yield {
-                    text: () => "I found it. Logging trace.",
-                    functionCalls: () => [{ name: 'log_trace', args: { activation_path: [] } }],
+                    functionCalls: () => [
+                        { name: 'log_trace', args: { trace: { narrative: "This is the extracted narrative.", activation_path: [] } } }
+                    ],
                     candidates: [{ content: { parts: [
-                        { text: "I found it. Logging trace." },
-                        { functionCall: { name: 'log_trace', args: { activation_path: [] } } }
+                        { functionCall: { name: 'log_trace', args: { trace: { narrative: "This is the extracted narrative.", activation_path: [] } } } }
                     ] } }]
                 };
             })()
         });
 
         const generator = sendMessageAndHandleTools(chatState as any, 'Hello', toolExecutor, 'Instruction', 'sess-1');
-        for await (const _ of generator) {}
+        
+        const results = [];
+        for await (const part of generator) {
+            results.push(part);
+        }
 
-        // Should have called sendMessageStream twice
-        expect(sendMessageStreamMock).toHaveBeenCalledTimes(2);
-        expect(toolExecutor).toHaveBeenCalledWith('find_symbols', expect.anything());
-        expect(toolExecutor).toHaveBeenCalledWith('log_trace', expect.anything());
+        // 1. Check that narrative was yielded
+        expect(results.some(r => r.text === 'This is the extracted narrative.')).toBe(true);
+
+        // 2. Check that log_trace was called WITHOUT narrative
+        expect(toolExecutor).toHaveBeenCalledWith('log_trace', expect.objectContaining({
+            trace: expect.not.objectContaining({ narrative: expect.anything() })
+        }));
+
+        // 3. Check that turn ended
+        expect(sendMessageStreamMock).toHaveBeenCalledTimes(1);
     });
 });
