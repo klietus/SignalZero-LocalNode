@@ -11,6 +11,8 @@ import { redisService } from "./redisService.js";
 import { settingsService } from "./settingsService.ts";
 import { secretManagerService } from "./secretManagerService.ts";
 import { contextService } from "./contextService.js";
+import { symbolCacheService } from "./symbolCacheService.js";
+import { eventBusService, KernelEventType } from "./eventBusService.js";
 import { documentMeaningService } from "./documentMeaningService.js";
 import fs from 'fs';
 import path from 'path';
@@ -58,7 +60,6 @@ const SYMBOL_DATA_SCHEMA = {
                 status: { type: 'string', description: "Current status of the data." },
                 payload: {
                     type: 'object',
-                    additionalProperties: true,
                     description: "Key-value store for arbitrary data."
                 }
             }
@@ -365,7 +366,6 @@ export const toolDeclarations: ChatCompletionTool[] = [
           headers: {
             type: 'object',
             description: 'Optional custom HTTP headers to include in the request. Values must be strings.',
-            additionalProperties: true
           }
         },
         required: ['url']
@@ -385,7 +385,6 @@ export const toolDeclarations: ChatCompletionTool[] = [
           headers: {
             type: 'object',
             description: 'Optional custom HTTP headers.',
-            additionalProperties: true
           },
           body: {
             type: 'string',
@@ -394,7 +393,6 @@ export const toolDeclarations: ChatCompletionTool[] = [
           form_data: {
             type: 'object',
             description: 'Key-value pairs for form submission (application/x-www-form-urlencoded). Mutually exclusive with body.',
-            additionalProperties: true
           }
         },
         required: ['url']
@@ -774,6 +772,11 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
         }
 
         const sanitizedSymbols = resultList.map((item: any) => sanitizeSymbol(item));
+
+        // Load found symbols into cache and emit event for monitor
+        if (contextSessionId && sanitizedSymbols.length > 0) {
+            await symbolCacheService.batchUpsertSymbols(contextSessionId, sanitizedSymbols);
+        }
 
         loggerService.info(`find_symbols returning ${sanitizedSymbols.length} unique symbols across ${queryList.length} queries.`);
 

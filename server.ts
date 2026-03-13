@@ -18,6 +18,8 @@ import { systemPromptService } from './services/systemPromptService.js';
 import { mcpPromptService } from './services/mcpPromptService.js';
 import { fileURLToPath } from 'url';
 import { agentService } from './services/agentService.js';
+import { eventBusService } from './services/eventBusService.js';
+import { symbolCacheService } from './services/symbolCacheService.js';
 import { contextService } from './services/contextService.js';
 import { documentMeaningService } from './services/documentMeaningService.js';
 import { redisService } from './services/redisService.js';
@@ -263,7 +265,7 @@ const requireAuth = async (req: AuthenticatedRequest, res: express.Response, nex
     }
 
     // Check for Session Token
-    const authHeader = req.headers['authorization'] || req.headers['x-auth-token'];
+    const authHeader = req.headers['authorization'] || req.headers['x-auth-token'] || req.query.token;
     const token = typeof authHeader === 'string' ? authHeader.replace('Bearer ', '') : null;
 
     if (token) {
@@ -574,6 +576,27 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
         loggerService.error(`File upload failed`, { error: e });
         res.status(500).json({ error: String(e) });
     }
+});
+
+// Kernel Event Stream (SSE)
+app.get('/api/events/subscribe', (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    // @ts-ignore - flushHeaders might not be in the type but is in the response object
+    if (res.flushHeaders) res.flushHeaders();
+
+    // Send initial connection event
+    res.write(`data: ${JSON.stringify({ type: 'CONNECTED', timestamp: new Date().toISOString() })}\n\n`);
+
+    eventBusService.subscribe(res);
+});
+
+// Cache Fetch Endpoint
+app.get('/api/cache/:sessionId', async (req, res) => {
+    const { sessionId } = req.params;
+    const symbols = await symbolCacheService.getSymbols(sessionId);
+    res.json(symbols);
 });
 
 // Health Check Endpoint

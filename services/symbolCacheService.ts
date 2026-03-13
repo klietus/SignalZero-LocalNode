@@ -2,6 +2,7 @@
 import { redisService } from './redisService.js';
 import { SymbolDef } from '../types.js';
 import { loggerService } from './loggerService.js';
+import { eventBusService, KernelEventType } from './eventBusService.js';
 
 export interface CacheEntry {
     symbol: SymbolDef;
@@ -55,6 +56,43 @@ export class SymbolCacheService {
         };
 
         await redisService.request(['SET', key, JSON.stringify(cache), 'EX', '86400']); // 24h TTL
+
+        // Emit CACHE_LOAD event
+        eventBusService.emit(KernelEventType.CACHE_LOAD, {
+            sessionId,
+            symbolId: symbol.id,
+            symbol: symbol
+        });
+    }
+
+    /**
+     * Add or update multiple symbols in the cache. Resets their turnCount to 0 and lastUsed to now.
+     * Emits a single batched CACHE_LOAD event.
+     */
+    async batchUpsertSymbols(sessionId: string, symbols: SymbolDef[]): Promise<void> {
+        if (!sessionId || symbols.length === 0) return;
+        
+        const key = this.getCacheKey(sessionId);
+        const data = await redisService.request(['GET', key]);
+        const cache: Record<string, CacheEntry> = data ? JSON.parse(data) : {};
+
+        const now = Date.now();
+        for (const symbol of symbols) {
+            cache[symbol.id] = {
+                symbol,
+                turnCount: 0,
+                lastUsed: now
+            };
+        }
+
+        await redisService.request(['SET', key, JSON.stringify(cache), 'EX', '86400']);
+
+        // Emit batched CACHE_LOAD event
+        eventBusService.emit(KernelEventType.CACHE_LOAD, {
+            sessionId,
+            symbolIds: symbols.map(s => s.id),
+            symbols: symbols
+        });
     }
 
     /**
@@ -86,6 +124,7 @@ export class SymbolCacheService {
         const cache: Record<string, CacheEntry> = JSON.parse(data);
         const newCache: Record<string, CacheEntry> = {};
         let evictedCount = 0;
+        const evictedIds: string[] = [];
 
         for (const [id, entry] of Object.entries(cache)) {
             const newTurnCount = entry.turnCount + 1;
@@ -96,6 +135,7 @@ export class SymbolCacheService {
                 };
             } else {
                 evictedCount++;
+                evictedIds.push(id);
             }
         }
 
@@ -107,6 +147,11 @@ export class SymbolCacheService {
 
         if (evictedCount > 0) {
             loggerService.debug(`Evicted ${evictedCount} symbols from cache for session ${sessionId}`);
+            // Emit single CACHE_EVICT event with all IDs
+            eventBusService.emit(KernelEventType.CACHE_EVICT, {
+                sessionId,
+                symbolIds: evictedIds
+            });
         }
     }
 
