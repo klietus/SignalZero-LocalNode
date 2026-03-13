@@ -2,6 +2,7 @@ import { SymbolDef, VectorSearchResult, isUserSpecificDomain } from '../types.js
 import { vectorService } from './vectorService.js';
 import { redisService } from './redisService.js';
 import { symbolCacheService } from './symbolCacheService.js';
+import { eventBusService, KernelEventType } from './eventBusService.js';
 import { loggerService } from './loggerService.js';
 import { currentTimestamp, decodeTimestamp, getBucketKeysFromTimestamps, getDayBucketKey } from './timeService.js';
 import { USER_DOMAIN_TEMPLATE, STATE_DOMAIN_TEMPLATE } from '../symbolic_system/domain_templates.js';
@@ -350,6 +351,7 @@ export const domainService = {
     ensureWritableDomain(domain, domainId, isAdmin, symbol.id, userId);
 
     const existingIndex = domain.symbols.findIndex(s => s.id === symbol.id);
+    const existingSymbol = existingIndex >= 0 ? { ...domain.symbols[existingIndex] } : null;
     const now = currentTimestamp();
     symbol.updated_at = now;
     
@@ -368,6 +370,38 @@ export const domainService = {
     domain.lastUpdated = Date.now();
     await redisService.request(['SET', key, JSON.stringify(domain)]);
     await vectorService.indexSymbol(symbol);
+
+    // Emit SYMBOL_ADD event (always emit on upsert to update properties)
+    eventBusService.emit(KernelEventType.SYMBOL_ADD, {
+        symbolId: symbol.id,
+        domainId,
+        symbol: symbol
+    });
+
+    // DIFFERENTIAL LINK EMISSION
+    const oldLinkIds = new Set(existingSymbol?.linked_patterns?.map(l => l.id) || []);
+    const newLinkIds = new Set(symbol.linked_patterns?.map(l => l.id) || []);
+
+    // 1. Emit LINK_CREATE for new links
+    for (const link of symbol.linked_patterns || []) {
+        if (!oldLinkIds.has(link.id)) {
+            eventBusService.emit(KernelEventType.LINK_CREATE, {
+                sourceId: symbol.id,
+                targetId: link.id,
+                linkType: link.link_type
+            });
+        }
+    }
+
+    // 2. Emit LINK_DELETE for removed links
+    for (const oldId of Array.from(oldLinkIds)) {
+        if (!newLinkIds.has(oldId)) {
+            eventBusService.emit(KernelEventType.LINK_DELETE, {
+                sourceId: symbol.id,
+                targetId: oldId
+            });
+        }
+    }
 
     // Update session symbol cache if session ID provided
     if (_options?.contextSessionId) {
@@ -390,6 +424,14 @@ export const domainService = {
                             link_type: link.link_type,
                             bidirectional: true
                         });
+
+                        // Emit LINK_CREATE event for backlink (target -> source)
+                        eventBusService.emit(KernelEventType.LINK_CREATE, {
+                            sourceId: targetId,
+                            targetId: symbol.id,
+                            linkType: link.link_type
+                        });
+
                         // Save the update, propagating the contextSessionId
                         await domainService.addSymbol(targetSymbol.symbol_domain, targetSymbol, userId, isAdmin, { _bypassBacklink: true, contextSessionId: _options?.contextSessionId });
                     }
@@ -426,6 +468,12 @@ export const domainService = {
 
     await redisService.request(['SET', key, JSON.stringify(domain)]);
     await vectorService.removeSymbol(symbolId, domainId);
+
+    // Emit SYMBOL_DELETE event
+    eventBusService.emit(KernelEventType.SYMBOL_DELETE, {
+        symbolId,
+        domainId
+    });
 
     // Clean up time index entries
     const createdMs = decodeTimestamp(symbol.created_at);

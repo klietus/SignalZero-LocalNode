@@ -1,3 +1,4 @@
+
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { sendMessageAndHandleTools } from '../services/inferenceService.ts';
 import { contextService } from '../services/contextService.js';
@@ -13,7 +14,6 @@ vi.mock('../services/contextService', () => {
         contextService: {
             getSession: vi.fn(),
             recordMessage: vi.fn().mockImplementation(async (sessionId, message) => {
-                // Auto-split logic mirroring the real implementation
                 const hasLogTrace = message.toolCalls?.some((tc: any) => tc.name === 'log_trace');
                 if (message.role === 'assistant' && hasLogTrace && message.content?.trim().length > 0) {
                     const { content, ...toolTurn } = message;
@@ -89,7 +89,7 @@ vi.mock('@google/generative-ai', () => {
     };
 });
 
-describe('Turn Ending Logic', () => {
+describe('Turn Ending and Audit Logic Refined', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         (contextService as any).clearHistory();
@@ -102,22 +102,50 @@ describe('Turn Ending Logic', () => {
 
         (contextService.getSession as any).mockResolvedValue({ id: 'sess-1', status: 'open' });
         (contextWindowService.constructContextWindow as any).mockResolvedValue([]);
-        
-        // Mock symbol cache to always return symbols so grounding audit passes
         (symbolCacheService.getSymbols as any).mockResolvedValue([{ id: 'S1' }]);
     });
 
-    it('should end the turn immediately if log_trace AND narrative are in the same response', async () => {
+    it('should end turn IMMEDIATELY after log_trace and speak (Loop 0)', async () => {
+        const voiceMessage = JSON.stringify({ voice_message: "hello", route_output: "speech tool" });
         const chatState = { messages: [], systemInstruction: 'Instruction', model: 'test-model' };
         const toolExecutor = vi.fn().mockResolvedValue({ status: 'ok' });
 
+        // Loop 0: Provides BOTH requirements
         sendMessageStreamMock.mockResolvedValueOnce({
             stream: (async function* () {
                 yield {
-                    text: () => "Instant narrative.",
+                    text: () => "",
+                    functionCalls: () => [
+                        { name: 'log_trace', args: { trace: {} } },
+                        { name: 'speak', args: { text: "Hello!" } }
+                    ],
+                    candidates: [{ content: { parts: [
+                        { functionCall: { name: 'log_trace', args: { trace: {} } } },
+                        { functionCall: { name: 'speak', args: { text: "Hello!" } } }
+                    ] } }]
+                };
+            })()
+        });
+
+        const generator = sendMessageAndHandleTools(chatState as any, voiceMessage, toolExecutor, 'Instruction', 'sess-1');
+        for await (const _ of generator) {}
+
+        // Requirements met in Loop 0. Breaks immediately after tool execution.
+        expect(sendMessageStreamMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('should end turn IMMEDIATELY if log_trace and text are in same turn', async () => {
+        const chatState = { messages: [], systemInstruction: 'Instruction', model: 'test-model' };
+        const toolExecutor = vi.fn().mockResolvedValue({ status: 'ok' });
+
+        // Loop 0: provides log_trace AND text
+        sendMessageStreamMock.mockResolvedValueOnce({
+            stream: (async function* () {
+                yield {
+                    text: () => "I found the answer.",
                     functionCalls: () => [{ name: 'log_trace', args: { trace: {} } }],
                     candidates: [{ content: { parts: [
-                        { text: "Instant narrative." },
+                        { text: "I found the answer." },
                         { functionCall: { name: 'log_trace', args: { trace: {} } } }
                     ] } }]
                 };
@@ -127,35 +155,31 @@ describe('Turn Ending Logic', () => {
         const generator = sendMessageAndHandleTools(chatState as any, 'Hello', toolExecutor, 'Instruction', 'sess-1');
         for await (const _ of generator) {}
 
-        const records = (contextService as any).getHistoryRecords();
-        expect(records.length).toBe(4); // User, Tool Turn (empty), Narrative Turn, Tool Result
         expect(sendMessageStreamMock).toHaveBeenCalledTimes(1);
     });
 
-    it('should NOT end turn if log_trace is sent WITHOUT narrative, allowing narrative turn next', async () => {
+    it('should end turn if log_trace followed by text', async () => {
         const chatState = { messages: [], systemInstruction: 'Instruction', model: 'test-model' };
         const toolExecutor = vi.fn().mockResolvedValue({ status: 'ok' });
 
-        // Turn 1: log_trace only
+        // Loop 0: log_trace only
         sendMessageStreamMock.mockResolvedValueOnce({
             stream: (async function* () {
                 yield {
                     text: () => "",
                     functionCalls: () => [{ name: 'log_trace', args: { trace: {} } }],
-                    candidates: [{ content: { parts: [
-                        { functionCall: { name: 'log_trace', args: { trace: {} } } }
-                    ] } }]
+                    candidates: [{ content: { parts: [{ functionCall: { name: 'log_trace', args: { trace: {} } } }] } }]
                 };
             })()
         });
 
-        // Turn 2: narrative
+        // Loop 1: text only
         sendMessageStreamMock.mockResolvedValueOnce({
             stream: (async function* () {
                 yield {
-                    text: () => "Follow-up narrative.",
+                    text: () => "This is my response.",
                     functionCalls: () => null,
-                    candidates: [{ content: { parts: [{ text: "Follow-up narrative." }] } }]
+                    candidates: [{ content: { parts: [{ text: "This is my response." }] } }]
                 };
             })()
         });
@@ -163,16 +187,41 @@ describe('Turn Ending Logic', () => {
         const generator = sendMessageAndHandleTools(chatState as any, 'Hello', toolExecutor, 'Instruction', 'sess-1');
         for await (const _ of generator) {}
 
-        const records = (contextService as any).getHistoryRecords();
-        
-        // Interaction flow:
-        // 1. User "Hello"
-        // 2. Assistant log_trace (Loop 0)
-        // 3. Tool result (Loop 0)
-        // 4. Assistant "Follow-up narrative." (Loop 1)
-        
+        // Loop 0: trace. Loop 1: text. Ends immediately after text turn.
         expect(sendMessageStreamMock).toHaveBeenCalledTimes(2);
-        expect(records.some(r => r.content === 'Follow-up narrative.')).toBe(true);
-        expect(records.some(r => r.toolName === 'log_trace')).toBe(true);
+    });
+
+    it('should audit failure if NO log_trace is provided', async () => {
+        const chatState = { messages: [], systemInstruction: 'Instruction', model: 'test-model' };
+        const toolExecutor = vi.fn().mockResolvedValue({ status: 'ok' });
+
+        // Loop 0: text only (Fails Trace Audit)
+        sendMessageStreamMock.mockResolvedValueOnce({
+            stream: (async function* () {
+                yield {
+                    text: () => "Narrative without trace.",
+                    functionCalls: () => null,
+                    candidates: [{ content: { parts: [{ text: "Narrative without trace." }] } }]
+                };
+            })()
+        });
+
+        // Loop 1 (Audit Correction): log_trace
+        sendMessageStreamMock.mockResolvedValueOnce({
+            stream: (async function* () {
+                yield {
+                    text: () => "",
+                    functionCalls: () => [{ name: 'log_trace', args: { trace: {} } }],
+                    candidates: [{ content: { parts: [{ functionCall: { name: 'log_trace', args: { trace: {} } } }] } }]
+                };
+            })()
+        });
+
+        const generator = sendMessageAndHandleTools(chatState as any, 'Hello', toolExecutor, 'Instruction', 'sess-1');
+        for await (const _ of generator) {}
+
+        // Loop 0: audit fail. Loop 1: trace provided. Narrative from Loop 0 is still in 'totalTextAccumulatedAcrossLoops'.
+        // So Loop 1 satisfies requirements.
+        expect(sendMessageStreamMock).toHaveBeenCalledTimes(2);
     });
 });

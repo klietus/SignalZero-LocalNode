@@ -16,6 +16,7 @@ import { settingsService } from "./settingsService.js";
 import { loggerService } from './loggerService.ts';
 import { contextService } from './contextService.js';
 import { symbolCacheService } from './symbolCacheService.js';
+import { tentativeLinkService } from './tentativeLinkService.js';
 import { contextWindowService } from './contextWindowService.js';
 import { redisService } from './redisService.js';
 
@@ -512,7 +513,7 @@ const _streamAssistantResponseInternal = async function* (
     
     // If the message we just popped is from model, it means the LAST role was model.
     // Gemini requires the last message in sendMessage to be from 'user'.
-    if (messageToSend.role === 'model') {
+    if (messageToSend?.role === 'model') {
         history.push(messageToSend);
         messageToSend = { role: 'user', parts: [{ text: 'Continue' }] };
     }
@@ -758,6 +759,8 @@ export async function* sendMessageAndHandleTools(
 
     // Increment turn count for all symbols in the cache for this session
     await symbolCacheService.incrementTurns(contextSessionId);
+    // Increment age for tentative links
+    await tentativeLinkService.incrementTurns();
   }
 
   let loops = 0;
@@ -778,14 +781,18 @@ export async function* sendMessageAndHandleTools(
       }
   } catch (e) {
       // Not a JSON message, normal text source
+      loggerService.debug("Message is not JSON, treating as standard text source.", { contextSessionId, snippet: message.slice(0, 50) });
   }
 
   let auditRetries = 0;
   const ENABLE_SYSTEM_AUDIT = true;
-  const MAX_AUDIT_RETRIES = 3; // Increased to accommodate potential double correction
+  const MAX_AUDIT_RETRIES = 3; 
   const transientMessages: ChatCompletionMessageParam[] = [];
+  let yieldedToolCalls: ChatCompletionMessageToolCall[] | undefined;
 
   while (loops < MAX_TOOL_LOOPS) {
+    yieldedToolCalls = undefined;
+    
     if (contextSessionId) {
         const isCancelled = await contextService.isCancelled(contextSessionId);
         if (isCancelled) {
@@ -804,7 +811,6 @@ export async function* sendMessageAndHandleTools(
 
     const MAX_RETRIES = 3;
     let retries = 0;
-    let yieldedToolCalls: ChatCompletionMessageToolCall[] | undefined;
     let nextAssistant: ChatCompletionMessageParam | null = null;
     let textAccumulatedInTurn = "";
 
@@ -896,54 +902,74 @@ export async function* sendMessageAndHandleTools(
 
     // --- AUDIT INTERCEPTOR ---
     let auditTriggered = false;
-    if (ENABLE_SYSTEM_AUDIT && contextSessionId && (!yieldedToolCalls || yieldedToolCalls.length === 0) && textAccumulatedInTurn.trim().length > 0) {
-        let auditMessage = "";
+    let auditMessage = "";
+
+    if (ENABLE_SYSTEM_AUDIT && contextSessionId) {
+        const currentToolNames = new Set((yieldedToolCalls || []).map(tc => {
+            let name = tc.function?.name || "";
+            if (name.endsWith('?')) name = name.slice(0, -1);
+            return name;
+        }));
+
+        const isCallingGroundingThisTurn = currentToolNames.has('find_symbols') || currentToolNames.has('load_domains');
+        const isCallingTraceThisTurn = currentToolNames.has('log_trace');
+        const isCallingSpeakThisTurn = currentToolNames.has('speak');
+        const isEndingTurn = !yieldedToolCalls || yieldedToolCalls.length === 0;
+
+        // Determine if there is actual response output (text or voice)
+        const hasNarrativeOutput = textAccumulatedInTurn.trim().length > 0 || totalTextAccumulatedAcrossLoops.trim().length > 0;
+        const hasVoiceOutput = hasCalledSpeak || isCallingSpeakThisTurn;
 
         // Check 1: Missing Grounding Operation
-        // Only fire if the model hasn't called a grounding tool THIS turn AND the symbol cache is empty
         const cachedSymbols = await symbolCacheService.getSymbols(contextSessionId);
         const hasExistingCache = cachedSymbols.length > 0;
 
-        if (!hasCalledGroundingTool && !hasExistingCache) {
+        if (!hasCalledGroundingTool && !isCallingGroundingThisTurn && !hasExistingCache) {
             auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You attempted to respond without exploring the symbolic context. You must execute `find_symbols` or `load_domains` to ground your response in the active symbolic context. Even if you believe you know the symbols, you must verify them via a query.  Do not acknowledge this message or repeat previous information.  Emit a correction if it would have changed with the grounding.\n";
             auditTriggered = true;
         }
 
-        // Check 2: Missing Trace (Only if search passed, or append to it)
-        // If we have an existing cache, we still need a trace for the new response.
-        if (!hasLoggedTrace) {
-            auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You generated a narrative response but failed to log a symbolic trace. You must call `log_trace` to bind the proceeding narrative to retrieved symbols from the symbol store.  This trace must be comprehensive and contain all symbols used in the response.  This audit message is not a driver for symbolic analysis.\n";
+        // Check 2: Missing Trace (ALWAYS REQUIRED for any response)
+        if (!hasLoggedTrace && !isCallingTraceThisTurn) {
+            auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You generated a response but failed to log a symbolic trace. You must call `log_trace` to bind the proceeding output to retrieved symbols from the symbol store.  This trace must be comprehensive and contain all symbols used in the response.  This audit message is not a driver for symbolic analysis.\n";
             auditTriggered = true;
         }
 
         // Check 3: Voice source must use speak tool
-        if (isVoiceSource && !hasCalledSpeak) {
+        if (isVoiceSource && !hasCalledSpeak && !isCallingSpeakThisTurn) {
             auditMessage += "⚠️ SYSTEM AUDIT FAILURE: This request originated from a voice source. You MUST use the `speak` tool to provide your response in addition to any text output. Do not acknowledge this message.\n";
             auditTriggered = true;
         }
 
-        if (auditTriggered) {
-            if (auditRetries < MAX_AUDIT_RETRIES) {
-                loggerService.warn("System Audit Failure: Model missing required tool calls. Forcing retry.", { contextSessionId, auditRetries, hasUsedSymbolTools, hasLoggedTrace });
-                
-                const finalAuditMessage = auditMessage + "Retry immediately by calling the required tools.  Do not repeat tool calls that were previously successful in this turn.";
+        // Check 4: Non-voice source must use text (Only fire if we are actually ending the turn)
+        if (isEndingTurn && !isVoiceSource && !hasNarrativeOutput) {
+            auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You provided tool calls but failed to generate a narrative response for the user. Non-voice interactions require a text response. Please provide your narrative output now.\n";
+            auditTriggered = true;
+        }
+    }
 
-                // DO NOT SAVE TO CONTEXT SERVICE - Push to transient messages for the next iteration
-                transientMessages.push(nextAssistant!);
-                transientMessages.push({
-                    role: "user",
-                    content: `[SYSTEM AUDIT] ${finalAuditMessage}`
-                });
+    if (auditTriggered) {
+        if (auditRetries < MAX_AUDIT_RETRIES) {
+            loggerService.warn("System Audit Failure: Model missing required tool calls. Forcing retry.", { contextSessionId, auditRetries, hasUsedSymbolTools, hasLoggedTrace });
+            
+            const finalAuditMessage = auditMessage + "Retry immediately by calling the required tools.  Do not repeat tool calls that were previously successful in this turn.";
 
-                yield { text: "\n\n> *[System Audit: Enforcing Symbolic Integrity - Retrying]*\n\n" };
+            // DO NOT SAVE TO CONTEXT SERVICE - Push to transient messages for the next iteration
+            transientMessages.push(nextAssistant!);
+            transientMessages.push({
+                role: "user",
+                content: `[SYSTEM AUDIT] ${finalAuditMessage}`
+            });
 
-                previousTurnText = ""; // Reset deduplication tracking since this turn was rejected
-                auditRetries++;
-                loops++;
-                continue; 
-            } else {
-                loggerService.error("System Audit: Max retries reached. Proceeding despite violations.", { contextSessionId });
-            }
+            yield { text: "\n\n> *[System Audit: Enforcing Symbolic Integrity - Retrying]*\n\n" };
+
+            previousTurnText = ""; // Reset deduplication tracking since this turn was rejected
+            auditRetries++;
+            loops++;
+            continue; 
+ 
+        } else {
+            loggerService.error("System Audit: Max retries reached. Proceeding despite violations.", { contextSessionId });
         }
     }
 
@@ -1080,18 +1106,32 @@ export async function* sendMessageAndHandleTools(
       // So they MUST be recorded.
     }
 
-    // Check if we should end the turn:
-    // 1. No tool calls were made in this turn.
-    // 2. A log_trace tool call was made AND we have narrative text (narrative output follows symbolic trace).
-    const shouldEndTurn = !yieldedToolCalls || yieldedToolCalls.length === 0 || (hasLoggedTrace && textAccumulatedInTurn.trim().length > 0);
-
-    if (shouldEndTurn) {
-        if (hasLoggedTrace) {
-            loggerService.info("Ending turn due to symbolic trace and narrative completion.", { contextSessionId });
-        }
+    // Check if we should end the turn IMMEDIATELY
+    // We end if:
+    // 1. We have a trace (hasLoggedTrace).
+    // 2. We have a response (text or speak).
+    // 3. No audit was triggered.
+    // 4. IMPORTANT: The current iteration must have contributed something to the requirements
+    //    OR we are at the end of a tool cycle.
+    const hasResponse = totalTextAccumulatedAcrossLoops.trim().length > 0 || hasCalledSpeak;
+    
+    if (hasLoggedTrace && hasResponse && !auditTriggered) {
+        // If the current iteration only produced tools (like a trace correction), 
+        // we might still need a final narrative turn if the model hasn't spoken yet.
+        // But usually log_trace + text happens in one go.
+        loggerService.info("Ending turn: Symbolic requirements and response verified.", { 
+            contextSessionId, 
+            loops, 
+            hasCalledSpeak, 
+            textLength: totalTextAccumulatedAcrossLoops.length 
+        });
         break;
     }
 
+    // Reset yieldedToolCalls for next cycle
+    yieldedToolCalls = undefined;
+
+    // Loop increment
     loops++;
   }
 

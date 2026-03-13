@@ -3,6 +3,8 @@ import { TraceData } from '../types.js';
 import { currentTimestamp, decodeTimestamp, getDayBucketKey } from './timeService.js';
 import { redisService } from './redisService.js';
 import { symbolCacheService } from './symbolCacheService.js';
+import { tentativeLinkService } from './tentativeLinkService.js';
+import { eventBusService, KernelEventType } from './eventBusService.js';
 
 type TraceListener = (traces: TraceData[]) => void;
 
@@ -26,6 +28,14 @@ class TraceService {
 
     // Persist to Redis
     await redisService.request(['SET', `sz:trace:${normalizedId}`, JSON.stringify(normalizedTrace), 'EX', '604800']); // 7 day TTL
+
+    // Emit TRACE_GENERATE event
+    eventBusService.emit(KernelEventType.TRACE_GENERATE, {
+        trace: normalizedTrace
+    });
+
+    // Process potential tentative links from the activation path
+    await tentativeLinkService.processTrace(normalizedTrace.activation_path || [], normalizedTrace.userId);
 
     if (normalizedTrace.sessionId) {
         await redisService.request(['SADD', `sz:session_traces:${normalizedTrace.sessionId}`, normalizedTrace.id]);
