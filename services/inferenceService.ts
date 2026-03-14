@@ -39,49 +39,49 @@ export const getClient = async () => {
   if (provider === 'openai') effectiveEndpoint = 'https://api.openai.com/v1';
   if (provider === 'kimi2') effectiveEndpoint = 'https://api.moonshot.ai/v1';
 
-  loggerService.info(`getClient called`, { 
-      provider, 
-      effectiveEndpoint,
-      originalEndpoint: endpoint,
-      hasApiKey: !!apiKey, 
-      apiKeyPreview: apiKey ? `${apiKey.slice(0, 4)}...${apiKey.slice(-4)}` : 'none' 
+  loggerService.info(`getClient called`, {
+    provider,
+    effectiveEndpoint,
+    originalEndpoint: endpoint,
+    hasApiKey: !!apiKey,
+    apiKeyPreview: apiKey ? `${apiKey.slice(0, 4)}...${apiKey.slice(-4)}` : 'none'
   });
-  
+
   if (provider === 'openai') {
-      return new OpenAI({
-        baseURL: 'https://api.openai.com/v1',
-        apiKey: apiKey,
-      });
+    return new OpenAI({
+      baseURL: 'https://api.openai.com/v1',
+      apiKey: apiKey,
+    });
   }
 
   if (provider === 'kimi2') {
-      loggerService.info("Initializing Kimi/Moonshot Client", { baseURL: 'https://api.moonshot.ai/v1' });
-      return new OpenAI({
-        baseURL: 'https://api.moonshot.ai/v1',
-        apiKey: apiKey ? apiKey.trim() : apiKey,
-        // @ts-ignore
-        fetch: async (url: any, init: any = {}) => {
-            // Normalize headers
-            const headers = init.headers || {};
-            let authHeader = headers['Authorization'] || headers['authorization'];
-            
-            loggerService.info("Kimi Request Debug", { 
-                url: url.toString(),
-                hasAuthHeader: !!authHeader,
-                authHeaderPreview: authHeader ? authHeader.substring(0, 20) + '...' : 'MISSING',
-                method: init.method
-            });
+    loggerService.info("Initializing Kimi/Moonshot Client", { baseURL: 'https://api.moonshot.ai/v1' });
+    return new OpenAI({
+      baseURL: 'https://api.moonshot.ai/v1',
+      apiKey: apiKey ? apiKey.trim() : apiKey,
+      // @ts-ignore
+      fetch: async (url: any, init: any = {}) => {
+        // Normalize headers
+        const headers = init.headers || {};
+        let authHeader = headers['Authorization'] || headers['authorization'];
 
-            // Fallback: If missing, manually inject (Safe-guard)
-            if (!authHeader && apiKey) {
-                 loggerService.warn("Injecting missing Authorization header for Kimi");
-                 init.headers = { ...headers, 'Authorization': `Bearer ${apiKey}` };
-            }
+        loggerService.info("Kimi Request Debug", {
+          url: url.toString(),
+          hasAuthHeader: !!authHeader,
+          authHeaderPreview: authHeader ? authHeader.substring(0, 20) + '...' : 'MISSING',
+          method: init.method
+        });
 
-            // @ts-ignore
-            return fetch(url, init);
+        // Fallback: If missing, manually inject (Safe-guard)
+        if (!authHeader && apiKey) {
+          loggerService.warn("Injecting missing Authorization header for Kimi");
+          init.headers = { ...headers, 'Authorization': `Bearer ${apiKey}` };
         }
-      });
+
+        // @ts-ignore
+        return fetch(url, init);
+      }
+    });
   }
 
   const localApiKey = settingsService.getApiKey() || "lm-studio";
@@ -98,23 +98,23 @@ export const getGeminiClient = async () => {
 
 const cleanGeminiSchema = (schema: any): any => {
   if (!schema || typeof schema !== 'object') return schema;
-  
+
   if (Array.isArray(schema)) {
-      return schema.map(cleanGeminiSchema);
+    return schema.map(cleanGeminiSchema);
   }
 
   const { additionalProperties, ...rest } = schema;
   const cleaned = { ...rest };
 
   if (cleaned.properties) {
-      cleaned.properties = {};
-      for (const [key, val] of Object.entries(schema.properties)) {
-          cleaned.properties[key] = cleanGeminiSchema(val);
-      }
+    cleaned.properties = {};
+    for (const [key, val] of Object.entries(schema.properties)) {
+      cleaned.properties[key] = cleanGeminiSchema(val);
+    }
   }
 
   if (cleaned.items) {
-      cleaned.items = cleanGeminiSchema(cleaned.items);
+    cleaned.items = cleanGeminiSchema(cleaned.items);
   }
 
   return cleaned;
@@ -193,9 +193,9 @@ const parseToolArguments = (args: string): { data: any; error?: string } => {
   } catch (error: any) {
     const message = error.message || String(error);
     loggerService.warn("Failed to parse tool arguments", { args, error: message });
-    return { 
-      data: {}, 
-      error: `JSON Parse Error: ${message}. Ensure you are providing a valid JSON object matching the tool's schema.` 
+    return {
+      data: {},
+      error: `JSON Parse Error: ${message}. Ensure you are providing a valid JSON object matching the tool's schema.`
     };
   }
 };
@@ -237,7 +237,7 @@ export const resetChatSession = (contextSessionId?: string) => {
 export const createFreshChatSession = async (systemInstruction: string, contextSessionId?: string, model?: string) => {
   const session = await createChatSession(systemInstruction);
   if (model) {
-      session.model = model;
+    session.model = model;
   }
   if (contextSessionId) {
     chatSessions.set(contextSessionId, session);
@@ -298,10 +298,10 @@ export const generateGapSynthesis = async (
 
   const settings = await settingsService.getInferenceSettings();
   if (settings.provider === 'gemini') {
-      const client = await getGeminiClient();
-      const model = client.getGenerativeModel({ model: settings.model });
-      const result = await model.generateContent(prompt);
-      return result.response.text();
+    const client = await getGeminiClient();
+    const model = client.getGenerativeModel({ model: settings.model });
+    const result = await model.generateContent(prompt);
+    return result.response.text();
   }
 
   const client = await getClient();
@@ -319,32 +319,32 @@ export const normalizeMessages = (messages: ChatCompletionMessageParam[]): ChatC
 
   const normalized: ChatCompletionMessageParam[] = [];
   let systemContent = "";
-  
+
   // 1. Collect all system messages and merge them
   const otherMessages = messages.filter(m => {
-      if (m.role === 'system') {
-          if (typeof m.content === 'string') {
-              systemContent += (systemContent ? "\n\n" : "") + m.content;
-          }
-          return false;
+    if (m.role === 'system') {
+      if (typeof m.content === 'string') {
+        systemContent += (systemContent ? "\n\n" : "") + m.content;
       }
-      return true;
+      return false;
+    }
+    return true;
   });
 
   if (systemContent) {
-      normalized.push({ role: 'system', content: systemContent });
+    normalized.push({ role: 'system', content: systemContent });
   }
 
   // 2. Merge consecutive messages with the same role
   for (const msg of otherMessages) {
-      const last = normalized[normalized.length - 1];
-      if (last && last.role === msg.role && last.role !== 'tool' && !last.tool_calls && !msg.tool_calls) {
-          if (typeof last.content === 'string' && typeof msg.content === 'string') {
-              last.content += "\n\n" + msg.content;
-              continue;
-          }
+    const last = normalized[normalized.length - 1];
+    if (last && last.role === msg.role && last.role !== 'tool' && !last.tool_calls && !msg.tool_calls) {
+      if (typeof last.content === 'string' && typeof msg.content === 'string') {
+        last.content += "\n\n" + msg.content;
+        continue;
       }
-      normalized.push(msg);
+    }
+    normalized.push(msg);
   }
 
   return normalized;
@@ -359,20 +359,20 @@ const streamAssistantResponse = async function* (
   toolCalls?: ChatCompletionMessageToolCall[];
   assistantMessage?: ChatCompletionMessageParam;
 }> {
-    try {
-        const normalized = normalizeMessages(messages);
-        for await (const chunk of _streamAssistantResponseInternal(normalized, model)) {
-            yield chunk;
-        }
-    } catch (error: any) {
-        loggerService.error("AI Provider Error (Stream)", { 
-            model, 
-            error: error.message || String(error),
-            type: error.constructor.name,
-            stack: error.stack
-        });
-        throw error; // Re-throw to be handled by caller
+  try {
+    const normalized = normalizeMessages(messages);
+    for await (const chunk of _streamAssistantResponseInternal(normalized, model)) {
+      yield chunk;
     }
+  } catch (error: any) {
+    loggerService.error("AI Provider Error (Stream)", {
+      model,
+      error: error.message || String(error),
+      type: error.constructor.name,
+      stack: error.stack
+    });
+    throw error; // Re-throw to be handled by caller
+  }
 };
 
 const _streamAssistantResponseInternal = async function* (
@@ -384,154 +384,167 @@ const _streamAssistantResponseInternal = async function* (
   assistantMessage?: ChatCompletionMessageParam;
 }> {
   const settings = await settingsService.getInferenceSettings();
-  
+
   if (settings.provider === 'gemini') {
-    loggerService.info("Gemini Request Debug: Starting", { 
-        model, 
-        toolCount: toolDeclarations.length,
-        messageCount: messages.length 
+    loggerService.info("Gemini Request Debug: Starting", {
+      model,
+      toolCount: toolDeclarations.length,
+      messageCount: messages.length
     });
-    
+
     loggerService.debug("Gemini Request: Incoming message roles", {
-        roles: messages.map(m => m.role)
+      roles: messages.map(m => m.role)
     });
 
     const client = await getGeminiClient();
     const geminiTools = toGeminiTools(toolDeclarations);
-    
+
     // Log first few tool names
-    loggerService.debug("Gemini Tools Sample:", { 
-        tools: geminiTools[0].functionDeclarations.slice(0, 3).map(t => t.name) 
+    loggerService.debug("Gemini Tools Sample:", {
+      tools: geminiTools[0].functionDeclarations.slice(0, 3).map(t => t.name)
     });
 
+    const isGemini3 = model.includes('gemini-3');
+
     const geminiModel = client.getGenerativeModel({
-        model: model,
-        tools: geminiTools
-    });
-    
+      model: model,
+      tools: geminiTools
+    }, {
+      // Gemini 3+ Thinking Configuration
+      ...(isGemini3 ? {
+        thinkingConfig: {
+          include_thought: false,
+          thinking_level: 'high'
+        }
+      } : {})
+    } as any);
+
     const systemMessage = messages.find(m => m.role === 'system');
     const history: any[] = [];
     let lastRole = '';
     const downgradedToolCallIds = new Set<string>();
 
     for (const m of messages) {
-        loggerService.debug(`Gemini Conversion: Processing message role=${m.role}`, { contentSnippet: typeof m.content === 'string' ? m.content.slice(0, 50) : 'none' });
-        
-        if (m.role === 'system') continue;
+      loggerService.debug(`Gemini Conversion: Processing message role=${m.role}`, { contentSnippet: typeof m.content === 'string' ? m.content.slice(0, 50) : 'none' });
 
-        if (m.role === 'user') {
-            // Gemini history cannot have two consecutive user messages
-            if (lastRole === 'user') {
-                const lastMsg = history[history.length - 1];
-                lastMsg.parts[0].text += `\n\n${typeof m.content === 'string' ? m.content : ''}`;
-            } else {
-                history.push({ role: 'user', parts: [{ text: typeof m.content === 'string' ? m.content : '' }] });
-                lastRole = 'user';
-            }
-        } else if (m.role === 'assistant') {
-             const parts: any[] = [];
-             if (m.content) parts.push({ text: m.content });
-             
-             const isGemini3 = model.includes('gemini-3');
+      if (m.role === 'system') continue;
 
-             if (m.tool_calls) {
-                 m.tool_calls.forEach(tc => {
-                     let useFunctionCall = true;
-                     const storedSignature = (tc as any).thought_signature;
-
-                     if (isGemini3) {
-                         if (!storedSignature) {
-                             useFunctionCall = false;
-                             downgradedToolCallIds.add(tc.id);
-                         }
-                     }
-
-                     if (useFunctionCall) {
-                         const part: any = {
-                             functionCall: {
-                                 name: tc.function.name,
-                                 args: JSON.parse(tc.function.arguments)
-                             }
-                         };
-                         if (isGemini3 && storedSignature) {
-                             part.thought_signature = storedSignature;
-                         } else if (isGemini3) {
-                             const rawId = tc.id || randomUUID();
-                             part.thought_signature = Buffer.from(rawId).toString('base64');
-                         }
-                         parts.push(part);
-                     } else {
-                         parts.push({ 
-                             text: `[System Log: Model executed tool '${tc.function.name}' with arguments: ${tc.function.arguments}]` 
-                         });
-                     }
-                 });
-             }
-             
-             // Gemini history cannot have two consecutive model messages
-             if (lastRole === 'model') {
-                 const lastMsg = history[history.length - 1];
-                 lastMsg.parts.push(...parts);
-             } else {
-                 history.push({ role: 'model', parts });
-                 lastRole = 'model';
-             }
-        } else if (m.role === 'tool') {
-             let toolName = "unknown_tool";
-             const assistantMsg = messages.find(msg => 
-                 msg.role === 'assistant' && 
-                 msg.tool_calls?.some(tc => tc.id === m.tool_call_id)
-             );
-             if (assistantMsg && assistantMsg.role === 'assistant' && assistantMsg.tool_calls) {
-                 const tc = assistantMsg.tool_calls.find(c => c.id === m.tool_call_id);
-                 if (tc) toolName = tc.function.name;
-             }
-
-             const part: any = downgradedToolCallIds.has(m.tool_call_id) 
-                ? { text: `[System Log: Tool '${toolName}' returned result: ${m.content}]` }
-                : { functionResponse: { name: toolName, response: { result: m.content } } };
-
-             if (lastRole === 'function') {
-                 const lastMsg = history[history.length - 1];
-                 lastMsg.parts.push(part);
-             } else {
-                 history.push({
-                     role: 'function', // Using 'function' role for tool responses
-                     parts: [part]
-                 });
-                 lastRole = 'function';
-             }
+      if (m.role === 'user') {
+        // Gemini history cannot have two consecutive user messages
+        if (lastRole === 'user') {
+          const lastMsg = history[history.length - 1];
+          lastMsg.parts[0].text += `\n\n${typeof m.content === 'string' ? m.content : ''}`;
+        } else {
+          history.push({ role: 'user', parts: [{ text: typeof m.content === 'string' ? m.content : '' }] });
+          lastRole = 'user';
         }
+      } else if (m.role === 'assistant') {
+        const parts: any[] = [];
+        if (m.content) parts.push({ text: m.content });
+
+        const isGemini3 = model.includes('gemini-3');
+
+        if (m.tool_calls) {
+          m.tool_calls.forEach(tc => {
+            let useFunctionCall = true;
+            const storedSignature = (tc as any).thought_signature;
+
+            if (isGemini3) {
+              if (!storedSignature) {
+                useFunctionCall = false;
+                downgradedToolCallIds.add(tc.id);
+              }
+            }
+
+            if (useFunctionCall) {
+              const part: any = {
+                functionCall: {
+                  name: tc.function.name,
+                  args: JSON.parse(tc.function.arguments)
+                }
+              };
+              if (isGemini3 && storedSignature) {
+                part.thought_signature = storedSignature;
+              } else if (isGemini3) {
+                const rawId = tc.id || randomUUID();
+                part.thought_signature = Buffer.from(rawId).toString('base64');
+              }
+              parts.push(part);
+            } else {
+              parts.push({
+                text: `[System Log: Model executed tool '${tc.function.name}' with arguments: ${tc.function.arguments}]`
+              });
+            }
+          });
+        }
+
+        // Gemini history cannot have two consecutive model messages
+        if (lastRole === 'model') {
+          const lastMsg = history[history.length - 1];
+          lastMsg.parts.push(...parts);
+        } else {
+          history.push({ role: 'model', parts });
+          lastRole = 'model';
+        }
+      } else if (m.role === 'tool') {
+        let toolName = "unknown_tool";
+        const assistantMsg = messages.find(msg =>
+          msg.role === 'assistant' &&
+          msg.tool_calls?.some(tc => tc.id === m.tool_call_id)
+        );
+        if (assistantMsg && assistantMsg.role === 'assistant' && assistantMsg.tool_calls) {
+          const tc = assistantMsg.tool_calls.find(c => c.id === m.tool_call_id);
+          if (tc) toolName = tc.function.name;
+        }
+
+        const isDowngraded = downgradedToolCallIds.has(m.tool_call_id);
+        const part: any = isDowngraded
+          ? { text: `[System Log: Tool '${toolName}' returned result: ${m.content}]` }
+          : { functionResponse: { name: toolName, response: { result: m.content } } };
+
+        const role = isDowngraded ? 'user' : 'function';
+
+        if (lastRole === role) {
+          const lastMsg = history[history.length - 1];
+          lastMsg.parts.push(part);
+        } else {
+          history.push({
+            role: role,
+            parts: [part]
+          });
+          lastRole = role;
+        }
+      }
     }
 
     // Ensure we have at least one message to send, and it must be from user
     if (history.length === 0) {
-        history.push({ role: 'user', parts: [{ text: 'Hello' }] });
+      history.push({ role: 'user', parts: [{ text: 'Hello' }] });
     }
 
     let messageToSend = history.pop();
-    
+
     // If the message we just popped is from model, it means the LAST role was model.
     // Gemini requires the last message in sendMessage to be from 'user'.
     if (messageToSend?.role === 'model') {
-        history.push(messageToSend);
-        messageToSend = { role: 'user', parts: [{ text: 'Continue' }] };
+      history.push(messageToSend);
+      messageToSend = { role: 'user', parts: [{ text: 'Continue' }] };
     }
 
-    loggerService.debug("Gemini Request Full History:", { 
-        historyCount: history.length,
-        messageToSendParts: messageToSend.parts.length,
-        systemInstruction: systemMessage?.content ? (systemMessage.content as string).slice(0, 100) + '...' : 'none'
+    loggerService.debug("Gemini Request Full History:", {
+      historyCount: history.length,
+      messageToSendParts: messageToSend.parts.length,
+      systemInstruction: systemMessage?.content ? (systemMessage.content as string).slice(0, 100) + '...' : 'none'
     });
 
     const chatSession = geminiModel.startChat({
-        history: history,
-        systemInstruction: systemMessage?.content ? { role: 'system', parts: [{ text: systemMessage.content as string }] } : undefined
+      history: history,
+      systemInstruction: systemMessage?.content ? { role: 'system', parts: [{ text: systemMessage.content as string }] } : undefined
     });
-    
-    loggerService.debug("Gemini: Sending message stream", { 
-        partsCount: messageToSend.parts.length,
-        lastMessage: JSON.stringify(messageToSend.parts).slice(0, 200) 
+
+    loggerService.debug("Gemini: Sending message stream", {
+      partsCount: messageToSend.parts.length,
+      lastMessage: JSON.stringify(messageToSend.parts).slice(0, 200)
     });
     const result = await chatSession.sendMessageStream(messageToSend.parts);
     let textAccumulator = "";
@@ -539,59 +552,59 @@ const _streamAssistantResponseInternal = async function* (
 
     let chunkCount = 0;
     for await (const chunk of result.stream) {
-          chunkCount++;
-          let text = "";
-          try {
-              text = chunk.text(); 
-          } catch (e) {
-              // chunk.text() might throw if it's only function calls
+      chunkCount++;
+      let text = "";
+      try {
+        text = chunk.text();
+      } catch (e) {
+        // chunk.text() might throw if it's only function calls
+      }
+
+      if (text) {
+        textAccumulator += text;
+        yield { text };
+      }
+
+      const candidate = chunk.candidates?.[0];
+      const parts = candidate?.content?.parts;
+
+      const calls = chunk.functionCalls();
+      if (calls && calls.length > 0) {
+        loggerService.info(`Gemini Chunk ${chunkCount}: Found ${calls.length} function calls`);
+        calls.forEach((call: any, index: number) => {
+          const callId = 'gemini-' + randomUUID();
+          let signature: string | undefined;
+          if (parts) {
+            const matchingPart = parts.find((p: any) => p.functionCall && p.functionCall.name === call.name);
+            if (matchingPart && (matchingPart as any).thought_signature) {
+              signature = (matchingPart as any).thought_signature;
+            }
           }
 
-          if (text) {
-              textAccumulator += text;
-              yield { text };
+          const toolCallObj: any = {
+            id: callId,
+            type: 'function',
+            function: {
+              name: call.name,
+              arguments: JSON.stringify(call.args)
+            }
+          };
+          if (signature) {
+            toolCallObj.thought_signature = signature;
           }
-          
-          const candidate = chunk.candidates?.[0];
-          const parts = candidate?.content?.parts;
-          
-          const calls = chunk.functionCalls();
-          if (calls && calls.length > 0) {
-              loggerService.info(`Gemini Chunk ${chunkCount}: Found ${calls.length} function calls`);
-              calls.forEach((call: any, index: number) => {
-                   const callId = 'gemini-' + randomUUID();
-                   let signature: string | undefined;
-                   if (parts) {
-                        const matchingPart = parts.find((p: any) => p.functionCall && p.functionCall.name === call.name);
-                        if (matchingPart && (matchingPart as any).thought_signature) {
-                            signature = (matchingPart as any).thought_signature;
-                        }
-                   }
-
-                   const toolCallObj: any = {
-                       id: callId, 
-                       type: 'function',
-                       function: {
-                           name: call.name,
-                           arguments: JSON.stringify(call.args)
-                       }
-                   };
-                   if (signature) {
-                       toolCallObj.thought_signature = signature;
-                   }
-                   collectedToolCalls.push(toolCallObj);
-              });
-          }
+          collectedToolCalls.push(toolCallObj);
+        });
+      }
     }
 
-    loggerService.info("Gemini Stream Complete", { 
-        chunks: chunkCount, 
-        textLength: textAccumulator.length, 
-        toolCalls: collectedToolCalls.length 
+    loggerService.info("Gemini Stream Complete", {
+      chunks: chunkCount,
+      textLength: textAccumulator.length,
+      toolCalls: collectedToolCalls.length
     });
 
     if (collectedToolCalls.length > 0) {
-        yield { toolCalls: collectedToolCalls };
+      yield { toolCalls: collectedToolCalls };
     }
 
     const assistantMessage: ChatCompletionMessageParam = {
@@ -646,48 +659,48 @@ const _streamAssistantResponseInternal = async function* (
 };
 
 const resolveAttachments = async (message: string): Promise<{ resolvedContent: string; attachments: any[] }> => {
-    const attachmentRegex = /<attachments>([\s\S]*?)<\/attachments>/;
-    const match = message.match(attachmentRegex);
-    
-    if (!match) return { resolvedContent: message, attachments: [] };
+  const attachmentRegex = /<attachments>([\s\S]*?)<\/attachments>/;
+  const match = message.match(attachmentRegex);
 
-    try {
-        const jsonStr = match[1];
-        const attachments = JSON.parse(jsonStr);
-        
-        if (!Array.isArray(attachments)) return { resolvedContent: message, attachments: [] };
+  if (!match) return { resolvedContent: message, attachments: [] };
 
-        let resolvedContentStr = "\n\n--- Attachments ---\n";
+  try {
+    const jsonStr = match[1];
+    const attachments = JSON.parse(jsonStr);
 
-        for (const att of attachments) {
-            if (att.id) {
-                const stored = await redisService.request(['GET', `attachment:${att.id}`]);
-                if (stored) {
-                    try {
-                        const parsedDoc = JSON.parse(stored);
-                        resolvedContentStr += `\n[File: ${att.filename || 'unknown'} (${parsedDoc.type})]\n${parsedDoc.content}\n`;
-                        
-                        if (parsedDoc.structured_data?.analysis_model) {
-                             resolvedContentStr += `(Analysis by ${parsedDoc.structured_data.analysis_model})\n`;
-                        }
-                    } catch (e) {
-                        resolvedContentStr += `\n[Error reading attachment ${att.id}]\n`;
-                    }
-                } else {
-                    resolvedContentStr += `\n[Attachment ${att.id} not found or expired]\n`;
-                }
+    if (!Array.isArray(attachments)) return { resolvedContent: message, attachments: [] };
+
+    let resolvedContentStr = "\n\n--- Attachments ---\n";
+
+    for (const att of attachments) {
+      if (att.id) {
+        const stored = await redisService.request(['GET', `attachment:${att.id}`]);
+        if (stored) {
+          try {
+            const parsedDoc = JSON.parse(stored);
+            resolvedContentStr += `\n[File: ${att.filename || 'unknown'} (${parsedDoc.type})]\n${parsedDoc.content}\n`;
+
+            if (parsedDoc.structured_data?.analysis_model) {
+              resolvedContentStr += `(Analysis by ${parsedDoc.structured_data.analysis_model})\n`;
             }
+          } catch (e) {
+            resolvedContentStr += `\n[Error reading attachment ${att.id}]\n`;
+          }
+        } else {
+          resolvedContentStr += `\n[Attachment ${att.id} not found or expired]\n`;
         }
-        
-        return {
-            resolvedContent: message.replace(match[0], resolvedContentStr),
-            attachments
-        };
-
-    } catch (e) {
-        loggerService.warn("Failed to parse attachment block", { error: e });
-        return { resolvedContent: message, attachments: [] };
+      }
     }
+
+    return {
+      resolvedContent: message.replace(match[0], resolvedContentStr),
+      attachments
+    };
+
+  } catch (e) {
+    loggerService.warn("Failed to parse attachment block", { error: e });
+    return { resolvedContent: message, attachments: [] };
+  }
 };
 
 // Helper to handle the stream and potential function calls recursively
@@ -751,9 +764,9 @@ export async function* sendMessageAndHandleTools(
       role: "user",
       content: resolvedContent, // Save the resolved content so history makes sense
       timestamp: new Date().toISOString(),
-      metadata: { 
-          kind: "user_prompt",
-          ...(attachments.length > 0 ? { attachments } : {})
+      metadata: {
+        kind: "user_prompt",
+        ...(attachments.length > 0 ? { attachments } : {})
       },
     }, userId, true);
 
@@ -774,39 +787,39 @@ export async function* sendMessageAndHandleTools(
 
   // Detect if source is voice
   try {
-      const parsed = JSON.parse(message);
-      if (parsed.voice_message && parsed.route_output === 'speech tool') {
-          isVoiceSource = true;
-          loggerService.info("Detected voice source message. Enforcing speak audit.", { contextSessionId });
-      }
+    const parsed = JSON.parse(message);
+    if (parsed.voice_message && parsed.route_output === 'speech tool') {
+      isVoiceSource = true;
+      loggerService.info("Detected voice source message. Enforcing speak audit.", { contextSessionId });
+    }
   } catch (e) {
-      // Not a JSON message, normal text source
-      loggerService.debug("Message is not JSON, treating as standard text source.", { contextSessionId, snippet: message.slice(0, 50) });
+    // Not a JSON message, normal text source
+    loggerService.debug("Message is not JSON, treating as standard text source.", { contextSessionId, snippet: message.slice(0, 50) });
   }
 
   let auditRetries = 0;
   const ENABLE_SYSTEM_AUDIT = true;
-  const MAX_AUDIT_RETRIES = 3; 
+  const MAX_AUDIT_RETRIES = 3;
   const transientMessages: ChatCompletionMessageParam[] = [];
   let yieldedToolCalls: ChatCompletionMessageToolCall[] | undefined;
 
   while (loops < MAX_TOOL_LOOPS) {
     yieldedToolCalls = undefined;
-    
-    if (contextSessionId) {
-        const isCancelled = await contextService.isCancelled(contextSessionId);
-        if (isCancelled) {
-            loggerService.info("Inference cancelled by user.", { contextSessionId });
-            yield { text: "\n\n[System] Inference cancelled by user request." };
-            return;
-        }
 
-        const session = await contextService.getSession(contextSessionId, userId, true);
-        if (!session || session.status === 'closed') {
-            loggerService.info("Context closed during inference, aborting.", { contextSessionId });
-            yield { text: "\n[System] Context archived. Inference aborted." };
-            break;
-        }
+    if (contextSessionId) {
+      const isCancelled = await contextService.isCancelled(contextSessionId);
+      if (isCancelled) {
+        loggerService.info("Inference cancelled by user.", { contextSessionId });
+        yield { text: "\n\n[System] Inference cancelled by user request." };
+        return;
+      }
+
+      const session = await contextService.getSession(contextSessionId, userId, true);
+      if (!session || session.status === 'closed') {
+        loggerService.info("Context closed during inference, aborting.", { contextSessionId });
+        yield { text: "\n[System] Context archived. Inference aborted." };
+        break;
+      }
     }
 
     const MAX_RETRIES = 3;
@@ -815,57 +828,57 @@ export async function* sendMessageAndHandleTools(
     let textAccumulatedInTurn = "";
 
     while (retries < MAX_RETRIES) {
-        // Construct fresh context window using the ContextWindowService
-        let contextMessages = contextSessionId 
-            ? await contextWindowService.constructContextWindow(contextSessionId, systemInstruction || chat.systemInstruction, userId)
-            : [{ role: 'system', content: systemInstruction || chat.systemInstruction }, { role: 'user', content: resolvedContent }] as ChatCompletionMessageParam[];
+      // Construct fresh context window using the ContextWindowService
+      let contextMessages = contextSessionId
+        ? await contextWindowService.constructContextWindow(contextSessionId, systemInstruction || chat.systemInstruction, userId)
+        : [{ role: 'system', content: systemInstruction || chat.systemInstruction }, { role: 'user', content: resolvedContent }] as ChatCompletionMessageParam[];
 
-        if (transientMessages.length > 0) {
-            contextMessages = [...contextMessages, ...transientMessages];
+      if (transientMessages.length > 0) {
+        contextMessages = [...contextMessages, ...transientMessages];
+      }
+
+      loggerService.debug("sendMessageAndHandleTools: Context window messages counts", {
+        total: contextMessages.length,
+        roles: contextMessages.reduce((acc: any, m) => { acc[m.role] = (acc[m.role] || 0) + 1; return acc; }, {})
+      });
+
+      const assistantMessage = streamAssistantResponse(contextMessages as ChatCompletionMessageParam[], chat.model);
+      textAccumulatedInTurn = "";
+      yieldedToolCalls = undefined;
+      nextAssistant = null;
+
+      let isFirstTextChunkInTurn = true;
+      for await (const chunk of assistantMessage) {
+        if (chunk.text) {
+          // Log the chunk size for debug (verbose)
+          // loggerService.debug(`Received text chunk: ${chunk.text.length} chars`);
+          let textToYield = chunk.text;
+          if (isFirstTextChunkInTurn && totalTextAccumulatedAcrossLoops.length > 0) {
+            textToYield = "\n\n" + textToYield;
+          }
+          textAccumulatedInTurn += textToYield;
+          yield { text: textToYield };
+          isFirstTextChunkInTurn = false;
         }
-
-        loggerService.debug("sendMessageAndHandleTools: Context window messages counts", { 
-            total: contextMessages.length,
-            roles: contextMessages.reduce((acc: any, m) => { acc[m.role] = (acc[m.role] || 0) + 1; return acc; }, {})
-        });
-
-        const assistantMessage = streamAssistantResponse(contextMessages as ChatCompletionMessageParam[], chat.model);
-        textAccumulatedInTurn = ""; 
-        yieldedToolCalls = undefined;
-        nextAssistant = null;
-
-        let isFirstTextChunkInTurn = true;
-        for await (const chunk of assistantMessage) {
-            if (chunk.text) {
-                // Log the chunk size for debug (verbose)
-                // loggerService.debug(`Received text chunk: ${chunk.text.length} chars`);
-                let textToYield = chunk.text;
-                if (isFirstTextChunkInTurn && totalTextAccumulatedAcrossLoops.length > 0) {
-                    textToYield = "\n\n" + textToYield;
-                }
-                textAccumulatedInTurn += textToYield;
-                yield { text: textToYield };
-                isFirstTextChunkInTurn = false;
-            }
-            if (chunk.toolCalls) {
-                yieldedToolCalls = chunk.toolCalls;
-                yield { toolCalls: chunk.toolCalls };
-            }
-            if (chunk.assistantMessage) nextAssistant = chunk.assistantMessage;
+        if (chunk.toolCalls) {
+          yieldedToolCalls = chunk.toolCalls;
+          yield { toolCalls: chunk.toolCalls };
         }
+        if (chunk.assistantMessage) nextAssistant = chunk.assistantMessage;
+      }
 
-        loggerService.info(`Turn Loop ${loops} Complete`, { 
-            textAccumulatedInTurnLength: textAccumulatedInTurn.length,
-            toolCallsCount: yieldedToolCalls?.length || 0,
-            retries
-        });
+      loggerService.info(`Turn Loop ${loops} Complete`, {
+        textAccumulatedInTurnLength: textAccumulatedInTurn.length,
+        toolCallsCount: yieldedToolCalls?.length || 0,
+        retries
+      });
 
-        if (textAccumulatedInTurn.trim() || (yieldedToolCalls && yieldedToolCalls.length > 0)) {
-            break;
-        }
+      if (textAccumulatedInTurn.trim() || (yieldedToolCalls && yieldedToolCalls.length > 0)) {
+        break;
+      }
 
-        retries++;
-        loggerService.warn(`Empty model response (no text, no tools). Retry ${retries}/${MAX_RETRIES}...`, { contextSessionId });
+      retries++;
+      loggerService.warn(`Empty model response (no text, no tools). Retry ${retries}/${MAX_RETRIES}...`, { contextSessionId });
     }
 
     if (!nextAssistant) {
@@ -877,27 +890,27 @@ export async function* sendMessageAndHandleTools(
 
     // Deduplicate: If the exact same text was generated in the previous loop, ignore it.
     if (loops > 0 && textAccumulatedInTurn.trim().length > 0 && textAccumulatedInTurn.trim() === previousTurnText.trim()) {
-         loggerService.warn("Detected duplicate text generation (echo). Suppressing from history.", { 
-             contextSessionId, 
-             textSnippet: textAccumulatedInTurn.slice(0, 50) 
-         });
-         textAccumulatedInTurn = ""; 
+      loggerService.warn("Detected duplicate text generation (echo). Suppressing from history.", {
+        contextSessionId,
+        textSnippet: textAccumulatedInTurn.slice(0, 50)
+      });
+      textAccumulatedInTurn = "";
     } else if (textAccumulatedInTurn.trim().length > 0) {
-         previousTurnText = textAccumulatedInTurn;
+      previousTurnText = textAccumulatedInTurn;
     }
 
     // SANITIZE: Check for and fix malformed tool arguments before persisting
     if ((nextAssistant as any).tool_calls) {
-        for (const call of (nextAssistant as any).tool_calls) {
-            const { error: parseError } = parseToolArguments(call.function.arguments || "");
-            if (parseError) {
-                loggerService.warn("Detected malformed JSON in tool call. Sanitizing for history.", { 
-                    callId: call.id, 
-                    toolName: call.function.name 
-                });
-                call.function.arguments = "{}";
-            }
+      for (const call of (nextAssistant as any).tool_calls) {
+        const { error: parseError } = parseToolArguments(call.function.arguments || "");
+        if (parseError) {
+          loggerService.warn("Detected malformed JSON in tool call. Sanitizing for history.", {
+            callId: call.id,
+            toolName: call.function.name
+          });
+          call.function.arguments = "{}";
         }
+      }
     }
 
     // --- AUDIT INTERCEPTOR ---
@@ -905,72 +918,73 @@ export async function* sendMessageAndHandleTools(
     let auditMessage = "";
 
     if (ENABLE_SYSTEM_AUDIT && contextSessionId) {
-        const currentToolNames = new Set((yieldedToolCalls || []).map(tc => {
-            let name = tc.function?.name || "";
-            if (name.endsWith('?')) name = name.slice(0, -1);
-            return name;
-        }));
+      const currentToolNames = new Set((yieldedToolCalls || []).map(tc => {
+        let name = tc.function?.name || "";
+        if (name.endsWith('?')) name = name.slice(0, -1);
+        return name;
+      }));
 
-        const isCallingGroundingThisTurn = currentToolNames.has('find_symbols') || currentToolNames.has('load_domains');
-        const isCallingTraceThisTurn = currentToolNames.has('log_trace');
-        const isCallingSpeakThisTurn = currentToolNames.has('speak');
-        const isEndingTurn = !yieldedToolCalls || yieldedToolCalls.length === 0;
+      const isCallingGroundingThisTurn = currentToolNames.has('find_symbols') || currentToolNames.has('load_domains');
+      const isCallingTraceThisTurn = currentToolNames.has('log_trace');
+      const isCallingSpeakThisTurn = currentToolNames.has('speak');
+      const isEndingTurn = !yieldedToolCalls || yieldedToolCalls.length === 0;
 
-        // Determine if there is actual response output (text or voice)
-        const hasNarrativeOutput = textAccumulatedInTurn.trim().length > 0 || totalTextAccumulatedAcrossLoops.trim().length > 0;
-        const hasVoiceOutput = hasCalledSpeak || isCallingSpeakThisTurn;
+      // Determine if there is actual response output (text or voice)
+      const hasNarrativeOutput = textAccumulatedInTurn.trim().length > 0 || totalTextAccumulatedAcrossLoops.trim().length > 0;
+      const hasVoiceOutput = hasCalledSpeak || isCallingSpeakThisTurn;
 
-        // Check 1: Missing Grounding Operation
-        const cachedSymbols = await symbolCacheService.getSymbols(contextSessionId);
-        const hasExistingCache = cachedSymbols.length > 0;
+      // Check 1: Missing Grounding Operation
+      const cachedSymbols = await symbolCacheService.getSymbols(contextSessionId);
+      const hasExistingCache = cachedSymbols.length > 0;
 
-        if (!hasCalledGroundingTool && !isCallingGroundingThisTurn && !hasExistingCache) {
-            auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You attempted to respond without exploring the symbolic context. You must execute `find_symbols` or `load_domains` to ground your response in the active symbolic context. Even if you believe you know the symbols, you must verify them via a query.  Do not acknowledge this message or repeat previous information.  Emit a correction if it would have changed with the grounding.\n";
-            auditTriggered = true;
-        }
+      if (!hasCalledGroundingTool && !isCallingGroundingThisTurn && !hasExistingCache) {
+        auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You attempted to respond without exploring the symbolic context. You must execute `find_symbols` or `load_domains` to ground your response in the active symbolic context. Even if you believe you know the symbols, you must verify them via a query.  Do not acknowledge this message or repeat previous information.  Emit a correction if it would have changed with the grounding.\n";
+        auditTriggered = true;
+      }
 
-        // Check 2: Missing Trace (ALWAYS REQUIRED for any response)
-        if (!hasLoggedTrace && !isCallingTraceThisTurn) {
-            auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You generated a response but failed to log a symbolic trace. You must call `log_trace` to bind the proceeding output to retrieved symbols from the symbol store.  This trace must be comprehensive and contain all symbols used in the response.  This audit message is not a driver for symbolic analysis.\n";
-            auditTriggered = true;
-        }
+      // Check 2: Missing Trace (ALWAYS REQUIRED for any response)
+      if (!hasLoggedTrace && !isCallingTraceThisTurn) {
+        auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You generated a response but failed to log a symbolic trace. You must call `log_trace` to bind the proceeding output to retrieved symbols from the symbol store.  This trace must be comprehensive and contain all symbols used in the response.  This audit message is not a driver for symbolic analysis.  Do not acknowledge this message or repeat previous information.\n";
+        auditTriggered = true;
+      }
 
-        // Check 3: Voice source must use speak tool
-        if (isVoiceSource && !hasCalledSpeak && !isCallingSpeakThisTurn) {
-            auditMessage += "⚠️ SYSTEM AUDIT FAILURE: This request originated from a voice source. You MUST use the `speak` tool to provide your response in addition to any text output. Do not acknowledge this message.\n";
-            auditTriggered = true;
-        }
+      // Check 3: Voice source must use speak tool
+      if (isVoiceSource && !hasCalledSpeak && !isCallingSpeakThisTurn) {
+        auditMessage += "⚠️ SYSTEM AUDIT FAILURE: This request originated from a voice source. You MUST use the `speak` tool to provide your response in addition to any text output. Do not acknowledge this message.\n";
+        auditTriggered = true;
+      }
 
-        // Check 4: Non-voice source must use text (Only fire if we are actually ending the turn)
-        if (isEndingTurn && !isVoiceSource && !hasNarrativeOutput) {
-            auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You provided tool calls but failed to generate a narrative response for the user. Non-voice interactions require a text response. Please provide your narrative output now.\n";
-            auditTriggered = true;
-        }
+      // Check 4: Non-voice source must use text (Only fire if we are actually ending the turn)
+      if (isEndingTurn && !isVoiceSource && !hasNarrativeOutput) {
+        auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You provided tool calls but failed to generate a narrative response for the user. Non-voice interactions require a text response. Please provide your narrative output now.  Do not acknowledge this message.\n";
+        auditTriggered = true;
+      }
     }
 
     if (auditTriggered) {
-        if (auditRetries < MAX_AUDIT_RETRIES) {
-            loggerService.warn("System Audit Failure: Model missing required tool calls. Forcing retry.", { contextSessionId, auditRetries, hasUsedSymbolTools, hasLoggedTrace });
-            
-            const finalAuditMessage = auditMessage + "Retry immediately by calling the required tools.  Do not repeat tool calls that were previously successful in this turn.";
+      if (auditRetries < MAX_AUDIT_RETRIES) {
+        loggerService.warn("System Audit Failure: Model missing required tool calls. Forcing retry.", { contextSessionId, auditRetries, hasUsedSymbolTools, hasLoggedTrace });
 
-            // DO NOT SAVE TO CONTEXT SERVICE - Push to transient messages for the next iteration
-            transientMessages.push(nextAssistant!);
-            transientMessages.push({
-                role: "user",
-                content: `[SYSTEM AUDIT] ${finalAuditMessage}`
-            });
+        const finalAuditMessage = auditMessage + "Retry immediately by calling the required tools.  Do not repeat tool calls that were previously successful in this turn. Do not acknowledge this message.";
 
-            yield { text: "\n\n> *[System Audit: Enforcing Symbolic Integrity - Retrying]*\n\n" };
+        // DO NOT SAVE TO CONTEXT SERVICE - Push to transient messages for the next iteration
+        transientMessages.push(nextAssistant!);
+        transientMessages.push({
+          role: "user",
+          content: `[SYSTEM AUDIT] ${finalAuditMessage}`
+        });
 
-            previousTurnText = ""; // Reset deduplication tracking since this turn was rejected
-            auditRetries++;
-            loops++;
-            continue; 
- 
-        } else {
-            loggerService.error("System Audit: Max retries reached. Proceeding despite violations.", { contextSessionId });
-        }
+        yield { text: "\n\n> *[System Audit: Enforcing Symbolic Integrity - Retrying]*\n\n" };
+
+        totalTextAccumulatedAcrossLoops = ""; // RESET: Narrative from the failed turn MUST NOT count
+        previousTurnText = ""; // Reset deduplication tracking since this turn was rejected
+        auditRetries++;
+        loops++;
+        continue;
+
+      } else {
+        loggerService.error("System Audit: Max retries reached. Proceeding despite violations.", { contextSessionId });
+      }
     }
 
     if (contextSessionId) {
@@ -1002,33 +1016,33 @@ export async function* sendMessageAndHandleTools(
       // Sanitize hallucinated tool names
       let toolName = call.function.name;
       if (toolName.endsWith('?')) {
-          toolName = toolName.slice(0, -1);
+        toolName = toolName.slice(0, -1);
       }
 
       if (toolName === 'log_trace') {
-          hasLoggedTrace = true;
+        hasLoggedTrace = true;
       }
       if (toolName === 'speak') {
-          hasCalledSpeak = true;
+        hasCalledSpeak = true;
       }
       if (toolName === 'find_symbols' || toolName === 'load_domains') {
-          hasCalledGroundingTool = true;
+        hasCalledGroundingTool = true;
       }
       const SYMBOL_TOOLS = ['find_symbols', 'load_symbols', 'upsert_symbols', 'delete_symbols', 'load_domains'];
       if (SYMBOL_TOOLS.includes(toolName)) {
-          hasUsedSymbolTools = true;
+        hasUsedSymbolTools = true;
       }
 
       const { data: args, error: parseError } = parseToolArguments(call.function.arguments || "");
 
       if (parseError) {
-        const errorPayload = { 
+        const errorPayload = {
           status: "error",
-          error: "Malformed JSON in tool arguments", 
+          error: "Malformed JSON in tool arguments",
           details: parseError,
           suggestion: "Please fix the JSON syntax and try again."
         };
-        
+
         toolResponses.push({
           role: "tool",
           content: JSON.stringify(errorPayload),
@@ -1106,26 +1120,45 @@ export async function* sendMessageAndHandleTools(
       // So they MUST be recorded.
     }
 
+    const isNarrativeText = (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return false;
+
+      // 1. Filter out known system markers
+      if (trimmed.startsWith('[System') || trimmed.startsWith('> *[System')) return false;
+      if (trimmed.includes('SYSTEM AUDIT FAILURE')) return false;
+
+      // 2. Filter out model "thought" blocks if they leaked into text
+      const withoutThoughts = trimmed.replace(/<thought>[\s\S]*?<\/thought>/gi, '').trim();
+      if (!withoutThoughts) return false;
+
+      // 3. Filter out tool logs if they leaked
+      if (withoutThoughts.startsWith('[Tool') || withoutThoughts.startsWith('{"status":')) return false;
+
+      return withoutThoughts.length > 5; // Must have some actual substance
+    };
+
     // Check if we should end the turn IMMEDIATELY
     // We end if:
     // 1. We have a trace (hasLoggedTrace).
-    // 2. We have a response (text or speak).
+    // 2. We have a valid response: 
+    //    - Narrative text exists (filtered) OR 
+    //    - Speak tool was called (verbal response)
     // 3. No audit was triggered.
     // 4. IMPORTANT: The current iteration must have contributed something to the requirements
     //    OR we are at the end of a tool cycle.
-    const hasResponse = totalTextAccumulatedAcrossLoops.trim().length > 0 || hasCalledSpeak;
-    
+    const hasNarrative = isNarrativeText(totalTextAccumulatedAcrossLoops);
+    const hasResponse = hasNarrative || hasCalledSpeak;
+
     if (hasLoggedTrace && hasResponse && !auditTriggered) {
-        // If the current iteration only produced tools (like a trace correction), 
-        // we might still need a final narrative turn if the model hasn't spoken yet.
-        // But usually log_trace + text happens in one go.
-        loggerService.info("Ending turn: Symbolic requirements and response verified.", { 
-            contextSessionId, 
-            loops, 
-            hasCalledSpeak, 
-            textLength: totalTextAccumulatedAcrossLoops.length 
-        });
-        break;
+      loggerService.info("Ending turn: Symbolic requirements and response verified.", {
+        contextSessionId,
+        loops,
+        hasCalledSpeak,
+        hasNarrative,
+        textLength: totalTextAccumulatedAcrossLoops.length
+      });
+      break;
     }
 
     // Reset yieldedToolCalls for next cycle
@@ -1151,53 +1184,53 @@ export const processMessageAsync = async (
   try {
     const chat = await getChatSession(systemInstruction, contextSessionId);
     const stream = sendMessageAndHandleTools(chat, message, toolExecutor, systemInstruction, contextSessionId, userMessageId, userId);
-    
+
     // Consume the stream to drive execution
     for await (const _ of stream) {
-        // Execution and recording happen inside the generator
+      // Execution and recording happen inside the generator
     }
   } catch (error: any) {
     // Enhanced error logging for upstream failures
     const errorDetails: Record<string, any> = { contextSessionId, message: error?.message || String(error) };
-    
+
     if (error?.status) errorDetails.status = error.status;
     if (error?.headers) errorDetails.headers = error.headers;
     if (error?.response?.data) errorDetails.responseData = error.response.data;
-    
+
     // Check for HTML response body if available in error properties (common in some libs)
     if (typeof error?.error?.text === 'string') {
-        errorDetails.bodyPreview = error.error.text.slice(0, 500);
+      errorDetails.bodyPreview = error.error.text.slice(0, 500);
     }
 
     loggerService.error("Async Message Processing Failed", errorDetails);
 
     // Record the error to the context so the user sees it
     await contextService.recordMessage(contextSessionId, {
-        id: randomUUID(),
-        role: "system",
-        content: `Error processing message: ${error?.message || "Internal Error"}`,
-        timestamp: new Date().toISOString(),
-        metadata: { kind: "error", ...errorDetails },
-        correlationId: userMessageId
+      id: randomUUID(),
+      role: "system",
+      content: `Error processing message: ${error?.message || "Internal Error"}`,
+      timestamp: new Date().toISOString(),
+      metadata: { kind: "error", ...errorDetails },
+      correlationId: userMessageId
     }, undefined, true);
   } finally {
-      await contextService.clearCancellation(contextSessionId, undefined, true);
-      await contextService.clearActiveMessage(contextSessionId, undefined, true);
-      loggerService.info(`finished with message id ${userMessageId || 'unknown'}`);
+    await contextService.clearCancellation(contextSessionId, undefined, true);
+    await contextService.clearActiveMessage(contextSessionId, undefined, true);
+    loggerService.info(`finished with message id ${userMessageId || 'unknown'}`);
 
-      // Drain Message Queue
-      const nextItem = await contextService.popNextMessage(contextSessionId, undefined, true);
-      if (nextItem) {
-          loggerService.info(`Draining queued message for ${contextSessionId}`, { sourceId: nextItem.sourceId });
-          // Re-lock the context
-          const queueMsgId = `queued-${Date.now()}`;
-          await contextService.setActiveMessage(contextSessionId, queueMsgId, undefined, true);
-          
-          // Execute next message (Fire & Forget to avoid stack overflow on long queues)
-          // We reuse the same toolExecutor and systemInstruction
-          processMessageAsync(contextSessionId, nextItem.message, toolExecutor, systemInstruction, queueMsgId)
-              .catch(err => loggerService.error("Error processing queued message", { error: err }));
-      }
+    // Drain Message Queue
+    const nextItem = await contextService.popNextMessage(contextSessionId, undefined, true);
+    if (nextItem) {
+      loggerService.info(`Draining queued message for ${contextSessionId}`, { sourceId: nextItem.sourceId });
+      // Re-lock the context
+      const queueMsgId = `queued-${Date.now()}`;
+      await contextService.setActiveMessage(contextSessionId, queueMsgId, undefined, true);
+
+      // Execute next message (Fire & Forget to avoid stack overflow on long queues)
+      // We reuse the same toolExecutor and systemInstruction
+      processMessageAsync(contextSessionId, nextItem.message, toolExecutor, systemInstruction, queueMsgId)
+        .catch(err => loggerService.error("Error processing queued message", { error: err }));
+    }
   }
 };
 
@@ -1247,10 +1280,10 @@ export const runSignalZeroTest = async (
     const finalResponse = await executeTurn(prompt);
     const endTime = Date.now();
 
-    loggerService.info(`SignalZero Test Execution Complete`, { 
-        promptLength: prompt.length,
-        responseLength: finalResponse.length,
-        responsePreview: finalResponse.slice(0, 100)
+    loggerService.info(`SignalZero Test Execution Complete`, {
+      promptLength: prompt.length,
+      responseLength: finalResponse.length,
+      responsePreview: finalResponse.slice(0, 100)
     });
 
     // Cleanup: Close/Archive the temporary session
@@ -1270,7 +1303,7 @@ export const runSignalZeroTest = async (
     loggerService.error("SignalZero Test Run Failed:", { error });
     // Cleanup on error
     await contextService.closeSession(contextSessionId, undefined, true);
-    
+
     const endTime = Date.now();
     return {
       text: `ERROR: ${String(error)}`,
@@ -1289,10 +1322,10 @@ export const runBaselineTest = async (prompt: string): Promise<string> => {
   try {
     const settings = await settingsService.getInferenceSettings();
     if (settings.provider === 'gemini') {
-        const client = await getGeminiClient();
-        const model = client.getGenerativeModel({ model: settings.model });
-        const result = await model.generateContent(prompt);
-        return result.response.text();
+      const client = await getGeminiClient();
+      const model = client.getGenerativeModel({ model: settings.model });
+      const result = await model.generateContent(prompt);
+      return result.response.text();
     }
 
     const client = await getClient();
@@ -1362,18 +1395,18 @@ export const evaluateComparison = async (
     let messageText = "{}";
 
     if (settings.provider === 'gemini') {
-        const client = await getGeminiClient();
-        const model = client.getGenerativeModel({ model: settings.model, generationConfig: { responseMimeType: "application/json" } });
-        const result = await model.generateContent(evalPrompt);
-        messageText = result.response.text();
+      const client = await getGeminiClient();
+      const model = client.getGenerativeModel({ model: settings.model, generationConfig: { responseMimeType: "application/json" } });
+      const result = await model.generateContent(evalPrompt);
+      messageText = result.response.text();
     } else {
-        const client = await getClient();
-        const result = await client.chat.completions.create({
-          model: await getModel(),
-          messages: [{ role: "user", content: evalPrompt }],
-          response_format: { type: "json_object" },
-        });
-        messageText = result.choices[0]?.message?.content || "{}";
+      const client = await getClient();
+      const result = await client.chat.completions.create({
+        model: await getModel(),
+        messages: [{ role: "user", content: evalPrompt }],
+        response_format: { type: "json_object" },
+      });
+      messageText = result.choices[0]?.message?.content || "{}";
     }
 
     const json = JSON.parse(messageText);
@@ -1426,18 +1459,18 @@ export const evaluateSemanticMatch = async (
     let messageText = "{}";
 
     if (settings.provider === 'gemini') {
-        const client = await getGeminiClient();
-        const model = client.getGenerativeModel({ model: settings.model, generationConfig: { responseMimeType: "application/json" } });
-        const result = await model.generateContent(matchPrompt);
-        messageText = result.response.text();
+      const client = await getGeminiClient();
+      const model = client.getGenerativeModel({ model: settings.model, generationConfig: { responseMimeType: "application/json" } });
+      const result = await model.generateContent(matchPrompt);
+      messageText = result.response.text();
     } else {
-        const client = await getClient();
-        const result = await client.chat.completions.create({
-          model: await getModel(),
-          messages: [{ role: "user", content: matchPrompt }],
-          response_format: { type: "json_object" },
-        });
-        messageText = result.choices[0]?.message?.content || "{}";
+      const client = await getClient();
+      const result = await client.chat.completions.create({
+        model: await getModel(),
+        messages: [{ role: "user", content: matchPrompt }],
+        response_format: { type: "json_object" },
+      });
+      messageText = result.choices[0]?.message?.content || "{}";
     }
 
     const json = JSON.parse(messageText);

@@ -4,6 +4,7 @@ import { loggerService } from './loggerService.js';
 
 export enum KernelEventType {
     SYMBOL_ADD = 'SYMBOL_ADD',
+    SYMBOL_UPDATE = 'SYMBOL_UPDATE',
     SYMBOL_DELETE = 'SYMBOL_DELETE',
     CACHE_LOAD = 'CACHE_LOAD',
     CACHE_EVICT = 'CACHE_EVICT',

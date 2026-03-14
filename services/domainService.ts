@@ -371,12 +371,20 @@ export const domainService = {
     await redisService.request(['SET', key, JSON.stringify(domain)]);
     await vectorService.indexSymbol(symbol);
 
-    // Emit SYMBOL_ADD event (always emit on upsert to update properties)
-    eventBusService.emit(KernelEventType.SYMBOL_ADD, {
-        symbolId: symbol.id,
-        domainId,
-        symbol: symbol
-    });
+    // Emit events
+    if (existingSymbol) {
+        eventBusService.emit(KernelEventType.SYMBOL_UPDATE, {
+            symbolId: symbol.id,
+            domainId,
+            symbol: symbol
+        });
+    } else {
+        eventBusService.emit(KernelEventType.SYMBOL_ADD, {
+            symbolId: symbol.id,
+            domainId,
+            symbol: symbol
+        });
+    }
 
     // DIFFERENTIAL LINK EMISSION
     const oldLinkIds = new Set(existingSymbol?.linked_patterns?.map(l => l.id) || []);
