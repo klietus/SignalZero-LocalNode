@@ -703,6 +703,19 @@ const resolveAttachments = async (message: string): Promise<{ resolvedContent: s
   }
 };
 
+/**
+ * Strips all internal "thought" blocks from model output.
+ * Handles <thought>, <think>, and the custom [audit failure trace](sz-think:thinking) construct.
+ */
+export const stripThoughts = (text: string): string => {
+  if (!text) return "";
+  return text
+    .replace(/<thought>[\s\S]*?<\/thought>/gi, '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/\[[\s\S]*?\]\(sz-think:thinking\)/g, '')
+    .trim();
+};
+
 // Helper to handle the stream and potential function calls recursively
 export async function* sendMessageAndHandleTools(
   chat: ChatSessionState,
@@ -803,7 +816,7 @@ export async function* sendMessageAndHandleTools(
   const transientMessages: ChatCompletionMessageParam[] = [];
   let yieldedToolCalls: ChatCompletionMessageToolCall[] | undefined;
 
-  while (loops < MAX_TOOL_LOOPS) {
+  while (loops < MAX_TOOL_LOOPS && auditRetries < MAX_AUDIT_RETRIES + 1) {
     yieldedToolCalls = undefined;
 
     if (contextSessionId) {
@@ -917,7 +930,7 @@ export async function* sendMessageAndHandleTools(
     let auditTriggered = false;
     let auditMessage = "";
 
-    if (ENABLE_SYSTEM_AUDIT && contextSessionId) {
+    if (ENABLE_SYSTEM_AUDIT && contextSessionId && auditRetries < MAX_AUDIT_RETRIES) {
       const currentToolNames = new Set((yieldedToolCalls || []).map(tc => {
         let name = tc.function?.name || "";
         if (name.endsWith('?')) name = name.slice(0, -1);
@@ -979,11 +992,11 @@ export async function* sendMessageAndHandleTools(
         totalTextAccumulatedAcrossLoops = ""; // RESET: Narrative from the failed turn MUST NOT count
         previousTurnText = ""; // Reset deduplication tracking since this turn was rejected
         auditRetries++;
-        loops++;
         continue;
 
       } else {
         loggerService.error("System Audit: Max retries reached. Proceeding despite violations.", { contextSessionId });
+        auditTriggered = false; // Allow the turn to proceed and potentially end even with violations
       }
     }
 
@@ -991,7 +1004,7 @@ export async function* sendMessageAndHandleTools(
       await contextService.recordMessage(contextSessionId, {
         id: randomUUID(),
         role: "assistant",
-        content: textAccumulatedInTurn,
+        content: stripThoughts(textAccumulatedInTurn),
         timestamp: new Date().toISOString(),
         toolCalls: (nextAssistant as any).tool_calls?.map((call: any) => ({
           id: call.id,
@@ -1129,13 +1142,13 @@ export async function* sendMessageAndHandleTools(
       if (trimmed.includes('SYSTEM AUDIT FAILURE')) return false;
 
       // 2. Filter out model "thought" blocks if they leaked into text
-      const withoutThoughts = trimmed.replace(/<thought>[\s\S]*?<\/thought>/gi, '').trim();
+      const withoutThoughts = stripThoughts(trimmed);
       if (!withoutThoughts) return false;
 
       // 3. Filter out tool logs if they leaked
       if (withoutThoughts.startsWith('[Tool') || withoutThoughts.startsWith('{"status":')) return false;
 
-      return withoutThoughts.length > 5; // Must have some actual substance
+      return withoutThoughts.length > 2; // Must have some actual substance
     };
 
     // Check if we should end the turn IMMEDIATELY
@@ -1159,6 +1172,15 @@ export async function* sendMessageAndHandleTools(
         textLength: totalTextAccumulatedAcrossLoops.length
       });
       break;
+    }
+
+    if (auditRetries >= MAX_AUDIT_RETRIES) {
+      loggerService.warn("Ending turn: Audit retry limit reached. Proceeding even without verified response.", {
+        contextSessionId,
+        auditRetries,
+        hasResponse
+      });
+      return; // EXIT THE GENERATOR COMPLETELY if we reached the audit limit
     }
 
     // Reset yieldedToolCalls for next cycle

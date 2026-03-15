@@ -363,7 +363,11 @@ class DocumentMeaningService {
     }
 
     private stripThinking(text: string): string {
-        return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+        return text
+            .replace(/<think>[\s\S]*?<\/think>/gi, '')
+            .replace(/<thought>[\s\S]*?<\/thought>/gi, '')
+            .replace(/\[[\s\S]*?\]\(sz-think:thinking\)/g, '')
+            .trim();
     }
 }
 
