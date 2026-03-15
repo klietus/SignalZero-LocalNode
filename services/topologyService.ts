@@ -38,16 +38,7 @@ class TopologyService {
     async analyze(userId?: string, specificStrategy?: string): Promise<TopologyStats | null> {
         try {
             await tf.ready();
-            const savedHygiene = await settingsService.getHygieneSettings();
-            
-            // If we are running a specific manual trigger, we effectively enable both link and compress for it
-            const hygiene = specificStrategy ? {
-                positional: { autoCompress: specificStrategy === 'positional', autoLink: specificStrategy === 'positional' },
-                semantic: { autoCompress: specificStrategy === 'semantic', autoLink: specificStrategy === 'semantic' },
-                triadic: { autoCompress: specificStrategy === 'triadic', autoLink: specificStrategy === 'triadic' },
-                deadLinkCleanup: specificStrategy === 'deadLinkCleanup',
-                orphanAnalysis: specificStrategy === 'orphanAnalysis'
-            } : savedHygiene;
+            const hygiene = await settingsService.getHygieneSettings();
 
             loggerService.info("TopologyService: Starting topology analysis", { strategy: specificStrategy || 'full', hygiene });
             
@@ -78,13 +69,13 @@ class TopologyService {
             let redundantSymbolsFound = 0;
 
             // --- STRATEGY: Dead Link Cleanup ---
-            if (hygiene.deadLinkCleanup) {
+            if (specificStrategy === 'deadLinkCleanup' || (specificStrategy === undefined && hygiene.deadLinkCleanup)) {
                 await this.cleanupDeadLinks(symbols, userId);
             }
 
             // --- STRATEGY: Positional (Tensor) Analysis ---
             let reconstructionError = 0;
-            if (hygiene.positional.autoCompress || hygiene.positional.autoLink) {
+            if (specificStrategy === 'positional' || (specificStrategy === undefined && (hygiene.positional.autoCompress || hygiene.positional.autoLink))) {
                 const positionalResults = await this.runPositionalAnalysis(symbols, hygiene, userId);
                 newLinksPredicted += positionalResults.newLinks;
                 redundantSymbolsFound += positionalResults.redundantCount;
@@ -92,21 +83,21 @@ class TopologyService {
             }
 
             // --- STRATEGY: Semantic (Vector) Analysis ---
-            if (hygiene.semantic.autoCompress || hygiene.semantic.autoLink) {
+            if (specificStrategy === 'semantic' || (specificStrategy === undefined && (hygiene.semantic.autoCompress || hygiene.semantic.autoLink))) {
                 const semanticResults = await this.runSemanticAnalysis(symbols, hygiene, userId);
                 newLinksPredicted += semanticResults.newLinks;
                 redundantSymbolsFound += semanticResults.redundantCount;
             }
 
             // --- STRATEGY: Triadic Analysis ---
-            if (hygiene.triadic.autoCompress || hygiene.triadic.autoLink) {
+            if (specificStrategy === 'triadic' || (specificStrategy === undefined && (hygiene.triadic.autoCompress || hygiene.triadic.autoLink))) {
                 const triadicResults = await this.runTriadicAnalysis(symbols, hygiene, userId);
                 newLinksPredicted += triadicResults.newLinks;
                 redundantSymbolsFound += triadicResults.redundantCount;
             }
 
             // --- STRATEGY: Orphan Analysis ---
-            if (hygiene.orphanAnalysis) {
+            if (specificStrategy === 'orphanAnalysis' || (specificStrategy === undefined && hygiene.orphanAnalysis)) {
                 await this.analyzeOrphans(symbols, userId);
             }
 
