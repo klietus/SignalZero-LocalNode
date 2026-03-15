@@ -109,17 +109,15 @@ describe('InferenceService', () => {
             { role: 'user', content: 'Hello' }
         ]);
 
-        // Turn 1 calls tool AND logs trace to pass audit
+        // Turn 1 logs trace to pass audit
         sendMessageStreamMock.mockResolvedValueOnce({
             stream: (async function* () {
                 yield {
                     text: () => "",
                     functionCalls: () => [
-                        { name: 'find_symbols', args: { queries: [{ query: 'test' }] } },
                         { name: 'log_trace', args: { trace: '...' } }
                     ],
                     candidates: [{ content: { parts: [
-                        { functionCall: { name: 'find_symbols', args: { queries: [{ query: 'test' }] } } },
                         { functionCall: { name: 'log_trace', args: { trace: '...' } } }
                     ] } }]
                 };
@@ -147,7 +145,6 @@ describe('InferenceService', () => {
             results.push(part);
         }
 
-        expect(toolExecutor).toHaveBeenCalledWith('find_symbols', expect.anything());
         expect(results.some(r => r.text === 'I found some symbols.')).toBe(true);
     });
 
@@ -171,18 +168,14 @@ describe('InferenceService', () => {
             })()
         });
 
-        // Retry turn (with trace and grounding)
+        // Retry turn (with trace)
         sendMessageStreamMock.mockResolvedValueOnce({
             stream: (async function* () {
                 yield {
                     text: () => "Audited response.",
-                    functionCalls: () => [
-                        { name: 'find_symbols', args: { queries: [{ query: 'test' }] } },
-                        { name: 'log_trace', args: { trace: '...' } }
-                    ],
+                    functionCalls: () => [{ name: 'log_trace', args: { trace: '...' } }],
                     candidates: [{ content: { parts: [
                         { text: "Audited response." },
-                        { functionCall: { name: 'find_symbols', args: { queries: [{ query: 'test' }] } } },
                         { functionCall: { name: 'log_trace', args: { trace: '...' } } }
                     ] } }]
                 };
@@ -325,15 +318,14 @@ describe('InferenceService', () => {
             { role: 'user', content: 'Hello' }
         ]);
 
-        // Always return a response that fails trace audit but HAS grounding tool
+        // Always return a response that fails trace audit
         sendMessageStreamMock.mockResolvedValue({
             stream: (async function* () {
                 yield {
                     text: () => "Stubborn response.",
-                    functionCalls: () => [{ name: 'find_symbols', args: { queries: [{ query: 'test' }] } }],
+                    functionCalls: () => null,
                     candidates: [{ content: { parts: [
-                        { text: "Stubborn response." },
-                        { functionCall: { name: 'find_symbols', args: { queries: [{ query: 'test' }] } } }
+                        { text: "Stubborn response." }
                     ] } }]
                 };
             })()
@@ -346,9 +338,8 @@ describe('InferenceService', () => {
             if (part.text) chunks.push(part.text);
         }
 
-        // It should try MAX_AUDIT_RETRIES (3) + 1 original = 4 times. 
-        // Currently it does 10 because it restarts audit retries for subsequent tool cycles.
-        expect(sendMessageStreamMock).toHaveBeenCalledTimes(10);
+        // Original + 3 audit retries = 4
+        expect(sendMessageStreamMock).toHaveBeenCalledTimes(4);
         // It should have yielded the audit retry messages
         expect(chunks.filter(c => c.includes('System Audit: Enforcing Symbolic Integrity')).length).toBe(3);
         // It should eventually complete

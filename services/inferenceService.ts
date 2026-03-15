@@ -794,7 +794,6 @@ export async function* sendMessageAndHandleTools(
   let previousTurnText = "";
   let hasLoggedTrace = false;
   let hasUsedSymbolTools = false;
-  let hasCalledGroundingTool = false;
   let hasCalledSpeak = false;
   let isVoiceSource = false;
 
@@ -937,7 +936,6 @@ export async function* sendMessageAndHandleTools(
         return name;
       }));
 
-      const isCallingGroundingThisTurn = currentToolNames.has('find_symbols') || currentToolNames.has('load_domains');
       const isCallingTraceThisTurn = currentToolNames.has('log_trace');
       const isCallingSpeakThisTurn = currentToolNames.has('speak');
       const isEndingTurn = !yieldedToolCalls || yieldedToolCalls.length === 0;
@@ -946,28 +944,19 @@ export async function* sendMessageAndHandleTools(
       const hasNarrativeOutput = textAccumulatedInTurn.trim().length > 0 || totalTextAccumulatedAcrossLoops.trim().length > 0;
       const hasVoiceOutput = hasCalledSpeak || isCallingSpeakThisTurn;
 
-      // Check 1: Missing Grounding Operation
-      const cachedSymbols = await symbolCacheService.getSymbols(contextSessionId);
-      const hasExistingCache = cachedSymbols.length > 0;
-
-      if (!hasCalledGroundingTool && !isCallingGroundingThisTurn && !hasExistingCache) {
-        auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You attempted to respond without exploring the symbolic context. You must execute `find_symbols` or `load_domains` to ground your response in the active symbolic context. Even if you believe you know the symbols, you must verify them via a query.  Do not acknowledge this message or repeat previous information.  Emit a correction if it would have changed with the grounding.\n";
-        auditTriggered = true;
-      }
-
-      // Check 2: Missing Trace (ALWAYS REQUIRED for any response)
+      // Check 1: Missing Trace (ALWAYS REQUIRED for any response)
       if (!hasLoggedTrace && !isCallingTraceThisTurn) {
         auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You generated a response but failed to log a symbolic trace. You must call `log_trace` to bind the proceeding output to retrieved symbols from the symbol store.  This trace must be comprehensive and contain all symbols used in the response.  This audit message is not a driver for symbolic analysis.  Do not acknowledge this message or repeat previous information.\n";
         auditTriggered = true;
       }
 
-      // Check 3: Voice source must use speak tool
+      // Check 2: Voice source must use speak tool
       if (isVoiceSource && !hasCalledSpeak && !isCallingSpeakThisTurn) {
         auditMessage += "⚠️ SYSTEM AUDIT FAILURE: This request originated from a voice source. You MUST use the `speak` tool to provide your response in addition to any text output. Do not acknowledge this message.\n";
         auditTriggered = true;
       }
 
-      // Check 4: Non-voice source must use text (Only fire if we are actually ending the turn)
+      // Check 3: Non-voice source must use text (Only fire if we are actually ending the turn)
       if (isEndingTurn && !isVoiceSource && !hasNarrativeOutput) {
         auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You provided tool calls but failed to generate a narrative response for the user. Non-voice interactions require a text response. Please provide your narrative output now.  Do not acknowledge this message.\n";
         auditTriggered = true;
@@ -1037,9 +1026,6 @@ export async function* sendMessageAndHandleTools(
       }
       if (toolName === 'speak') {
         hasCalledSpeak = true;
-      }
-      if (toolName === 'find_symbols' || toolName === 'load_domains') {
-        hasCalledGroundingTool = true;
       }
       const SYMBOL_TOOLS = ['find_symbols', 'load_symbols', 'upsert_symbols', 'delete_symbols', 'load_domains'];
       if (SYMBOL_TOOLS.includes(toolName)) {
@@ -1193,6 +1179,138 @@ export async function* sendMessageAndHandleTools(
   yield { isComplete: true };
 }
 
+const extractJson = (text: string): any => {
+  try {
+    // 1. Try direct parse
+    return JSON.parse(text);
+  } catch (e) {
+    // 2. Try to find JSON block
+    const match = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (match) {
+      try {
+        return JSON.parse(match[1].trim());
+      } catch (inner) {
+        // Continue
+      }
+    }
+    
+    // 3. Last ditch: try to find anything between { and }
+    const firstBrace = text.indexOf('{');
+    const lastBrace = text.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1) {
+      try {
+        return JSON.parse(text.substring(firstBrace, lastBrace + 1));
+      } catch (final) {
+        throw new Error(`Failed to parse JSON from response: ${text.slice(0, 100)}...`);
+      }
+    }
+    throw e;
+  }
+};
+
+/**
+ * Uses a fast model to generate expansion queries and prime the symbol cache
+ * before the main reasoning loop starts.
+ */
+export const primeSymbolicContext = async (
+  message: string,
+  contextSessionId: string,
+  userId?: string
+) => {
+  try {
+    const settings = await settingsService.getInferenceSettings();
+    const fastModel = settings.fastModel;
+
+    if (!fastModel) return;
+
+    loggerService.info("Priming symbolic context with fast model", { fastModel, contextSessionId });
+
+    const prompt = `Analyze the user message and identify 3-5 symbolic search queries, including synonyms and domain-specific terms, relevant to a symbolic knowledge graph. 
+    User Message: "${message}"
+    
+    Output valid JSON only:
+    {
+      "queries": ["query1", "query2", ...]
+    }`;
+
+    let queries: string[] = [];
+
+    if (settings.provider === 'gemini') {
+      const client = await getGeminiClient();
+      const model = client.getGenerativeModel({ 
+        model: fastModel,
+        generationConfig: { responseMimeType: "application/json" }
+      });
+      const result = await model.generateContent(prompt);
+      const response = result.response.text();
+      queries = extractJson(response).queries || [];
+    } else {
+      const client = await getClient();
+      const result = await client.chat.completions.create({
+        model: fastModel,
+        messages: [{ role: "user", content: prompt }],
+        response_format: { type: "text" }
+      });
+      const response = result.choices[0]?.message?.content || "{}";
+      queries = extractJson(response).queries || [];
+    }
+
+    if (queries.length > 0) {
+      loggerService.info("Fast model generated queries", { queries, contextSessionId });
+      
+      const allDomains = await domainService.listDomains(userId);
+      const foundSymbols: SymbolDef[] = [];
+
+      // Execute searches in parallel
+      const searchPromises = queries.map(query => 
+        domainService.search(query, 5, {
+          domains: allDomains,
+          contextSessionId
+        }, userId)
+      );
+
+      const results = await Promise.all(searchPromises);
+      
+      results.flat().forEach((r: any) => {
+        if (!foundSymbols.find(s => s.id === r.id)) {
+          foundSymbols.push(r);
+        }
+      });
+
+      if (foundSymbols.length > 0) {
+        // --- 1-HOP TRAVERSAL ---
+        loggerService.info(`Executing 1-hop traversal for ${foundSymbols.length} seed symbols`, { contextSessionId });
+        
+        const linkedIds = new Set<string>();
+        foundSymbols.forEach(s => {
+          (s.linked_patterns || []).forEach((link: any) => {
+            const id = typeof link === 'string' ? link : link.id;
+            if (id && !foundSymbols.find(fs => fs.id === id)) {
+              linkedIds.add(id);
+            }
+          });
+        });
+
+        if (linkedIds.size > 0) {
+          const linkedSymbols = await domainService.loadSymbols(Array.from(linkedIds), userId);
+          loggerService.info(`Loaded ${linkedSymbols.length} linked symbols from 1-hop traversal`, { contextSessionId });
+          
+          linkedSymbols.forEach(s => {
+            if (!foundSymbols.find(fs => fs.id === s.id)) {
+              foundSymbols.push(s);
+            }
+          });
+        }
+
+        loggerService.info(`Priming cache with ${foundSymbols.length} total symbols (seed + 1-hop)`, { contextSessionId });
+        await symbolCacheService.batchUpsertSymbols(contextSessionId, foundSymbols);
+      }
+    }
+  } catch (error) {
+    loggerService.error("Failed to prime symbolic context", { error, contextSessionId });
+  }
+};
+
 // --- Test Runner Functions ---
 
 export const processMessageAsync = async (
@@ -1204,6 +1322,9 @@ export const processMessageAsync = async (
   userId?: string
 ) => {
   try {
+    // Pre-flight: expansion search and cache priming
+    await primeSymbolicContext(message, contextSessionId, userId);
+
     const chat = await getChatSession(systemInstruction, contextSessionId);
     const stream = sendMessageAndHandleTools(chat, message, toolExecutor, systemInstruction, contextSessionId, userMessageId, userId);
 
@@ -1287,6 +1408,10 @@ export const runSignalZeroTest = async (
     const executeTurn = async (msg: string): Promise<string> => {
       let turnText = "";
       loggerService.info("Starting executeTurn", { msgPreview: msg.slice(0, 50), contextSessionId });
+      
+      // Pre-flight for each turn in test
+      await primeSymbolicContext(msg, contextSessionId);
+
       // Pass contextSessionId to enable full ContextWindowService logic
       for await (const chunk of sendMessageAndHandleTools(chat, msg, toolExecutor, systemInstruction, contextSessionId)) {
         if (chunk.text) turnText += chunk.text;

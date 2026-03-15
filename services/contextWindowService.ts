@@ -255,56 +255,61 @@ export class ContextWindowService {
     // Format symbols using DSL: | ID | Name | Triad | Kind |
     // This reduces token usage significantly compared to JSON.
     return uniqueSymbols.map(s => {
+        // Remove updated_at from the symbol object to ensure it is not used in formatting
+        // (Though our DSL below doesn't use it, this is a safety measure if DSL changes)
+        const { updated_at, ...symbolWithoutUpdate } = s;
+        const sym = symbolWithoutUpdate as any;
+
         let triadDisplay = "";
-        let kindDisplay = KIND_MAP[s.kind || 'pattern'] || (s.kind || 'pattern');
+        let kindDisplay = KIND_MAP[sym.kind || 'pattern'] || (sym.kind || 'pattern');
         let payloadDisplay = "";
 
-        if (s.kind === 'lattice') {
-            const topKey = s.lattice?.topology || 'inductive';
+        if (sym.kind === 'lattice') {
+            const topKey = sym.lattice?.topology || 'inductive';
             const top = TOPOLOGY_MAP[topKey] || topKey;
             
-            const cloKey = s.lattice?.closure || 'loop';
+            const cloKey = sym.lattice?.closure || 'loop';
             const clo = CLOSURE_MAP[cloKey] || cloKey;
             
             kindDisplay = `${top} ${clo}`;
 
              // Triad as array of linked triads
-            if (s.linked_patterns && s.linked_patterns.length > 0) {
-                const linkedTriads = s.linked_patterns
-                    .map(link => uniqueSymbols.find((ext: SymbolDef) => ext.id === link.id)?.triad)
+            if (sym.linked_patterns && sym.linked_patterns.length > 0) {
+                const linkedTriads = sym.linked_patterns
+                    .map((link: any) => uniqueSymbols.find((ext: SymbolDef) => ext.id === link.id)?.triad)
                     .filter(Boolean);
                 if (linkedTriads.length > 0) {
                     kindDisplay += ` (Links: ${linkedTriads.join(', ')})`;
                 }
             }
-        } else if (s.kind === 'data') {
+        } else if (sym.kind === 'data') {
              // For data symbols, include the payload
-             if (s.data && s.data.payload) {
-                 payloadDisplay = `Payload: ${JSON.stringify(s.data.payload)}`;
+             if (sym.data && sym.data.payload) {
+                 payloadDisplay = `Payload: ${JSON.stringify(sym.data.payload)}`;
              }
              let triadArr: string[] = [];
-             if (Array.isArray(s.triad)) {
-                triadArr = s.triad;
-             } else if (typeof s.triad === 'string') {
-                triadArr = (s.triad as string).split(',').map(t => t.trim());
+             if (Array.isArray(sym.triad)) {
+                triadArr = sym.triad;
+             } else if (typeof sym.triad === 'string') {
+                triadArr = (sym.triad as string).split(',').map(t => t.trim());
              }
              triadDisplay = `[${triadArr.slice(0, 3).join(', ')}]`;
         } else {
             let triadArr: string[] = [];
-            if (Array.isArray(s.triad)) {
-                triadArr = s.triad;
-            } else if (typeof s.triad === 'string') {
+            if (Array.isArray(sym.triad)) {
+                triadArr = sym.triad;
+            } else if (typeof sym.triad === 'string') {
                 // Handle string triad (e.g. "A, B, C")
-                triadArr = (s.triad as string).split(',').map(t => t.trim());
+                triadArr = (sym.triad as string).split(',').map(t => t.trim());
             }
             triadDisplay = `[${triadArr.slice(0, 3).join(', ')}]`;
         }
         
         // Truncate macro for brevity if needed, but keep it useful
-        const macroDisplay = (s.macro || "").slice(0, 100).replace(/\n/g, " ");
+        const macroDisplay = (sym.macro || "").slice(0, 100).replace(/\n/g, " ");
         const content = payloadDisplay ? `${payloadDisplay}` : macroDisplay;
 
-        return `| ${s.id} | ${s.name} | ${triadDisplay} | ${kindDisplay} | ${content} |`;
+        return `| ${sym.id} | ${sym.name} | ${triadDisplay} | ${kindDisplay} | ${content} |`;
     }).join('\n');
   }
 
