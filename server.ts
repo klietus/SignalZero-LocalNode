@@ -649,10 +649,10 @@ app.post('/api/settings/hygiene', requireAuth, async (req, res) => {
 
 // Individual Hygiene Actions
 app.post('/api/hygiene/run', requireAuth, async (req, res) => {
-    const { strategy } = req.body;
+    const { strategy, settings } = req.body;
     try {
-        // Run analysis for the specific requested strategy
-        const stats = await topologyService.analyze(req.user?.id, strategy);
+        // Run analysis for the specific requested strategy with optional override settings
+        const stats = await topologyService.analyze(req.user?.id, strategy, settings);
         res.json({ status: 'success', stats });
     } catch (e) {
         loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });

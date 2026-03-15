@@ -24,23 +24,39 @@ class TopologyService {
     private readonly RANK = 20; // Latent factor dimension
 
     constructor() {
-        // Initialize backend
+        // Initialize backend - Prefer wasm, fallback to cpu in tests or if wasm fails
         const backend = process.env.NODE_ENV === 'test' ? 'cpu' : 'wasm';
-        tf.setBackend(backend).then(() => {
-            loggerService.info(`TopologyService: TensorFlow ${backend} backend initialized`);
-        });
+        
+        const initBackend = async () => {
+            try {
+                await tf.setBackend(backend);
+                await tf.ready();
+            } catch (e) {
+                if (backend === 'wasm') {
+                    await tf.setBackend('cpu');
+                }
+            }
+            loggerService.info(`TopologyService: TensorFlow ${tf.getBackend()} backend initialized`);
+        };
+
+        initBackend();
     }
 
     /**
      * Executes the global topology analysis loop.
-     * If specificStrategy is provided, it runs only that one with full permissions (auto-link/compress).
+     * If specificStrategy is provided, it runs only that one.
+     * If overrideSettings is provided, it uses those instead of saved settings.
      */
-    async analyze(userId?: string, specificStrategy?: string): Promise<TopologyStats | null> {
+    async analyze(userId?: string, specificStrategy?: string, overrideSettings?: GraphHygieneSettings): Promise<TopologyStats | null> {
         try {
             await tf.ready();
-            const hygiene = await settingsService.getHygieneSettings();
+            const hygiene = overrideSettings || await settingsService.getHygieneSettings();
 
-            loggerService.info("TopologyService: Starting topology analysis", { strategy: specificStrategy || 'full', hygiene });
+            loggerService.info("TopologyService: Starting topology analysis", { 
+                strategy: specificStrategy || 'full', 
+                hygiene,
+                isOverride: !!overrideSettings 
+            });
             
             // 1. Fetch all symbols
             const allDomains = await domainService.listDomains(userId);
@@ -125,28 +141,50 @@ class TopologyService {
             const symbolMap = new Map<string, number>();
             symbols.forEach((s, i) => symbolMap.set(s.id, i));
 
-            loggerService.info(`TopologyService: Building 2D adjacency matrix for ${N} symbols`);
+            const linkTypes = new Set<string>();
+            symbols.forEach(s => {
+                (s.linked_patterns || []).forEach(l => linkTypes.add(l.link_type || 'emergent'));
+            });
+            const linkTypeList = Array.from(linkTypes);
+            const linkTypeMap = new Map<string, number>();
+            linkTypeList.forEach((t, i) => linkTypeMap.set(t, i));
 
-            // 1. Build Weighted Adjacency Matrix (2D)
-            const buffer = tf.buffer([N, N]);
+            const K = linkTypeList.length || 1;
+
+            loggerService.info(`TopologyService: Building 3D adjacency tensor (${N}x${N}x${K})`);
+
+            // 1. Build Adjacency Tensor
+            const buffer = tf.buffer([N, N, K]);
             symbols.forEach((s, i) => {
                 (s.linked_patterns || []).forEach(l => {
                     const j = symbolMap.get(l.id);
                     if (j !== undefined && i !== j) {
-                        buffer.set(1.0, i, j);
+                        const k = linkTypeMap.get(l.link_type || 'emergent') || 0;
+                        buffer.set(1.0, i, j, k);
                     }
                 });
             });
 
-            const matrix = buffer.toTensor();
+            const tensor = buffer.toTensor();
 
-            // 2. SVD Factorization
-            const { s, u, v } = tf.linalg.svd(matrix);
-            
-            // 3. Redundancy Detection
+            // 2. CP-ALS Decomposition
+            const factors = await this.decomposeCP(tensor, this.RANK, 5);
+            const [A, B, C] = factors;
+
+            // 3. Link Prediction (Slice-Based)
+            let newLinks = 0;
+            if (hygiene.positional.autoLink) {
+                const predictedLinks = await this.findNewLinks3D(tensor, A, B, C, symbols, linkTypeList);
+                if (predictedLinks.length > 0) {
+                    await this.promoteToTentative(predictedLinks, userId);
+                    newLinks = predictedLinks.length;
+                }
+            }
+
+            // 4. Redundancy Detection
             let redundantCount = 0;
             if (hygiene.positional.autoCompress) {
-                const redundantGroups = this.findRedundantSymbols(u, symbols);
+                const redundantGroups = this.findRedundantSymbols(A, symbols);
                 if (redundantGroups.length > 0) {
                     const validated = [];
                     for (const group of redundantGroups) {
@@ -159,57 +197,96 @@ class TopologyService {
                 }
             }
 
-            // 4. Link Prediction
-            let newLinks = 0;
-            if (hygiene.positional.autoLink) {
-                const rank = Math.min(this.RANK, s.shape[0]);
-                const reconstructed = tf.tidy(() => {
-                    const s_mask = tf.oneHot(tf.range(0, rank, 1, 'int32'), s.shape[0]).sum(0);
-                    const s_low = s.mul(s_mask);
-                    return u.matMul(tf.diag(s_low)).matMul(v.transpose());
-                });
-
-                const predictedLinks = await this.findNewLinks2D(matrix, reconstructed, symbols);
-                if (predictedLinks.length > 0) {
-                    await this.promoteToTentative(predictedLinks, userId);
-                    newLinks = predictedLinks.length;
-                }
-                reconstructed.dispose();
-            }
-
-            matrix.dispose();
-            s.dispose();
-            u.dispose();
-            v.dispose();
+            tensor.dispose();
+            A.dispose();
+            B.dispose();
+            C.dispose();
 
             return { newLinks, redundantCount, reconstructionError: 0 };
-        } catch (error) {
-            loggerService.error("TopologyService: Positional analysis failed", { error });
+        } catch (error: any) {
+            loggerService.error("TopologyService: Positional analysis failed", { 
+                error: error.message, 
+                stack: error.stack 
+            });
             return { newLinks: 0, redundantCount: 0 };
         }
     }
 
-    private async findNewLinks2D(original: tf.Tensor, reconstructed: tf.Tensor, symbols: SymbolDef[]): Promise<any[]> {
-        const [I, J] = original.shape;
+    private async findNewLinks3D(original: tf.Tensor, A: tf.Tensor, B: tf.Tensor, C: tf.Tensor, symbols: SymbolDef[], linkTypes: string[]): Promise<any[]> {
+        const [I, J, K] = original.shape;
         const predicted: any[] = [];
-        const data = await reconstructed.data();
-        const originalData = await original.data();
+        const rank = A.shape[1];
 
-        for (let idx = 0; idx < data.length; idx++) {
-            if (originalData[idx] === 0 && data[idx] > this.CONFIDENCE_THRESHOLD) {
-                const i = Math.floor(idx / J);
-                const j = idx % J;
-                if (i !== j) {
-                    predicted.push({
-                        sourceId: symbols[i].id,
-                        targetId: symbols[j].id,
-                        linkType: 'topological_inference',
-                        confidence: data[idx]
-                    });
+        for (let k = 0; k < K; k++) {
+            await tf.nextFrame();
+            const sliceLinks = tf.tidy(() => {
+                const C_k = C.slice([k, 0], [1, rank]);
+                const reconstructedSlice = A.mul(C_k).matMul(B.transpose());
+                const originalSlice = original.slice([0, 0, k], [I, J, 1]).reshape([I, J]);
+                const mask = originalSlice.equal(0);
+                return reconstructedSlice.mul(mask.cast('float32'));
+            });
+
+            const data = await sliceLinks.data();
+            for (let idx = 0; idx < data.length; idx++) {
+                if (data[idx] > this.CONFIDENCE_THRESHOLD) {
+                    const i = Math.floor(idx / J);
+                    const j = idx % J;
+                    if (i !== j) {
+                        predicted.push({
+                            sourceId: symbols[i].id,
+                            targetId: symbols[j].id,
+                            linkType: linkTypes[k],
+                            confidence: data[idx]
+                        });
+                    }
                 }
             }
+            sliceLinks.dispose();
         }
         return predicted;
+    }
+
+    private async decomposeCP(X: tf.Tensor, rank: number, maxIter: number): Promise<tf.Tensor[]> {
+        const [I, J, K] = X.shape;
+        
+        let A = tf.variable(tf.randomUniform([I, rank], 0, 1));
+        let B = tf.variable(tf.randomUniform([J, rank], 0, 1));
+        let C = tf.variable(tf.randomUniform([K, rank], 0, 1));
+
+        // Using a simple SGD approach for each factor matrix instead of matrix inversion
+        // This is much more memory stable and works on all backends.
+        const learningRate = 0.05;
+
+        for (let iter = 0; iter < maxIter; iter++) {
+            await tf.nextFrame();
+            
+            // Optimize A, B, C sequentially
+            for (const target of [A, B, C]) {
+                const optimizer = tf.train.sgd(learningRate);
+                optimizer.minimize(() => {
+                    return tf.tidy(() => {
+                        let totalLoss = tf.scalar(0);
+                        const sampleSize = Math.min(K, 5);
+                        for (let s = 0; s < sampleSize; s++) {
+                            const k = Math.floor(Math.random() * K);
+                            const sliceX = X.slice([0, 0, k], [I, J, 1]).reshape([I, J]);
+                            const sliceCk = C.slice([k, 0], [1, rank]);
+                            const slicePred = A.mul(sliceCk).matMul(B.transpose());
+                            
+                            const loss = tf.losses.meanSquaredError(sliceX, slicePred) as tf.Scalar;
+                            totalLoss = totalLoss.add(loss);
+                        }
+                        return totalLoss;
+                    });
+                }, true, [target]);
+                optimizer.dispose();
+            }
+            
+            loggerService.debug(`TopologyService: CP-SGD Iteration ${iter + 1}/${maxIter} complete`);
+        }
+
+        return [A, B, C];
     }
 
     private async runSemanticAnalysis(symbols: SymbolDef[], hygiene: GraphHygieneSettings, userId?: string) {
