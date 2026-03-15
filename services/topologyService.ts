@@ -146,35 +146,97 @@ class TopologyService {
                 (s.linked_patterns || []).forEach(l => linkTypes.add(l.link_type || 'emergent'));
             });
             const linkTypeList = Array.from(linkTypes);
+            const K = linkTypeList.length || 1;
             const linkTypeMap = new Map<string, number>();
             linkTypeList.forEach((t, i) => linkTypeMap.set(t, i));
 
-            const K = linkTypeList.length || 1;
+            loggerService.info(`TopologyService: Building positional factors for ${N} symbols across ${K} link types`);
 
-            loggerService.info(`TopologyService: Building 3D adjacency tensor (${N}x${N}x${K})`);
+            // To avoid V8 size limit for large 3D tensors, we decompose by building the factors
+            // directly from the sparse representation rather than one giant dense tensor.
+            const rank = this.RANK;
+            let A = tf.variable(tf.randomUniform([N, rank], 0, 1));
+            let B = tf.variable(tf.randomUniform([N, rank], 0, 1));
+            let C = tf.variable(tf.randomUniform([K, rank], 0, 1));
 
-            // 1. Build Adjacency Tensor
-            const buffer = tf.buffer([N, N, K]);
-            symbols.forEach((s, i) => {
-                (s.linked_patterns || []).forEach(l => {
-                    const j = symbolMap.get(l.id);
-                    if (j !== undefined && i !== j) {
-                        const k = linkTypeMap.get(l.link_type || 'emergent') || 0;
-                        buffer.set(1.0, i, j, k);
-                    }
-                });
-            });
+            const learningRate = 0.05;
+            const maxIter = 5;
 
-            const tensor = buffer.toTensor();
+            // Simple SGD for CP decomposition without ever building the full dense tensor
+            for (let iter = 0; iter < maxIter; iter++) {
+                await tf.nextFrame();
+                
+                // Optimize factors A, B, C using sampled links
+                for (const target of [A, B, C]) {
+                    const optimizer = tf.train.sgd(learningRate);
+                    optimizer.minimize(() => {
+                        return tf.tidy(() => {
+                            let totalLoss = tf.scalar(0);
+                            const sampleSize = 100; // Sample 100 symbols
+                            
+                            for (let s = 0; s < sampleSize; s++) {
+                                const i = Math.floor(Math.random() * N);
+                                const sourceSymbol = symbols[i];
+                                const links = sourceSymbol.linked_patterns || [];
+                                
+                                if (links.length === 0) continue;
+                                
+                                const l = links[Math.floor(Math.random() * links.length)];
+                                const j = symbolMap.get(l.id);
+                                if (j === undefined || i === j) continue;
+                                
+                                const k = linkTypeMap.get(l.link_type || 'emergent') || 0;
+                                
+                                // Slice factors
+                                const Ai = A.slice([i, 0], [1, rank]);
+                                const Bj = B.slice([j, 0], [1, rank]);
+                                const Ck = C.slice([k, 0], [1, rank]);
+                                
+                                // Predicted link (inner product of factors)
+                                const pred = Ai.mul(Bj).mul(Ck).sum();
+                                const loss = tf.losses.meanSquaredError(tf.scalar(1.0), pred) as tf.Scalar;
+                                totalLoss = totalLoss.add(loss);
+                            }
+                            return totalLoss;
+                        });
+                    }, true, [target]);
+                    optimizer.dispose();
+                }
+                loggerService.debug(`TopologyService: CP-SGD Sparse Iteration ${iter + 1}/${maxIter} complete`);
+            }
 
-            // 2. CP-ALS Decomposition
-            const factors = await this.decomposeCP(tensor, this.RANK, 5);
-            const [A, B, C] = factors;
-
-            // 3. Link Prediction (Slice-Based)
+            // 3. Link Prediction
             let newLinks = 0;
             if (hygiene.positional.autoLink) {
-                const predictedLinks = await this.findNewLinks3D(tensor, A, B, C, symbols, linkTypeList);
+                const predictedLinks = [];
+                // Sample potential new links for large graphs instead of exhaustive check
+                const samplePairs = 5000;
+                for (let s = 0; s < samplePairs; s++) {
+                    const i = Math.floor(Math.random() * N);
+                    const j = Math.floor(Math.random() * N);
+                    const k = Math.floor(Math.random() * K);
+                    if (i === j) continue;
+
+                    const score = await tf.tidy(() => {
+                        const Ai = A.slice([i, 0], [1, rank]);
+                        const Bj = B.slice([j, 0], [1, rank]);
+                        const Ck = C.slice([k, 0], [1, rank]);
+                        return Ai.mul(Bj).mul(Ck).sum().data();
+                    });
+
+                    if (score[0] > this.CONFIDENCE_THRESHOLD) {
+                        const hasLink = symbols[i].linked_patterns?.some(l => l.id === symbols[j].id);
+                        if (!hasLink) {
+                            predictedLinks.push({
+                                sourceId: symbols[i].id,
+                                targetId: symbols[j].id,
+                                linkType: linkTypeList[k],
+                                confidence: score[0]
+                            });
+                        }
+                    }
+                }
+
                 if (predictedLinks.length > 0) {
                     await this.promoteToTentative(predictedLinks, userId);
                     newLinks = predictedLinks.length;
@@ -197,7 +259,6 @@ class TopologyService {
                 }
             }
 
-            tensor.dispose();
             A.dispose();
             B.dispose();
             C.dispose();
@@ -211,82 +272,18 @@ class TopologyService {
             return { newLinks: 0, redundantCount: 0 };
         }
     }
+            A.dispose();
+            B.dispose();
+            C.dispose();
 
-    private async findNewLinks3D(original: tf.Tensor, A: tf.Tensor, B: tf.Tensor, C: tf.Tensor, symbols: SymbolDef[], linkTypes: string[]): Promise<any[]> {
-        const [I, J, K] = original.shape;
-        const predicted: any[] = [];
-        const rank = A.shape[1];
-
-        for (let k = 0; k < K; k++) {
-            await tf.nextFrame();
-            const sliceLinks = tf.tidy(() => {
-                const C_k = C.slice([k, 0], [1, rank]);
-                const reconstructedSlice = A.mul(C_k).matMul(B.transpose());
-                const originalSlice = original.slice([0, 0, k], [I, J, 1]).reshape([I, J]);
-                const mask = originalSlice.equal(0);
-                return reconstructedSlice.mul(mask.cast('float32'));
+            return { newLinks, redundantCount, reconstructionError: 0 };
+        } catch (error: any) {
+            loggerService.error("TopologyService: Positional analysis failed", { 
+                error: error.message, 
+                stack: error.stack 
             });
-
-            const data = await sliceLinks.data();
-            for (let idx = 0; idx < data.length; idx++) {
-                if (data[idx] > this.CONFIDENCE_THRESHOLD) {
-                    const i = Math.floor(idx / J);
-                    const j = idx % J;
-                    if (i !== j) {
-                        predicted.push({
-                            sourceId: symbols[i].id,
-                            targetId: symbols[j].id,
-                            linkType: linkTypes[k],
-                            confidence: data[idx]
-                        });
-                    }
-                }
-            }
-            sliceLinks.dispose();
+            return { newLinks: 0, redundantCount: 0 };
         }
-        return predicted;
-    }
-
-    private async decomposeCP(X: tf.Tensor, rank: number, maxIter: number): Promise<tf.Tensor[]> {
-        const [I, J, K] = X.shape;
-        
-        let A = tf.variable(tf.randomUniform([I, rank], 0, 1));
-        let B = tf.variable(tf.randomUniform([J, rank], 0, 1));
-        let C = tf.variable(tf.randomUniform([K, rank], 0, 1));
-
-        // Using a simple SGD approach for each factor matrix instead of matrix inversion
-        // This is much more memory stable and works on all backends.
-        const learningRate = 0.05;
-
-        for (let iter = 0; iter < maxIter; iter++) {
-            await tf.nextFrame();
-            
-            // Optimize A, B, C sequentially
-            for (const target of [A, B, C]) {
-                const optimizer = tf.train.sgd(learningRate);
-                optimizer.minimize(() => {
-                    return tf.tidy(() => {
-                        let totalLoss = tf.scalar(0);
-                        const sampleSize = Math.min(K, 5);
-                        for (let s = 0; s < sampleSize; s++) {
-                            const k = Math.floor(Math.random() * K);
-                            const sliceX = X.slice([0, 0, k], [I, J, 1]).reshape([I, J]);
-                            const sliceCk = C.slice([k, 0], [1, rank]);
-                            const slicePred = A.mul(sliceCk).matMul(B.transpose());
-                            
-                            const loss = tf.losses.meanSquaredError(sliceX, slicePred) as tf.Scalar;
-                            totalLoss = totalLoss.add(loss);
-                        }
-                        return totalLoss;
-                    });
-                }, true, [target]);
-                optimizer.dispose();
-            }
-            
-            loggerService.debug(`TopologyService: CP-SGD Iteration ${iter + 1}/${maxIter} complete`);
-        }
-
-        return [A, B, C];
     }
 
     private async runSemanticAnalysis(symbols: SymbolDef[], hygiene: GraphHygieneSettings, userId?: string) {
@@ -305,30 +302,45 @@ class TopologyService {
             return { newLinks: 0, redundantCount: 0 };
         }
 
-        if (embeddings.length !== symbols.length) return { newLinks: 0, redundantCount: 0 };
+        const N = symbols.length;
+        if (embeddings.length !== N) return { newLinks: 0, redundantCount: 0 };
 
-        const embTensor = tf.tensor2d(embeddings);
-        const normEmb = tf.tidy(() => {
-            const norms = embTensor.norm(2, 1, true);
-            return embTensor.div(norms.add(1e-9));
-        });
-        const similarityMatrix = normEmb.matMul(normEmb.transpose());
-        const similarities = await similarityMatrix.array() as number[][];
+        // Normalize all embeddings first (as arrays for memory stability)
+        const normalizedEmbeddings: number[][] = [];
+        for (let i = 0; i < N; i++) {
+            const emb = embeddings[i];
+            const norm = Math.sqrt(emb.reduce((sum, val) => sum + val * val, 0));
+            normalizedEmbeddings.push(emb.map(val => val / (norm + 1e-9)));
+        }
 
+        // To avoid memory limits with large similarity matrices,
+        // we process the similarities in chunks using tensors for the heavy math.
+        const chunkSize = 200;
+        const allNormEmb = tf.tensor2d(normalizedEmbeddings);
+        
         if (hygiene.semantic.autoCompress) {
             const redundantGroups: string[][] = [];
             const visited = new Set<number>();
 
-            for (let i = 0; i < symbols.length; i++) {
-                if (visited.has(i)) continue;
-                const group = [symbols[i].id];
-                for (let j = i + 1; j < symbols.length; j++) {
-                    if (similarities[i][j] > this.REDUNDANCY_THRESHOLD) {
-                        group.push(symbols[j].id);
-                        visited.add(j);
+            for (let i = 0; i < N; i += chunkSize) {
+                const end = Math.min(i + chunkSize, N);
+                const chunk = allNormEmb.slice([i, 0], [end - i, -1]);
+                const chunkSimilarities = await chunk.matMul(allNormEmb.transpose()).array() as number[][];
+                
+                for (let row = 0; row < chunkSimilarities.length; row++) {
+                    const absI = i + row;
+                    if (visited.has(absI)) continue;
+                    
+                    const group = [symbols[absI].id];
+                    for (let absJ = absI + 1; absJ < N; absJ++) {
+                        if (chunkSimilarities[row][absJ] > this.REDUNDANCY_THRESHOLD) {
+                            group.push(symbols[absJ].id);
+                            visited.add(absJ);
+                        }
                     }
+                    if (group.length > 1) redundantGroups.push(group);
                 }
-                if (group.length > 1) redundantGroups.push(group);
+                chunk.dispose();
             }
 
             if (redundantGroups.length > 0) {
@@ -345,32 +357,39 @@ class TopologyService {
 
         if (hygiene.semantic.autoLink) {
             const predicted = [];
-            for (let i = 0; i < symbols.length; i++) {
-                for (let j = i + 1; j < symbols.length; j++) {
-                    if (similarities[i][j] > this.CONFIDENCE_THRESHOLD) {
-                        const hasLink = symbols[i].linked_patterns?.some(l => l.id === symbols[j].id) ||
-                                        symbols[j].linked_patterns?.some(l => l.id === symbols[i].id);
-                        
-                        if (!hasLink) {
-                            predicted.push({
-                                sourceId: symbols[i].id,
-                                targetId: symbols[j].id,
-                                linkType: 'semantic_inference',
-                                confidence: similarities[i][j]
-                            });
+            for (let i = 0; i < N; i += chunkSize) {
+                const end = Math.min(i + chunkSize, N);
+                const chunk = allNormEmb.slice([i, 0], [end - i, -1]);
+                const chunkSimilarities = await chunk.matMul(allNormEmb.transpose()).array() as number[][];
+                
+                for (let row = 0; row < chunkSimilarities.length; row++) {
+                    const absI = i + row;
+                    for (let absJ = absI + 1; absJ < N; absJ++) {
+                        if (chunkSimilarities[row][absJ] > this.CONFIDENCE_THRESHOLD) {
+                            const hasLink = symbols[absI].linked_patterns?.some(l => l.id === symbols[absJ].id) ||
+                                            symbols[absJ].linked_patterns?.some(l => l.id === symbols[absI].id);
+                            
+                            if (!hasLink) {
+                                predicted.push({
+                                    sourceId: symbols[absI].id,
+                                    targetId: symbols[absJ].id,
+                                    linkType: 'semantic_inference',
+                                    confidence: chunkSimilarities[row][absJ]
+                                });
+                            }
                         }
                     }
                 }
+                chunk.dispose();
             }
+
             if (predicted.length > 0) {
                 await this.promoteToTentative(predicted, userId);
                 newLinksCount = predicted.length;
             }
         }
 
-        embTensor.dispose();
-        normEmb.dispose();
-        similarityMatrix.dispose();
+        allNormEmb.dispose();
 
         return { newLinks: newLinksCount, redundantCount };
     }
