@@ -34,18 +34,18 @@
   "adminUser": null,
   "hygiene": {
     "positional": {
-      "autoCompress": true,
-      "autoLink": true
+      "autoCompress": false,
+      "autoLink": false
     },
     "semantic": {
       "autoCompress": false,
-      "autoLink": true
-    },
-    "triadic": {
-      "autoCompress": true,
       "autoLink": false
     },
-    "deadLinkCleanup": true,
-    "orphanAnalysis": true
+    "triadic": {
+      "autoCompress": false,
+      "autoLink": false
+    },
+    "deadLinkCleanup": false,
+    "orphanAnalysis": false
   }
 }
