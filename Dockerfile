@@ -17,6 +17,14 @@ FROM node:20-slim
 
 WORKDIR /app
 
+# Install runtime utilities and dependencies for tfjs-node
+RUN apt-get update && apt-get install -y \
+    curl \
+    procps \
+    ca-certificates \
+    libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /app/package.json /app/package.json
 COPY --from=builder /app/package-lock.json /app/package-lock.json
 COPY --from=builder /app/node_modules /app/node_modules
