@@ -16,6 +16,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthStatus'
+  /topology/analyze:
+    post:
+      summary: Trigger global topology analysis
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Analysis complete
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  stats:
+                    $ref: '#/components/schemas/TopologyStats'
   /settings:
     get:
       summary: Get system settings
@@ -969,6 +986,23 @@ components:
           type: string
           format: date-time
           description: Time the health check was performed
+    TopologyStats:
+      type: object
+      properties:
+        symbolCount:
+          type: integer
+        linkCount:
+          type: integer
+        linkTypes:
+          type: array
+          items:
+            type: string
+        reconstructionError:
+          type: number
+        newLinksPredicted:
+          type: integer
+        redundantSymbolsFound:
+          type: integer
     SystemSettings:
       type: object
       properties:

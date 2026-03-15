@@ -1,13 +1,36 @@
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { settingsService } from '../services/settingsService.ts';
+import { redisService } from '../services/redisService.js';
+import fs from 'fs';
+
+// Mock fs to always return empty settings during tests
+vi.mock('fs', () => ({
+    default: {
+        readFileSync: vi.fn().mockReturnValue('{}'),
+        writeFileSync: vi.fn(),
+        existsSync: vi.fn().mockReturnValue(true),
+        mkdirSync: vi.fn(),
+    },
+    readFileSync: vi.fn().mockReturnValue('{}'),
+    writeFileSync: vi.fn(),
+    existsSync: vi.fn().mockReturnValue(true),
+    mkdirSync: vi.fn(),
+}));
+
+vi.mock('../services/redisService.js', () => ({
+    redisService: {
+        request: vi.fn().mockResolvedValue(null),
+    }
+}));
 
 describe('SettingsService', () => {
     const originalEnv = process.env;
 
     beforeEach(() => {
-        vi.resetModules();
+        vi.clearAllMocks();
         process.env = { ...originalEnv };
+        settingsService.clearCache();
     });
 
     afterEach(() => {
@@ -133,7 +156,7 @@ describe('SettingsService', () => {
         process.env.INFERENCE_ENDPOINT = 'http://localhost:1234/v1';
         process.env.INFERENCE_MODEL = 'Meta-Llama-3-70B-Instruct';
         process.env.INFERENCE_API_KEY = '';
-        delete process.env.INFERENCE_LOOP_MODEL;
+        delete process.env.INFERENCE_AGENT_MODEL;
 
         const systemSettings = await settingsService.getSystemSettings();
 
@@ -153,8 +176,9 @@ describe('SettingsService', () => {
                 model: 'Meta-Llama-3-70B-Instruct',
                 provider: 'local',
                 apiKey: '',
-                loopModel: 'Meta-Llama-3-70B-Instruct',
+                agentModel: 'Meta-Llama-3-70B-Instruct',
                 visionModel: 'zai-org/glm-4.6v-flash',
+                fastModel: 'gemini-1.5-flash',
                 savedConfigs: expect.any(Object)
             },
             serpApi: {
@@ -163,6 +187,13 @@ describe('SettingsService', () => {
             voice: {
                 pulseServer: '',
                 wakeWord: 'axiom'
+            },
+            hygiene: {
+                positional: { autoCompress: false, autoLink: false },
+                semantic: { autoCompress: false, autoLink: false },
+                triadic: { autoCompress: false, autoLink: false },
+                deadLinkCleanup: false,
+                orphanAnalysis: false
             }
         });
     });
@@ -209,8 +240,9 @@ describe('SettingsService', () => {
                 model: 'Meta-Llama-3-70B-Instruct',
                 provider: 'local',
                 apiKey: '',
-                loopModel: 'Meta-Llama-3-70B-Instruct',
+                agentModel: 'openai/gpt-oss-120b',
                 visionModel: 'zai-org/glm-4.6v-flash',
+                fastModel: 'gemini-1.5-flash',
                 savedConfigs: expect.any(Object)
             },
             serpApi: {
@@ -219,7 +251,39 @@ describe('SettingsService', () => {
             voice: {
                 pulseServer: '',
                 wakeWord: 'axiom'
+            },
+            hygiene: {
+                positional: { autoCompress: false, autoLink: false },
+                semantic: { autoCompress: false, autoLink: false },
+                triadic: { autoCompress: false, autoLink: false },
+                deadLinkCleanup: false,
+                orphanAnalysis: false
             }
         });
+    });
+
+    it('should handle hygiene settings independently', async () => {
+        // Force a clean start for this specific test
+        settingsService.clearCache();
+        
+        const initial = await settingsService.getHygieneSettings();
+        expect(initial.positional.autoLink).toBe(false);
+
+        await settingsService.setHygieneSettings({
+            positional: { autoCompress: true, autoLink: true },
+            semantic: { autoCompress: false, autoLink: true },
+            triadic: { autoCompress: true, autoLink: false },
+            deadLinkCleanup: true,
+            orphanAnalysis: true
+        });
+
+        const updated = await settingsService.getHygieneSettings();
+        expect(updated.positional.autoCompress).toBe(true);
+        expect(updated.semantic.autoLink).toBe(true);
+        expect(updated.triadic.autoCompress).toBe(true);
+        expect(updated.deadLinkCleanup).toBe(true);
+        
+        // Clean up after ourselves
+        settingsService.clearCache();
     });
 });

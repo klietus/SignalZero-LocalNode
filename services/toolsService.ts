@@ -677,7 +677,7 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
         return s;
     };
 
-    return async (name: string, args: any): Promise<any> => {
+    const executor = async (name: string, args: any): Promise<any> => {
 
     console.log(`[ToolExecutor] Executing ${name} with`, args);
 

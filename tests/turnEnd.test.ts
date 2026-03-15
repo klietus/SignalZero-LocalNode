@@ -195,7 +195,7 @@ describe('Turn Ending and Audit Logic Refined', () => {
         const chatState = { messages: [], systemInstruction: 'Instruction', model: 'test-model' };
         const toolExecutor = vi.fn().mockResolvedValue({ status: 'ok' });
 
-        // Loop 0: text only (Fails Trace Audit)
+        // Loop 0 (Initial): Narrative but no trace
         sendMessageStreamMock.mockResolvedValueOnce({
             stream: (async function* () {
                 yield {
@@ -206,13 +206,13 @@ describe('Turn Ending and Audit Logic Refined', () => {
             })()
         });
 
-        // Loop 1 (Audit Correction): log_trace
-        sendMessageStreamMock.mockResolvedValueOnce({
+        // Audit Retries (missing trace)
+        sendMessageStreamMock.mockResolvedValue({
             stream: (async function* () {
                 yield {
-                    text: () => "",
-                    functionCalls: () => [{ name: 'log_trace', args: { trace: {} } }],
-                    candidates: [{ content: { parts: [{ functionCall: { name: 'log_trace', args: { trace: {} } } }] } }]
+                    text: () => "Still no trace.",
+                    functionCalls: () => null,
+                    candidates: [{ content: { parts: [{ text: "Still no trace." }] } }]
                 };
             })()
         });
@@ -220,8 +220,8 @@ describe('Turn Ending and Audit Logic Refined', () => {
         const generator = sendMessageAndHandleTools(chatState as any, 'Hello', toolExecutor, 'Instruction', 'sess-1');
         for await (const _ of generator) {}
 
-        // Loop 0: audit fail. Loop 1: trace provided. Narrative from Loop 0 is still in 'totalTextAccumulatedAcrossLoops'.
-        // So Loop 1 satisfies requirements.
-        expect(sendMessageStreamMock).toHaveBeenCalledTimes(2);
+        // Original + 3 audit retries = 4 per loop. 2 loops = 8.
+        expect(sendMessageStreamMock).toHaveBeenCalledTimes(8);
     });
 });
+

@@ -1256,5 +1256,105 @@ export const domainService = {
     // New signature: compressSymbols(domainId, threshold, userId)
     loggerService.info('Compress symbols called', { domainId: newSymbolOrDomainId, threshold: oldIdsOrThreshold });
     return { status: 'not_implemented' };
+  },
+
+  /**
+   * Merges a redundant symbol into a canonical one.
+   * Updates all global references.
+   */
+  mergeSymbols: async (canonicalId: string, redundantId: string, userId?: string): Promise<void> => {
+    loggerService.info(`DomainService: Merging symbol ${redundantId} into ${canonicalId}`);
+    
+    const canonical = await domainService.findById(canonicalId, userId);
+    const redundant = await domainService.findById(redundantId, userId);
+    
+    if (!canonical || !redundant) {
+      throw new Error(`Symbol not found: ${!canonical ? canonicalId : redundantId}`);
+    }
+
+    // 1. Move links from redundant to canonical
+    if (redundant.linked_patterns) {
+      if (!canonical.linked_patterns) canonical.linked_patterns = [];
+      
+      for (const link of redundant.linked_patterns) {
+        if (link.id !== canonicalId && !canonical.linked_patterns.some(l => l.id === link.id)) {
+          canonical.linked_patterns.push(link);
+        }
+      }
+    }
+
+    // 2. Save canonical
+    await domainService.addSymbol(canonical.symbol_domain, canonical, userId, true);
+
+    // 3. Update all global links pointing to redundant to point to canonical
+    const allDomains = await domainService.listDomains(userId);
+    for (const dId of allDomains) {
+      const domain = await domainService.get(dId, userId);
+      if (!domain) continue;
+
+      let modified = false;
+      for (const s of domain.symbols) {
+        if (s.linked_patterns) {
+          for (const link of s.linked_patterns) {
+            if (link.id === redundantId) {
+              link.id = canonicalId;
+              modified = true;
+            }
+          }
+        }
+      }
+
+      if (modified) {
+        domain.lastUpdated = Date.now();
+        const key = getDomainKey(dId, userId);
+        await redisService.request(['SET', key, JSON.stringify(domain)]);
+      }
+    }
+
+    // 4. Sync session caches
+    await domainService.syncCacheAfterMerge(canonical, redundantId);
+
+    // 5. Delete redundant symbol
+    await domainService.deleteSymbol(redundant.symbol_domain, redundantId, userId);
+  },
+
+  /**
+   * Synchronizes active session caches after a symbol merge.
+   * Replaces redundant ID with the full canonical symbol object.
+   */
+  syncCacheAfterMerge: async (canonical: SymbolDef, redundantId: string): Promise<void> => {
+    try {
+      const CONTEXT_INDEX_KEY = 'context:index';
+      const CACHE_PREFIX = 'sz:symbol_cache:';
+      
+      const sessionIds = await redisService.request(['SMEMBERS', CONTEXT_INDEX_KEY]);
+      if (!sessionIds || !Array.isArray(sessionIds)) return;
+
+      for (const sessionId of sessionIds) {
+        const cacheKey = `${CACHE_PREFIX}${sessionId}`;
+        const data = await redisService.request(['GET', cacheKey]);
+        if (!data) continue;
+
+        const cache = JSON.parse(data);
+        if (cache[redundantId]) {
+          loggerService.info(`DomainService: Replacing redundant symbol in cache for session ${sessionId}`);
+          
+          // Transfer turnCount/lastUsed from redundant to canonical
+          const entry = cache[redundantId];
+          cache[canonical.id] = {
+            ...entry,
+            symbol: canonical
+          };
+          
+          delete cache[redundantId];
+          await redisService.request(['SET', cacheKey, JSON.stringify(cache), 'EX', '86400']);
+          
+          // Note: Frontend will handle the visual part via the SYMBOL_COMPRESSION event
+          // emitted by TopologyService.
+        }
+      }
+    } catch (error) {
+      loggerService.error("DomainService: Failed to sync cache after merge", { error });
+    }
   }
 };
