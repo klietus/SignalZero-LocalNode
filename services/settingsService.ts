@@ -50,6 +50,7 @@ export interface InferenceSettings {
   model: string;
   agentModel: string;
   visionModel: string;
+  fastModel: string;
   savedConfigs?: Record<string, InferenceConfiguration>;
 }
 
@@ -59,6 +60,7 @@ export interface InferenceConfiguration {
   model: string;
   agentModel: string;
   visionModel: string;
+  fastModel: string;
 }
 
 export interface SystemSettings {
@@ -364,6 +366,7 @@ export const settingsService = {
       model: saved.model || process.env.INFERENCE_MODEL || 'openai/gpt-oss-120b',
       agentModel: saved.agentModel || process.env.INFERENCE_AGENT_MODEL || saved.model || process.env.INFERENCE_MODEL || 'openai/gpt-oss-120b',
       visionModel: saved.visionModel || process.env.INFERENCE_VISION_MODEL || 'zai-org/glm-4.6v-flash',
+      fastModel: saved.fastModel || process.env.INFERENCE_FAST_MODEL || 'gemini-1.5-flash',
       savedConfigs: saved.savedConfigs || {},
     };
   },
@@ -378,6 +381,7 @@ export const settingsService = {
       model: settings.model,
       agentModel: settings.agentModel,
       visionModel: settings.visionModel,
+      fastModel: settings.fastModel,
       savedConfigs: settings.savedConfigs || current.inference?.savedConfigs || {},
     };
     
@@ -390,6 +394,7 @@ export const settingsService = {
     process.env.INFERENCE_MODEL = settings.model;
     process.env.INFERENCE_AGENT_MODEL = settings.agentModel;
     process.env.INFERENCE_VISION_MODEL = settings.visionModel;
+    process.env.INFERENCE_FAST_MODEL = settings.fastModel;
     
     // Local mode: also save to file
     if (!isStateless()) {
