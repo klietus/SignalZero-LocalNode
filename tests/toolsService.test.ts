@@ -79,7 +79,7 @@ describe('ToolsService', () => {
     it('upsert_symbols calls domainService.bulkUpsert for adds', async () => {
         const sym = { ...VALID_SYMBOL, id: 's1', symbol_domain: 'dom' };
         await toolExecutor('upsert_symbols', { symbols: [{ symbol_data: sym }] });
-        expect(domainService.bulkUpsert).toHaveBeenCalledWith('dom', [sym], { userId: undefined, isAdmin: false });
+        expect(domainService.bulkUpsert).toHaveBeenCalledWith('dom', [sym], { userId: undefined, isAdmin: false, contextSessionId: 'test-session' });
     });
 
     it('upsert_symbols routes renames to propagateRename', async () => {
@@ -163,7 +163,7 @@ describe('ToolsService', () => {
         const commitRes = await toolExecutor('symbol_transaction', { action: 'commit' });
         expect(commitRes.status).toBe('Transaction committed.');
         expect(commitRes.operations).toBe(1);
-        expect(domainService.bulkUpsert).toHaveBeenCalledWith('dom', [sym], { userId: undefined, isAdmin: false });
+        expect(domainService.bulkUpsert).toHaveBeenCalledWith('dom', [sym], { userId: undefined, isAdmin: false, contextSessionId: 'test-session' });
     });
 
     it('symbol_transaction rollback clears the queue', async () => {

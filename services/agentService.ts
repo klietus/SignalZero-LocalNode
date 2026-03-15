@@ -14,6 +14,7 @@ import { traceService } from './traceService.js';
 import { EXECUTION_ZSET_KEY, LOOP_INDEX_KEY, getExecutionKey, getLoopKey, getTraceKey } from './loopStorage.js';
 import { contextService } from './contextService.js';
 import { contextWindowService } from './contextWindowService.js';
+import { topologyService } from './topologyService.js';
 
 const ONE_MINUTE_MS = 60_000;
 const ONE_HOUR_MS = 60 * ONE_MINUTE_MS;
@@ -23,6 +24,7 @@ const AGENT_TOKEN_LIMIT = 500_000;
 class AgentService {
     private scheduler: NodeJS.Timeout | null = null;
     private sweeper: NodeJS.Timeout | null = null;
+    private topologyTask: NodeJS.Timeout | null = null;
 
     validateSchedule(schedule: string): Date {
         const interval = CronExpressionParser.parse(schedule);
@@ -327,6 +329,23 @@ class AgentService {
         if (!this.scheduler) {
             loggerService.info('AgentService: Starting scheduler thread');
             this.scheduler = setInterval(() => this.schedulerTick(), ONE_MINUTE_MS);
+        }
+
+        if (!this.topologyTask) {
+            loggerService.info('AgentService: Starting topology hygiene task');
+            // Run every hour
+            this.topologyTask = setInterval(() => {
+                topologyService.analyze().catch(err => 
+                    loggerService.error("AgentService: Topology task failed", { error: err })
+                );
+            }, ONE_HOUR_MS);
+
+            // Trigger once after 5 mins of startup
+            setTimeout(() => {
+                topologyService.analyze().catch(err => 
+                    loggerService.error("AgentService: Startup topology task failed", { error: err })
+                );
+            }, 5 * ONE_MINUTE_MS);
         }
     }
 

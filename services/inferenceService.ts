@@ -1166,7 +1166,7 @@ export async function* sendMessageAndHandleTools(
         auditRetries,
         hasResponse
       });
-      return; // EXIT THE GENERATOR COMPLETELY if we reached the audit limit
+      break; 
     }
 
     // Reset yieldedToolCalls for next cycle
@@ -1179,7 +1179,7 @@ export async function* sendMessageAndHandleTools(
   yield { isComplete: true };
 }
 
-const extractJson = (text: string): any => {
+export const extractJson = (text: string): any => {
   try {
     // 1. Try direct parse
     return JSON.parse(text);

@@ -1,4 +1,4 @@
-import { UserProfile } from '../types.js';
+import { UserProfile, GraphHygieneSettings } from '../types.js';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
@@ -80,6 +80,7 @@ export interface SystemSettings {
   serpApi?: {
     apiKey?: string;
   };
+  hygiene?: GraphHygieneSettings;
 }
 
 // In-memory cache for settings (reduces Redis calls)
@@ -465,12 +466,60 @@ export const settingsService = {
     }
   },
 
+  // --- Graph Hygiene Settings ---
+  getHygieneSettings: async (): Promise<GraphHygieneSettings> => {
+    const settings = await getSettings();
+    const saved = settings.hygiene || {} as any;
+    
+    // Support migration from old flat structure
+    const positional = saved.positional || {
+      autoCompress: saved.positionalSimilarity === true,
+      autoLink: saved.autoLinking === true
+    };
+    const semantic = saved.semantic || {
+      autoCompress: saved.semanticSimilarity === true,
+      autoLink: saved.autoLinking === true
+    };
+    const triadic = saved.triadic || {
+      autoCompress: saved.triadicSimilarity === true,
+      autoLink: saved.autoLinking === true
+    };
+
+    return {
+      positional: {
+        autoCompress: positional.autoCompress === true,
+        autoLink: positional.autoLink === true
+      },
+      semantic: {
+        autoCompress: semantic.autoCompress === true,
+        autoLink: semantic.autoLink === true
+      },
+      triadic: {
+        autoCompress: triadic.autoCompress === true,
+        autoLink: triadic.autoLink === true
+      },
+      deadLinkCleanup: saved.deadLinkCleanup === true,
+      orphanAnalysis: saved.orphanAnalysis === true
+    };
+  },
+
+
+  setHygieneSettings: async (settings: GraphHygieneSettings) => {
+    const current = await getSettings();
+    current.hygiene = settings;
+    await saveToRedis(current);
+    if (!isStateless()) {
+      saveToFile(current);
+    }
+  },
+
   // --- Aggregated Settings ---
   get: async (): Promise<SystemSettings> => {
-    const [inference, serpApi, voice] = await Promise.all([
+    const [inference, serpApi, voice, hygiene] = await Promise.all([
       settingsService.getInferenceSettings(),
       settingsService.getSerpApiSettings(),
       settingsService.getVoiceSettings(),
+      settingsService.getHygieneSettings(),
     ]);
     
     const redisSettings = getRedisSettingsFromEnv();
@@ -490,6 +539,7 @@ export const settingsService = {
       inference,
       serpApi,
       voice,
+      hygiene,
     };
   },
 
@@ -529,6 +579,10 @@ export const settingsService = {
     if (settings.voice) {
       await settingsService.setVoiceSettings(settings.voice);
     }
+
+    if (settings.hygiene) {
+      await settingsService.setHygieneSettings(settings.hygiene);
+    }
   },
 
   // --- Legacy / Backward Compatibility ---
@@ -562,5 +616,10 @@ export const settingsService = {
 
   clearAll: () => {
     // No-op - use update with empty values instead
+  },
+
+  clearCache: () => {
+    _settingsCache = null;
+    _cacheTimestamp = 0;
   }
 };

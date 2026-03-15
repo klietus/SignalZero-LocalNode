@@ -1,21 +1,22 @@
 {
   "redis": {
-    "server": "new-redis.com",
-    "port": 6380,
-    "password": "new-password"
+    "server": "initial-host",
+    "port": 6379,
+    "password": "initial"
   },
   "chroma": {
-    "url": "http://localhost:8000",
-    "collection": "default",
-    "useExternal": false
+    "url": "http://initial-chroma",
+    "collection": "initial-collection",
+    "useExternal": true
   },
   "inference": {
     "provider": "local",
     "apiKey": "",
     "endpoint": "http://localhost:1234/v1",
     "model": "Meta-Llama-3-70B-Instruct",
-    "loopModel": "Meta-Llama-3-70B-Instruct",
+    "agentModel": "Meta-Llama-3-70B-Instruct",
     "visionModel": "zai-org/glm-4.6v-flash",
+    "fastModel": "gemini-1.5-flash",
     "savedConfigs": {
       "local": {
         "apiKey": "",
@@ -30,5 +31,21 @@
     "pulseServer": "",
     "wakeWord": "axiom"
   },
-  "adminUser": null
+  "adminUser": null,
+  "hygiene": {
+    "positional": {
+      "autoCompress": true,
+      "autoLink": true
+    },
+    "semantic": {
+      "autoCompress": false,
+      "autoLink": true
+    },
+    "triadic": {
+      "autoCompress": true,
+      "autoLink": false
+    },
+    "deadLinkCleanup": true,
+    "orphanAnalysis": true
+  }
 }

@@ -337,3 +337,20 @@ export interface VectorSearchResult {
     metadata: any;
     document: string;
 }
+
+export interface GraphHygieneSettings {
+  positional: {
+    autoCompress: boolean;
+    autoLink: boolean;
+  };
+  semantic: {
+    autoCompress: boolean;
+    autoLink: boolean;
+  };
+  triadic: {
+    autoCompress: boolean;
+    autoLink: boolean;
+  };
+  deadLinkCleanup: boolean;
+  orphanAnalysis: boolean;
+}

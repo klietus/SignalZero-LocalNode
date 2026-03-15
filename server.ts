@@ -10,6 +10,7 @@ import { settingsService } from './services/settingsService.js';
 import { ACTIVATION_PROMPT } from './symbolic_system/activation_prompt.js';
 import { domainService, ReadOnlyDomainError } from './services/domainService.js';
 import { traceService } from './services/traceService.js';
+import { topologyService } from './services/topologyService.js';
 import { projectService } from './services/projectService.js';
 import { testService } from './services/testService.js';
 import { ProjectMeta } from './types.js';
@@ -616,6 +617,49 @@ app.get('/api/health', async (req, res) => {
     });
 });
 
+// Topology Analysis
+app.post('/api/topology/analyze', requireAuth, async (req, res) => {
+    try {
+        const stats = await topologyService.analyze(req.user?.id);
+        res.json({ status: 'success', stats });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: 'Failed to run topology analysis' });
+    }
+});
+
+// Graph Hygiene Settings
+app.get('/api/settings/hygiene', requireAuth, async (req, res) => {
+    try {
+        const settings = await settingsService.getHygieneSettings();
+        res.json(settings);
+    } catch (e) {
+        res.status(500).json({ error: 'Failed to get hygiene settings' });
+    }
+});
+
+app.post('/api/settings/hygiene', requireAuth, async (req, res) => {
+    try {
+        await settingsService.setHygieneSettings(req.body);
+        res.json({ status: 'success' });
+    } catch (e) {
+        res.status(500).json({ error: 'Failed to update hygiene settings' });
+    }
+});
+
+// Individual Hygiene Actions
+app.post('/api/hygiene/run', requireAuth, async (req, res) => {
+    const { strategy } = req.body;
+    try {
+        // Run analysis for the specific requested strategy
+        const stats = await topologyService.analyze(req.user?.id, strategy);
+        res.json({ status: 'success', stats });
+    } catch (e) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+        res.status(500).json({ error: `Failed to run hygiene strategy: ${strategy}` });
+    }
+});
+
 // System Settings
 app.get('/api/settings', async (req, res) => {
     try {
@@ -629,8 +673,8 @@ app.get('/api/settings', async (req, res) => {
 
 app.post('/api/settings', async (req, res) => {
     try {
-        const { redis, chroma, inference } = req.body || {};
-        await settingsService.setSystemSettings({ redis, chroma, inference });
+        const { redis, chroma, inference, serpApi, voice, hygiene } = req.body || {};
+        await settingsService.setSystemSettings({ redis, chroma, inference, serpApi, voice, hygiene });
         const updated = await settingsService.getSystemSettings();
         res.json(updated);
     } catch (e) {
@@ -1507,8 +1551,8 @@ app.post('/api/project/export', async (req, res) => {
         res.setHeader('Content-Type', 'application/zip');
         res.setHeader('Content-Disposition', 'attachment; filename="project.szproject"');
         res.send(buffer);
-    } catch (e) {
-        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e });
+    } catch (e: any) {
+        loggerService.error(`Error in ${req.method} ${req.url}`, { error: e.message, stack: e.stack });
         res.status(500).json({ error: String(e) });
     }
 });
