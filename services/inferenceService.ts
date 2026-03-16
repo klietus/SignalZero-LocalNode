@@ -1401,7 +1401,12 @@ export const primeSymbolicContext = async (
                 query: q, 
                 resultsCount: items.length, 
                 contextSessionId,
-                isAnticipated: true 
+                isAnticipated: true,
+                topResult: items[0] ? {
+                    title: items[0].title,
+                    snippet: items[0].snippet || items[0].about_this_result?.source?.description,
+                    link: items[0].link
+                } : null
               });
 
               return {
