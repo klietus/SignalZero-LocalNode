@@ -1337,7 +1337,12 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                 eventBusService.emit(KernelEventType.WEB_SEARCH, { 
                     query: q, 
                     resultsCount: items.length,
-                    contextSessionId 
+                    contextSessionId,
+                    topResult: items[0] ? {
+                        title: items[0].title,
+                        snippet: items[0].snippet || items[0].about_this_result?.source?.description,
+                        link: items[0].link
+                    } : null
                 });
 
                 return {
