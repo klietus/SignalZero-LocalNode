@@ -56,13 +56,6 @@ export class SymbolCacheService {
         };
 
         await redisService.request(['SET', key, JSON.stringify(cache), 'EX', '86400']); // 24h TTL
-
-        // Emit CACHE_LOAD event
-        eventBusService.emit(KernelEventType.CACHE_LOAD, {
-            sessionId,
-            symbolId: symbol.id,
-            symbol: symbol
-        });
     }
 
     /**
@@ -71,7 +64,7 @@ export class SymbolCacheService {
      */
     async batchUpsertSymbols(sessionId: string, symbols: SymbolDef[]): Promise<void> {
         if (!sessionId || symbols.length === 0) return;
-        
+
         const key = this.getCacheKey(sessionId);
         const data = await redisService.request(['GET', key]);
         const cache: Record<string, CacheEntry> = data ? JSON.parse(data) : {};
@@ -86,7 +79,28 @@ export class SymbolCacheService {
         }
 
         await redisService.request(['SET', key, JSON.stringify(cache), 'EX', '86400']);
+    }
 
+    /**
+     * Emit a CACHE_LOAD event for the cache of a session.
+     */
+    async emitCacheLoad(sessionId: string): Promise<void> {
+        const key = this.getCacheKey(sessionId);
+        const data = await redisService.request(['GET', key]);
+        if (!data) return;
+
+        const cache: Record<string, CacheEntry> = JSON.parse(data);
+        const entries = Object.values(cache);
+
+        // Sort: lowest turn count first (stable), then newest first (LRU)
+        entries.sort((a, b) => {
+            if (a.turnCount !== b.turnCount) {
+                return a.turnCount - b.turnCount;
+            }
+            return b.lastUsed - a.lastUsed;
+        });
+
+        const symbols = entries.map(e => e.symbol);
         // Emit batched CACHE_LOAD event
         eventBusService.emit(KernelEventType.CACHE_LOAD, {
             sessionId,
@@ -167,7 +181,7 @@ export class SymbolCacheService {
         const cache: Record<string, CacheEntry> = JSON.parse(data);
         return !!cache[symbolId];
     }
-    
+
     /**
      * Clear the cache for a session.
      */

@@ -85,9 +85,9 @@ const parseDomain = (data: string, domainId: string): CachedDomain => {
 
 const ensureWritableDomain = (domain: CachedDomain, domainId: string, isAdmin: boolean = false, symbolId?: string, userId?: string) => {
   if (domain.readOnly) {
-      throw new ReadOnlyDomainError(domainId, symbolId);
+    throw new ReadOnlyDomainError(domainId, symbolId);
   }
-  
+
   // If no userId is provided AND isAdmin wasn't explicitly false, we assume system/privileged access
   // This helps older tests and internal scripts that don't pass userId
   const effectiveIsAdmin = isAdmin || (userId === undefined);
@@ -99,50 +99,50 @@ const ensureWritableDomain = (domain: CachedDomain, domainId: string, isAdmin: b
 };
 
 export const migrateSymbols = async (domain: CachedDomain): Promise<boolean> => {
-    let modified = false;
-    const validKinds = ['pattern', 'persona', 'lattice', 'data'];
+  let modified = false;
+  const validKinds = ['pattern', 'persona', 'lattice', 'data'];
 
-    for (const symbol of domain.symbols) {
-        // Validation: Default invalid or missing kind to pattern
-        if (!symbol.kind || !validKinds.includes(symbol.kind)) {
-            symbol.kind = 'pattern';
-            modified = true;
-        }
-
-        // Migrate linked_patterns from string[] to SymbolLink[]
-        if (Array.isArray(symbol.linked_patterns)) {
-            const needsMigration = symbol.linked_patterns.some(link => typeof link === 'string');
-            if (needsMigration) {
-                symbol.linked_patterns = symbol.linked_patterns.map((link: any) => {
-                    if (typeof link === 'string') {
-                        return { id: link, link_type: 'relates_to', bidirectional: false };
-                    }
-                    return link;
-                });
-                modified = true;
-            }
-        } else {
-            symbol.linked_patterns = [];
-            modified = true;
-        }
-
-        if (symbol.kind === 'lattice' && symbol.lattice && (symbol.lattice as any).members) {
-            const members = (symbol.lattice as any).members as string[];
-            const existingIds = new Set(symbol.linked_patterns.map(l => l.id));
-            
-            members.forEach(id => {
-                if (!existingIds.has(id)) {
-                    symbol.linked_patterns.push({ id, link_type: 'relates_to', bidirectional: false });
-                }
-            });
-
-            delete (symbol.lattice as any).members;
-            modified = true;
-            // Reindex in vector store to reflect schema change
-            await vectorService.indexSymbol(symbol);
-        }
+  for (const symbol of domain.symbols) {
+    // Validation: Default invalid or missing kind to pattern
+    if (!symbol.kind || !validKinds.includes(symbol.kind)) {
+      symbol.kind = 'pattern';
+      modified = true;
     }
-    return modified;
+
+    // Migrate linked_patterns from string[] to SymbolLink[]
+    if (Array.isArray(symbol.linked_patterns)) {
+      const needsMigration = symbol.linked_patterns.some(link => typeof link === 'string');
+      if (needsMigration) {
+        symbol.linked_patterns = symbol.linked_patterns.map((link: any) => {
+          if (typeof link === 'string') {
+            return { id: link, link_type: 'relates_to', bidirectional: false };
+          }
+          return link;
+        });
+        modified = true;
+      }
+    } else {
+      symbol.linked_patterns = [];
+      modified = true;
+    }
+
+    if (symbol.kind === 'lattice' && symbol.lattice && (symbol.lattice as any).members) {
+      const members = (symbol.lattice as any).members as string[];
+      const existingIds = new Set(symbol.linked_patterns.map(l => l.id));
+
+      members.forEach(id => {
+        if (!existingIds.has(id)) {
+          symbol.linked_patterns.push({ id, link_type: 'relates_to', bidirectional: false });
+        }
+      });
+
+      delete (symbol.lattice as any).members;
+      modified = true;
+      // Reindex in vector store to reflect schema change
+      await vectorService.indexSymbol(symbol);
+    }
+  }
+  return modified;
 };
 
 const indexSymbolBucket = async (symbol: SymbolDef) => {
@@ -161,7 +161,7 @@ export const domainService = {
    */
   init: async (domainId: string, name: string, userId?: string, isAdmin: boolean = false): Promise<CachedDomain> => {
     const isUserDomain = isUserSpecificDomain(domainId);
-    
+
     // If no userId is provided, we assume system/privileged access
     const effectiveIsAdmin = isAdmin || userId === undefined;
 
@@ -195,12 +195,12 @@ export const domainService = {
     };
 
     await redisService.request(['SET', key, JSON.stringify(newDomain)]);
-    
+
     // Index symbols if present
     if (newDomain.symbols.length > 0) {
-        await vectorService.indexBatch(newDomain.symbols);
+      await vectorService.indexBatch(newDomain.symbols);
     }
-    
+
     // Only track global domains in the domains set
     if (!isUserDomain) {
       await redisService.request(['SADD', KEYS.DOMAINS_SET, domainId]);
@@ -224,14 +224,14 @@ export const domainService = {
    */
   listDomains: async (userId?: string): Promise<string[]> => {
     const domains: string[] = [];
-    
+
     // Always include global domains
     const globalDomains = await redisService.request(['SMEMBERS', KEYS.DOMAINS_SET]);
     if (globalDomains) {
       // Filter out user-specific domains from global list if they were added there (cleanup)
       domains.push(...globalDomains.filter((d: string) => !isUserSpecificDomain(d)));
     }
-    
+
     // Add user-specific domains if userId provided
     if (userId) {
       for (const userDomain of ['user', 'state']) {
@@ -242,7 +242,7 @@ export const domainService = {
         }
       }
     }
-    
+
     return [...new Set(domains)]; // Remove duplicates
   },
 
@@ -252,7 +252,7 @@ export const domainService = {
   get: async (domainId: string, userId?: string, includeDisabled: boolean = false): Promise<CachedDomain | null> => {
     const key = getDomainKey(domainId, userId);
     const data = await redisService.request(['GET', key]);
-    
+
     if (!data) {
       // For user-specific domains, try to initialize if not found
       if (isUserSpecificDomain(domainId) && userId) {
@@ -262,15 +262,15 @@ export const domainService = {
     }
 
     const domain = parseDomain(data, domainId);
-    
+
     if (!canAccessDomain(domainId, userId, domain.ownerId)) {
       throw new DomainAccessError(domainId, userId);
     }
 
     const modified = await migrateSymbols(domain);
     if (modified) {
-        domain.lastUpdated = Date.now();
-        await redisService.request(['SET', key, JSON.stringify(domain)]);
+      domain.lastUpdated = Date.now();
+      await redisService.request(['SET', key, JSON.stringify(domain)]);
     }
 
     if (!includeDisabled && domain.enabled === false) return null;
@@ -285,7 +285,7 @@ export const domainService = {
    */
   setEnabled: async (domainId: string, enabled: boolean, userId?: string, isAdmin: boolean = false): Promise<CachedDomain | null> => {
     const isUserDomain = isUserSpecificDomain(domainId);
-    
+
     // Global domain toggling requires admin
     if (!isUserDomain && !isAdmin) {
       throw new Error(`Admin privileges required to toggle global domain '${domainId}'`);
@@ -306,7 +306,7 @@ export const domainService = {
     }
 
     if (!domain) return null;
-    
+
     if (!canAccessDomain(domainId, userId, domain.ownerId)) {
       throw new DomainAccessError(domainId, userId);
     }
@@ -354,7 +354,7 @@ export const domainService = {
     const existingSymbol = existingIndex >= 0 ? { ...domain.symbols[existingIndex] } : null;
     const now = currentTimestamp();
     symbol.updated_at = now;
-    
+
     if (existingIndex >= 0) {
       // Update existing
       const existing = domain.symbols[existingIndex];
@@ -373,17 +373,17 @@ export const domainService = {
 
     // Emit events
     if (existingSymbol) {
-        eventBusService.emit(KernelEventType.SYMBOL_UPDATE, {
-            symbolId: symbol.id,
-            domainId,
-            symbol: symbol
-        });
+      eventBusService.emit(KernelEventType.SYMBOL_UPDATE, {
+        symbolId: symbol.id,
+        domainId,
+        symbol: symbol
+      });
     } else {
-        eventBusService.emit(KernelEventType.SYMBOL_ADD, {
-            symbolId: symbol.id,
-            domainId,
-            symbol: symbol
-        });
+      eventBusService.emit(KernelEventType.SYMBOL_ADD, {
+        symbolId: symbol.id,
+        domainId,
+        symbol: symbol
+      });
     }
 
     // DIFFERENTIAL LINK EMISSION
@@ -392,60 +392,60 @@ export const domainService = {
 
     // 1. Emit LINK_CREATE for new links
     for (const link of symbol.linked_patterns || []) {
-        if (!oldLinkIds.has(link.id)) {
-            eventBusService.emit(KernelEventType.LINK_CREATE, {
-                sourceId: symbol.id,
-                targetId: link.id,
-                linkType: link.link_type
-            });
-        }
+      if (!oldLinkIds.has(link.id)) {
+        eventBusService.emit(KernelEventType.LINK_CREATE, {
+          sourceId: symbol.id,
+          targetId: link.id,
+          linkType: link.link_type
+        });
+      }
     }
 
     // 2. Emit LINK_DELETE for removed links
     for (const oldId of Array.from(oldLinkIds)) {
-        if (!newLinkIds.has(oldId)) {
-            eventBusService.emit(KernelEventType.LINK_DELETE, {
-                sourceId: symbol.id,
-                targetId: oldId
-            });
-        }
+      if (!newLinkIds.has(oldId)) {
+        eventBusService.emit(KernelEventType.LINK_DELETE, {
+          sourceId: symbol.id,
+          targetId: oldId
+        });
+      }
     }
 
     // Update session symbol cache if session ID provided
     if (_options?.contextSessionId) {
-        await symbolCacheService.upsertSymbol(_options.contextSessionId, symbol);
+      await symbolCacheService.upsertSymbol(_options.contextSessionId, symbol);
     }
 
     // Bidirectional back-links
     if (!_options?._bypassBacklink && symbol.linked_patterns) {
-        for (const link of symbol.linked_patterns) {
-            if (link.bidirectional) {
-                const targetId = link.id;
-                // Find where the target is
-                const targetSymbol = await domainService.findById(targetId, userId);
-                if (targetSymbol) {
-                    if (!targetSymbol.linked_patterns) targetSymbol.linked_patterns = [];
-                    const alreadyLinked = targetSymbol.linked_patterns.find(l => l.id === symbol.id);
-                    if (!alreadyLinked) {
-                        targetSymbol.linked_patterns.push({
-                            id: symbol.id,
-                            link_type: link.link_type,
-                            bidirectional: true
-                        });
+      for (const link of symbol.linked_patterns) {
+        if (link.bidirectional) {
+          const targetId = link.id;
+          // Find where the target is
+          const targetSymbol = await domainService.findById(targetId, userId);
+          if (targetSymbol) {
+            if (!targetSymbol.linked_patterns) targetSymbol.linked_patterns = [];
+            const alreadyLinked = targetSymbol.linked_patterns.find(l => l.id === symbol.id);
+            if (!alreadyLinked) {
+              targetSymbol.linked_patterns.push({
+                id: symbol.id,
+                link_type: link.link_type,
+                bidirectional: true
+              });
 
-                        // Emit LINK_CREATE event for backlink (target -> source)
-                        eventBusService.emit(KernelEventType.LINK_CREATE, {
-                            sourceId: targetId,
-                            targetId: symbol.id,
-                            linkType: link.link_type
-                        });
+              // Emit LINK_CREATE event for backlink (target -> source)
+              eventBusService.emit(KernelEventType.LINK_CREATE, {
+                sourceId: targetId,
+                targetId: symbol.id,
+                linkType: link.link_type
+              });
 
-                        // Save the update, propagating the contextSessionId
-                        await domainService.addSymbol(targetSymbol.symbol_domain, targetSymbol, userId, isAdmin, { _bypassBacklink: true, contextSessionId: _options?.contextSessionId });
-                    }
-                }
+              // Save the update, propagating the contextSessionId
+              await domainService.addSymbol(targetSymbol.symbol_domain, targetSymbol, userId, isAdmin, { _bypassBacklink: true, contextSessionId: _options?.contextSessionId });
             }
+          }
         }
+      }
     }
 
     return symbol;
@@ -460,7 +460,7 @@ export const domainService = {
     if (!data) return false;
 
     const domain = parseDomain(data, domainId);
-    
+
     if (!canAccessDomain(domainId, userId, domain.ownerId)) {
       throw new DomainAccessError(domainId, userId);
     }
@@ -479,8 +479,8 @@ export const domainService = {
 
     // Emit SYMBOL_DELETE event
     eventBusService.emit(KernelEventType.SYMBOL_DELETE, {
-        symbolId,
-        domainId
+      symbolId,
+      domainId
     });
 
     // Clean up time index entries
@@ -493,28 +493,28 @@ export const domainService = {
     // Cascade: remove references to this symbol from ALL accessible domains
     const allDomains = await domainService.listDomains(userId);
     for (const dId of allDomains) {
-        const dKey = getDomainKey(dId, userId);
-        const dData = await redisService.request(['GET', dKey]);
-        if (!dData) continue;
-        const d = parseDomain(dData, dId);
-        
-        let dModified = false;
-        for (const s of d.symbols) {
-            if (s.linked_patterns) {
-                const initialLen = s.linked_patterns.length;
-                s.linked_patterns = s.linked_patterns.filter(l => l.id !== symbolId);
-                if (s.linked_patterns.length !== initialLen) {
-                    dModified = true;
-                    // Note: Technically should reindex s in vector store if links changed
-                    await vectorService.indexSymbol(s);
-                }
-            }
-        }
+      const dKey = getDomainKey(dId, userId);
+      const dData = await redisService.request(['GET', dKey]);
+      if (!dData) continue;
+      const d = parseDomain(dData, dId);
 
-        if (dModified) {
-            d.lastUpdated = Date.now();
-            await redisService.request(['SET', dKey, JSON.stringify(d)]);
+      let dModified = false;
+      for (const s of d.symbols) {
+        if (s.linked_patterns) {
+          const initialLen = s.linked_patterns.length;
+          s.linked_patterns = s.linked_patterns.filter(l => l.id !== symbolId);
+          if (s.linked_patterns.length !== initialLen) {
+            dModified = true;
+            // Note: Technically should reindex s in vector store if links changed
+            await vectorService.indexSymbol(s);
+          }
         }
+      }
+
+      if (dModified) {
+        d.lastUpdated = Date.now();
+        await redisService.request(['SET', dKey, JSON.stringify(d)]);
+      }
     }
 
     return true;
@@ -529,7 +529,7 @@ export const domainService = {
     if (!data) return null;
 
     const domain = parseDomain(data, domainId);
-    
+
     if (!canAccessDomain(domainId, userId, domain.ownerId)) {
       throw new DomainAccessError(domainId, userId);
     }
@@ -569,32 +569,32 @@ export const domainService = {
 
     // 1. Parse Arguments (Handle various call signatures)
     if (typeof limitOrUserId === 'number') {
-        limit = limitOrUserId;
-        if (typeof optionsOrDomainId === 'object') {
-            targetDomains = optionsOrDomainId.domains;
-            time_gte = optionsOrDomainId.time_gte;
-            time_between = optionsOrDomainId.time_between;
-            metadata_filter = optionsOrDomainId.metadata_filter || {};
-            contextSessionId = optionsOrDomainId.contextSessionId;
-        } else if (typeof optionsOrDomainId === 'string') {
-            targetDomains = [optionsOrDomainId];
-        }
-        userId = userIdOverride;
+      limit = limitOrUserId;
+      if (typeof optionsOrDomainId === 'object') {
+        targetDomains = optionsOrDomainId.domains;
+        time_gte = optionsOrDomainId.time_gte;
+        time_between = optionsOrDomainId.time_between;
+        metadata_filter = optionsOrDomainId.metadata_filter || {};
+        contextSessionId = optionsOrDomainId.contextSessionId;
+      } else if (typeof optionsOrDomainId === 'string') {
+        targetDomains = [optionsOrDomainId];
+      }
+      userId = userIdOverride;
     } else {
-        userId = limitOrUserId;
-        if (typeof optionsOrDomainId === 'object') {
-            targetDomains = optionsOrDomainId.domains;
-            time_gte = optionsOrDomainId.time_gte;
-            time_between = optionsOrDomainId.time_between;
-            metadata_filter = optionsOrDomainId.metadata_filter || {};
-            contextSessionId = optionsOrDomainId.contextSessionId;
-            // If limit is in options (extended signature support)
-            if ((optionsOrDomainId as any).limit) {
-                limit = (optionsOrDomainId as any).limit;
-            }
-        } else if (typeof optionsOrDomainId === 'string') {
-            targetDomains = [optionsOrDomainId];
+      userId = limitOrUserId;
+      if (typeof optionsOrDomainId === 'object') {
+        targetDomains = optionsOrDomainId.domains;
+        time_gte = optionsOrDomainId.time_gte;
+        time_between = optionsOrDomainId.time_between;
+        metadata_filter = optionsOrDomainId.metadata_filter || {};
+        contextSessionId = optionsOrDomainId.contextSessionId;
+        // If limit is in options (extended signature support)
+        if ((optionsOrDomainId as any).limit) {
+          limit = (optionsOrDomainId as any).limit;
         }
+      } else if (typeof optionsOrDomainId === 'string') {
+        targetDomains = [optionsOrDomainId];
+      }
     }
 
     // 2. Resolve and Authorize Domains
@@ -602,56 +602,56 @@ export const domainService = {
     let finalDomains: string[] = [];
 
     if (targetDomains && targetDomains.length > 0) {
-        // Filter requested domains by access and status
-        for (const dId of targetDomains) {
-            if (accessibleDomains.includes(dId)) {
-                const domain = await domainService.get(dId, userId);
-                if (domain && domain.enabled) finalDomains.push(dId);
-            }
+      // Filter requested domains by access and status
+      for (const dId of targetDomains) {
+        if (accessibleDomains.includes(dId)) {
+          const domain = await domainService.get(dId, userId);
+          if (domain && domain.enabled) finalDomains.push(dId);
         }
+      }
     } else {
-        // Use all enabled accessible domains
-        for (const dId of accessibleDomains) {
-            const domain = await domainService.get(dId, userId);
-            if (domain && domain.enabled) finalDomains.push(dId);
-        }
+      // Use all enabled accessible domains
+      for (const dId of accessibleDomains) {
+        const domain = await domainService.get(dId, userId);
+        if (domain && domain.enabled) finalDomains.push(dId);
+      }
     }
 
     if (finalDomains.length === 0) {
-        loggerService.warn(`domainService.search: No enabled/accessible domains for search`, { userId, targetDomains });
-        return [];
+      loggerService.warn(`domainService.search: No enabled/accessible domains for search`, { userId, targetDomains });
+      return [];
     }
 
     // 3. Execute Vector Search
-    const searchFilter = { 
-        ...metadata_filter, 
-        domain: finalDomains, // MUST BE 'domain' to match metadata key in vectorService.ts
-        time_gte, 
-        time_between 
+    const searchFilter = {
+      ...metadata_filter,
+      domain: finalDomains, // MUST BE 'domain' to match metadata key in vectorService.ts
+      time_gte,
+      time_between
     };
 
-    loggerService.debug(`domainService.search: executing vector search`, { 
-        query, 
-        limit, 
-        domainCount: finalDomains.length,
-        userId 
+    loggerService.debug(`domainService.search: executing vector search`, {
+      query,
+      limit,
+      domainCount: finalDomains.length,
+      userId
     });
 
     const results = query ? await vectorService.search(query, limit, searchFilter) : [];
-    
+
     loggerService.debug(`domainService.search: found ${results.length} results`);
 
     // 4. Cache Filtering (Exclude symbols already in session cache)
     if (contextSessionId && results.length > 0) {
-        const initialCount = results.length;
-        const cachedSymbols = await symbolCacheService.getSymbols(contextSessionId);
-        const cachedIds = new Set(cachedSymbols.map(s => s.id));
-        
-        const filtered = results.filter(r => !cachedIds.has(r.id));
-        if (filtered.length < initialCount) {
-            loggerService.info(`domainService.search: filtered out ${initialCount - filtered.length} symbols present in session cache ${contextSessionId}`);
-            return filtered;
-        }
+      const initialCount = results.length;
+      const cachedSymbols = await symbolCacheService.getSymbols(contextSessionId);
+      const cachedIds = new Set(cachedSymbols.map(s => s.id));
+
+      const filtered = results.filter(r => !cachedIds.has(r.id));
+      if (filtered.length < initialCount) {
+        loggerService.info(`domainService.search: filtered out ${initialCount - filtered.length} symbols present in session cache ${contextSessionId}`);
+        return filtered;
+      }
     }
 
     return results;
@@ -662,7 +662,7 @@ export const domainService = {
    */
   activate: async (id: string, userId?: string): Promise<SymbolDef | null> => {
     const domains = await domainService.listDomains(userId);
-    
+
     for (const domainId of domains) {
       const key = getDomainKey(domainId, userId);
       const data = await redisService.request(['GET', key]);
@@ -675,14 +675,14 @@ export const domainService = {
       const index = domain.symbols.findIndex(s => s.id === id);
       if (index !== -1) {
         const symbol = domain.symbols[index];
-        
+
         // Update Access Time
         symbol.last_accessed_at = currentTimestamp();
         symbol.activation_count = (symbol.activation_count || 0) + 1;
         domain.lastUpdated = Date.now();
-        
+
         // Persist update (async, non-blocking for this read)
-        redisService.request(['SET', key, JSON.stringify(domain)]).catch(e => 
+        redisService.request(['SET', key, JSON.stringify(domain)]).catch(e =>
           console.error(`[DomainService] Failed to update access time for ${id}`, e)
         );
 
@@ -738,7 +738,7 @@ export const domainService = {
 
     // Remove existing symbols with same IDs
     targetDomain.symbols = targetDomain.symbols.filter(s => !symbolIds.includes(s.id));
-    
+
     // Add merged symbols
     targetDomain.symbols.push(...symbolsToMerge);
     targetDomain.lastUpdated = Date.now();
@@ -812,20 +812,20 @@ export const domainService = {
 
     let results = domain.symbols;
     if (tag) {
-        results = results.filter(s => s.symbol_tag?.includes(tag));
+      results = results.filter(s => s.symbol_tag?.includes(tag));
     }
 
     let startIndex = 0;
     if (finalLastId) {
-        const foundIndex = results.findIndex(s => s.id === finalLastId);
-        if (foundIndex !== -1) startIndex = foundIndex + 1;
+      const foundIndex = results.findIndex(s => s.id === finalLastId);
+      if (foundIndex !== -1) startIndex = foundIndex + 1;
     }
 
     const pagedResults = results.slice(startIndex, startIndex + limit);
     return {
-        items: pagedResults,
-        total: results.length,
-        source: 'redis_cache'
+      items: pagedResults,
+      total: results.length,
+      source: 'redis_cache'
     };
   },
 
@@ -834,7 +834,7 @@ export const domainService = {
    */
   findById: async (id: string, userId?: string): Promise<SymbolDef | null> => {
     const domains = await domainService.listDomains(userId);
-    
+
     for (const domainId of domains) {
       const key = getDomainKey(domainId, userId);
       const data = await redisService.request(['GET', key]);
@@ -847,13 +847,13 @@ export const domainService = {
       const index = domain.symbols.findIndex(s => s.id === id);
       if (index !== -1) {
         const symbol = domain.symbols[index];
-        
+
         // Update Access Time
         symbol.last_accessed_at = currentTimestamp();
         domain.lastUpdated = Date.now();
-        
+
         // Persist update (async, non-blocking for this read)
-        redisService.request(['SET', key, JSON.stringify(domain)]).catch(e => 
+        redisService.request(['SET', key, JSON.stringify(domain)]).catch(e =>
           console.error(`[DomainService] Failed to update access time for ${id}`, e)
         );
 
@@ -869,15 +869,15 @@ export const domainService = {
   getMetadata: async (userId?: string) => {
     const domains = await domainService.listDomains(userId);
     const metadata = [];
-    
+
     for (const domainId of domains) {
       const key = getDomainKey(domainId, userId);
       const data = await redisService.request(['GET', key]);
       if (!data) continue;
-      
+
       const d = parseDomain(data, domainId);
       if (!canAccessDomain(domainId, userId, d.ownerId)) continue;
-      
+
       metadata.push({
         id: domainId,
         name: d.name || domainId,
@@ -892,7 +892,7 @@ export const domainService = {
         isUserSpecific: isUserSpecificDomain(domainId)
       });
     }
-    
+
     return metadata;
   },
 
@@ -934,7 +934,7 @@ export const domainService = {
 
     const key = getDomainKey(domainId, userId);
     const data = await redisService.request(['GET', key]);
-    
+
     if (!data) return false;
 
     const domain = parseDomain(data, domainId);
@@ -1034,7 +1034,7 @@ export const domainService = {
    */
   updateDomainMetadata: async (domainId: string, metadata: Partial<CachedDomain>, userId?: string, isAdmin: boolean = false): Promise<CachedDomain | null> => {
     const isUserDomain = isUserSpecificDomain(domainId);
-    
+
     // Global domain metadata updates require admin
     if (!isUserDomain && !isAdmin) {
       throw new Error(`Admin privileges required to update metadata for global domain '${domainId}'`);
@@ -1059,7 +1059,7 @@ export const domainService = {
     }
 
     if (!domain) return null;
-    
+
     if (!canAccessDomain(domainId, userId, domain.ownerId)) {
       throw new DomainAccessError(domainId, userId);
     }
@@ -1077,7 +1077,7 @@ export const domainService = {
   deleteDomain: async (domainId: string, userId?: string, isAdmin: boolean = false): Promise<boolean> => {
     const isUserDomain = isUserSpecificDomain(domainId);
     loggerService.debug(`deleteDomain: Starting deletion for ${domainId}`, { isUserDomain, userId, isAdmin });
-    
+
     if (isUserDomain) {
       if (!userId) throw new Error('User ID required to delete user-specific domain');
       return await domainService.deleteUserDomain(domainId, userId);
@@ -1108,11 +1108,11 @@ export const domainService = {
     // Remove from global domains set
     const sremResult = await redisService.request(['SREM', KEYS.DOMAINS_SET, domainId]);
     loggerService.debug(`deleteDomain: SREM result for ${domainId}: ${sremResult}`);
-    
+
     // Delete the domain data
     const delResult = await redisService.request(['DEL', key]);
     loggerService.debug(`deleteDomain: DEL result for ${key}: ${delResult}`);
-    
+
     loggerService.info(`Global domain deleted: ${domainId}`);
     return true;
   },
@@ -1194,7 +1194,7 @@ export const domainService = {
 
     const domain = await domainService.get(domainId, userId);
     if (!domain) throw new Error(`Domain '${domainId}' not found`);
-    
+
     // Update all symbols that reference oldId in linked_patterns
     for (const symbol of domain.symbols) {
       if (symbol.linked_patterns) {
@@ -1205,14 +1205,14 @@ export const domainService = {
         }
       }
     }
-    
+
     // Rename the symbol itself if it exists
     const symbol = domain.symbols.find(s => s.id === oldId);
     if (symbol) {
       symbol.id = newId;
       symbol.updated_at = currentTimestamp();
     }
-    
+
     domain.lastUpdated = Date.now();
     const key = getDomainKey(domainId, userId);
     await redisService.request(['SET', key, JSON.stringify(domain)]);
@@ -1264,10 +1264,10 @@ export const domainService = {
    */
   mergeSymbols: async (canonicalId: string, redundantId: string, userId?: string): Promise<void> => {
     loggerService.info(`DomainService: Merging symbol ${redundantId} into ${canonicalId}`);
-    
+
     const canonical = await domainService.findById(canonicalId, userId);
     const redundant = await domainService.findById(redundantId, userId);
-    
+
     if (!canonical || !redundant) {
       throw new Error(`Symbol not found: ${!canonical ? canonicalId : redundantId}`);
     }
@@ -1275,7 +1275,7 @@ export const domainService = {
     // 1. Move links from redundant to canonical
     if (redundant.linked_patterns) {
       if (!canonical.linked_patterns) canonical.linked_patterns = [];
-      
+
       for (const link of redundant.linked_patterns) {
         if (link.id !== canonicalId && !canonical.linked_patterns.some(l => l.id === link.id)) {
           canonical.linked_patterns.push(link);
@@ -1326,7 +1326,7 @@ export const domainService = {
     try {
       const CONTEXT_INDEX_KEY = 'context:index';
       const CACHE_PREFIX = 'sz:symbol_cache:';
-      
+
       const sessionIds = await redisService.request(['SMEMBERS', CONTEXT_INDEX_KEY]);
       if (!sessionIds || !Array.isArray(sessionIds)) return;
 
@@ -1338,17 +1338,17 @@ export const domainService = {
         const cache = JSON.parse(data);
         if (cache[redundantId]) {
           loggerService.info(`DomainService: Replacing redundant symbol in cache for session ${sessionId}`);
-          
+
           // Transfer turnCount/lastUsed from redundant to canonical
           const entry = cache[redundantId];
           cache[canonical.id] = {
             ...entry,
             symbol: canonical
           };
-          
+
           delete cache[redundantId];
           await redisService.request(['SET', cacheKey, JSON.stringify(cache), 'EX', '86400']);
-          
+
           // Note: Frontend will handle the visual part via the SYMBOL_COMPRESSION event
           // emitted by TopologyService.
         }

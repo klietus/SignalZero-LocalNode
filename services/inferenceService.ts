@@ -793,7 +793,6 @@ export async function* sendMessageAndHandleTools(
   let totalTextAccumulatedAcrossLoops = "";
   let previousTurnText = "";
   let hasLoggedTrace = false;
-  let hasUsedSymbolTools = false;
   let hasCalledSpeak = false;
   let isVoiceSource = false;
 
@@ -945,7 +944,7 @@ export async function* sendMessageAndHandleTools(
       const hasVoiceOutput = hasCalledSpeak || isCallingSpeakThisTurn;
 
       // Check 1: Missing Trace (ALWAYS REQUIRED for any response)
-      if (!hasLoggedTrace && !isCallingTraceThisTurn) {
+      if (isEndingTurn && !hasLoggedTrace && !isCallingTraceThisTurn) {
         auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You generated a response but failed to log a symbolic trace. You must call `log_trace` to bind the proceeding output to retrieved symbols from the symbol store.  This trace must be comprehensive and contain all symbols used in the response.  This audit message is not a driver for symbolic analysis.  Do not acknowledge this message or repeat previous information.\n";
         auditTriggered = true;
       }
@@ -965,7 +964,7 @@ export async function* sendMessageAndHandleTools(
 
     if (auditTriggered) {
       if (auditRetries < MAX_AUDIT_RETRIES) {
-        loggerService.warn("System Audit Failure: Model missing required tool calls. Forcing retry.", { contextSessionId, auditRetries, hasUsedSymbolTools, hasLoggedTrace });
+        loggerService.warn("System Audit Failure: Model missing required tool calls. Forcing retry.", { contextSessionId, auditRetries, hasLoggedTrace });
 
         const finalAuditMessage = auditMessage + "Retry immediately by calling the required tools.  Do not repeat tool calls that were previously successful in this turn. Do not acknowledge this message.";
 
@@ -1026,10 +1025,6 @@ export async function* sendMessageAndHandleTools(
       }
       if (toolName === 'speak') {
         hasCalledSpeak = true;
-      }
-      const SYMBOL_TOOLS = ['find_symbols', 'load_symbols', 'upsert_symbols', 'delete_symbols', 'load_domains'];
-      if (SYMBOL_TOOLS.includes(toolName)) {
-        hasUsedSymbolTools = true;
       }
 
       const { data: args, error: parseError } = parseToolArguments(call.function.arguments || "");
@@ -1166,7 +1161,7 @@ export async function* sendMessageAndHandleTools(
         auditRetries,
         hasResponse
       });
-      break; 
+      break;
     }
 
     // Reset yieldedToolCalls for next cycle
@@ -1193,7 +1188,7 @@ export const extractJson = (text: string): any => {
         // Continue
       }
     }
-    
+
     // 3. Last ditch: try to find anything between { and }
     const firstBrace = text.indexOf('{');
     const lastBrace = text.lastIndexOf('}');
@@ -1237,7 +1232,7 @@ export const primeSymbolicContext = async (
 
     if (settings.provider === 'gemini') {
       const client = await getGeminiClient();
-      const model = client.getGenerativeModel({ 
+      const model = client.getGenerativeModel({
         model: fastModel,
         generationConfig: { responseMimeType: "application/json" }
       });
@@ -1257,12 +1252,12 @@ export const primeSymbolicContext = async (
 
     if (queries.length > 0) {
       loggerService.info("Fast model generated queries", { queries, contextSessionId });
-      
+
       const allDomains = await domainService.listDomains(userId);
       const foundSymbols: SymbolDef[] = [];
 
       // Execute searches in parallel
-      const searchPromises = queries.map(query => 
+      const searchPromises = queries.map(query =>
         domainService.search(query, 5, {
           domains: allDomains,
           contextSessionId
@@ -1270,7 +1265,7 @@ export const primeSymbolicContext = async (
       );
 
       const results = await Promise.all(searchPromises);
-      
+
       results.flat().forEach((r: any) => {
         if (!foundSymbols.find(s => s.id === r.id)) {
           foundSymbols.push(r);
@@ -1280,7 +1275,7 @@ export const primeSymbolicContext = async (
       if (foundSymbols.length > 0) {
         // --- 1-HOP TRAVERSAL ---
         loggerService.info(`Executing 1-hop traversal for ${foundSymbols.length} seed symbols`, { contextSessionId });
-        
+
         const linkedIds = new Set<string>();
         foundSymbols.forEach(s => {
           (s.linked_patterns || []).forEach((link: any) => {
@@ -1294,7 +1289,7 @@ export const primeSymbolicContext = async (
         if (linkedIds.size > 0) {
           const linkedSymbols = await domainService.loadSymbols(Array.from(linkedIds), userId);
           loggerService.info(`Loaded ${linkedSymbols.length} linked symbols from 1-hop traversal`, { contextSessionId });
-          
+
           linkedSymbols.forEach(s => {
             if (!foundSymbols.find(fs => fs.id === s.id)) {
               foundSymbols.push(s);
@@ -1408,7 +1403,7 @@ export const runSignalZeroTest = async (
     const executeTurn = async (msg: string): Promise<string> => {
       let turnText = "";
       loggerService.info("Starting executeTurn", { msgPreview: msg.slice(0, 50), contextSessionId });
-      
+
       // Pre-flight for each turn in test
       await primeSymbolicContext(msg, contextSessionId);
 
