@@ -12,6 +12,7 @@ vi.mock('../services/contextService', () => ({
         getSession: vi.fn(),
         recordMessage: vi.fn(),
         isCancelled: vi.fn().mockResolvedValue(false),
+        getUnfilteredHistory: vi.fn().mockResolvedValue([]),
         clearCancellation: vi.fn(),
         clearActiveMessage: vi.fn()
     }
@@ -346,4 +347,36 @@ describe('InferenceService', () => {
         // It should eventually complete
         expect(chunks.some(c => c.includes("Stubborn response."))).toBe(true);
     });
+
+    it('should terminate Gemini round if narrative and trace were already provided', async () => {
+        const chatState = { messages: [], systemInstruction: 'Instruction', model: 'test-model' };
+        const toolExecutor = vi.fn().mockResolvedValue({ status: 'ok' });
+
+        (settingsService.getInferenceSettings as any).mockReturnValue({
+            provider: 'gemini',
+            model: 'test-model'
+        });
+
+        // Mock history: [Assistant with narrative + log_trace] -> [Tool result]
+        (contextService.getUnfilteredHistory as any).mockResolvedValue([
+            {
+                role: 'assistant',
+                content: 'I have found the results.',
+                toolCalls: [{ id: 'tc1', name: 'log_trace', arguments: '{}' }]
+            },
+            {
+                role: 'tool',
+                content: '{"status":"ok"}',
+                toolCallId: 'tc1'
+            }
+        ]);
+
+        const generator = sendMessageAndHandleTools(chatState as any, 'Hello', toolExecutor, 'Instruction', 'sess-1');
+        
+        for await (const _ of generator) {}
+
+        // Should NOT call sendMessageStream because it terminated immediately
+        expect(sendMessageStreamMock).not.toHaveBeenCalled();
+    });
 });
+
