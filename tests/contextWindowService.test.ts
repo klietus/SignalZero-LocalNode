@@ -2,10 +2,14 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ContextWindowService } from '../services/contextWindowService.ts';
 import { contextService } from '../services/contextService.js';
 import { domainService } from '../services/domainService.js';
+import { redisService } from '../services/redisService.js';
 import { SymbolDef, ContextMessage } from '../types.js';
 
 vi.mock('../services/contextService');
 vi.mock('../services/domainService');
+vi.mock('../services/redisService.js');
+
+const GLOBAL_REDIS_DATA: Record<string, any> = {};
 
 describe('ContextWindowService', () => {
     let service: ContextWindowService;
@@ -14,6 +18,24 @@ describe('ContextWindowService', () => {
         vi.clearAllMocks();
         service = new ContextWindowService();
         
+        // Reset global redis data before each test
+        for (const key in GLOBAL_REDIS_DATA) delete GLOBAL_REDIS_DATA[key];
+        
+        vi.mocked(redisService.request).mockImplementation(async (args: any[]) => {
+            const cmd = args[0];
+            const key = args[1];
+            if (cmd === 'GET') return GLOBAL_REDIS_DATA[key] || null;
+            if (cmd === 'SET') {
+                GLOBAL_REDIS_DATA[key] = args[2];
+                return 'OK';
+            }
+            if (cmd === 'DEL') {
+                delete GLOBAL_REDIS_DATA[key];
+                return 1;
+            }
+            return null;
+        });
+
         // Default mocks
         vi.mocked(contextService.getSession).mockResolvedValue({ id: 'sess-1', type: 'conversation', status: 'open', createdAt: '', updatedAt: '' });
         vi.mocked(contextService.getUnfilteredHistory).mockResolvedValue([]);
@@ -85,14 +107,17 @@ describe('ContextWindowService', () => {
             updated_at: ''
         }];
 
-        // formatSymbols is private, but we can verify its output in the context window
-        vi.mocked(domainService.findById).mockResolvedValue(symbols[0]);
-        // Mocking recursive core to use our symbol
+        // Mock findById to return our symbol for one of the core roots
+        vi.mocked(domainService.findById).mockImplementation(async (id) => {
+            if (id === 'SELF-RECURSIVE-CORE') return symbols[0];
+            return null;
+        });
         
         const window = await service.constructContextWindow('sess-1', 'Prompt');
-        const kernelContent = window.find(m => m.content?.includes('[KERNEL]'))?.content || '';
+        const dynamicContent = window.find(m => m.content?.includes('[DYNAMIC_STATE]'))?.content || '';
         
-        expect(kernelContent).toContain('| SYM-1 | Test Symbol | [A, B, C] | 🧩 | Logic |');
+        expect(dynamicContent).toContain('[SYMBOL CACHE]');
+        expect(dynamicContent).toContain('| SYM-1 | Test Symbol | [A, B, C] | 🧩 | Logic |');
     });
 
     it('should strip tool outputs from older rounds', async () => {
