@@ -814,6 +814,24 @@ export async function* sendMessageAndHandleTools(
   const transientMessages: ChatCompletionMessageParam[] = [];
   let yieldedToolCalls: ChatCompletionMessageToolCall[] | undefined;
 
+  const isNarrativeText = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+
+    // 1. Filter out known system markers
+    if (trimmed.startsWith('[System') || trimmed.startsWith('> *[System')) return false;
+    if (trimmed.includes('SYSTEM AUDIT FAILURE')) return false;
+
+    // 2. Filter out model "thought" blocks if they leaked into text
+    const withoutThoughts = stripThoughts(trimmed);
+    if (!withoutThoughts) return false;
+
+    // 3. Filter out tool logs if they leaked
+    if (withoutThoughts.startsWith('[Tool') || withoutThoughts.startsWith('{"status":')) return false;
+
+    return withoutThoughts.length > 2; // Must have some actual substance
+  };
+
   while (loops < MAX_TOOL_LOOPS && auditRetries < MAX_AUDIT_RETRIES + 1) {
     yieldedToolCalls = undefined;
 
@@ -831,9 +849,34 @@ export async function* sendMessageAndHandleTools(
         yield { text: "\n[System] Context archived. Inference aborted." };
         break;
       }
+
+      // --- GEMINI TERMINATION CHECK ---
+      // Gemini requires a tool result to be returned if a tool was called, 
+      // which can lead to loops if narrative + log_trace was already provided.
+      const settings = await settingsService.getInferenceSettings();
+      if (settings.provider === 'gemini') {
+        const history = await contextService.getUnfilteredHistory(contextSessionId, userId, true);
+        if (history.length >= 2) {
+          const lastMsg = history[history.length - 1];
+          const penultMsg = history[history.length - 2];
+
+          const hasNarrative = isNarrativeText(penultMsg.content || "");
+          const hasTrace = penultMsg.toolCalls?.some(tc => tc.name === 'log_trace');
+          const lastIsTool = lastMsg.role === 'tool';
+
+          if (penultMsg.role === 'assistant' && hasNarrative && hasTrace && lastIsTool) {
+            loggerService.info("Gemini Termination: Detected narrative + trace followed by tool result. Terminating loop.", {
+              contextSessionId,
+              loops
+            });
+            break;
+          }
+        }
+      }
     }
 
     const MAX_RETRIES = 3;
+
     let retries = 0;
     let nextAssistant: ChatCompletionMessageParam | null = null;
     let textAccumulatedInTurn = "";
@@ -1114,25 +1157,8 @@ export async function* sendMessageAndHandleTools(
       // So they MUST be recorded.
     }
 
-    const isNarrativeText = (text: string) => {
-      const trimmed = text.trim();
-      if (!trimmed) return false;
-
-      // 1. Filter out known system markers
-      if (trimmed.startsWith('[System') || trimmed.startsWith('> *[System')) return false;
-      if (trimmed.includes('SYSTEM AUDIT FAILURE')) return false;
-
-      // 2. Filter out model "thought" blocks if they leaked into text
-      const withoutThoughts = stripThoughts(trimmed);
-      if (!withoutThoughts) return false;
-
-      // 3. Filter out tool logs if they leaked
-      if (withoutThoughts.startsWith('[Tool') || withoutThoughts.startsWith('{"status":')) return false;
-
-      return withoutThoughts.length > 2; // Must have some actual substance
-    };
-
     // Check if we should end the turn IMMEDIATELY
+
     // We end if:
     // 1. We have a trace (hasLoggedTrace).
     // 2. We have a valid response: 

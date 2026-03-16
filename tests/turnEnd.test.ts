@@ -28,7 +28,9 @@ vi.mock('../services/contextService', () => {
                     history.push(message);
                 }
             }),
+            getActiveMessage: vi.fn().mockResolvedValue(null),
             isCancelled: vi.fn().mockResolvedValue(false),
+            getUnfilteredHistory: vi.fn().mockImplementation(async () => [...history]),
             clearCancellation: vi.fn(),
             clearActiveMessage: vi.fn(),
             getHistoryRecords: () => [...history],
