@@ -1333,6 +1333,13 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
                 const json = await response.json();
                 const items = Array.isArray(json.organic_results) ? json.organic_results : [];
                 
+                // Emit event for kernel monitoring
+                eventBusService.emit(KernelEventType.WEB_SEARCH, { 
+                    query: q, 
+                    resultsCount: items.length,
+                    contextSessionId 
+                });
+
                 return {
                   query: q,
                   total_results: json.search_information?.total_results,

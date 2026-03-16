@@ -51,13 +51,15 @@ vi.mock('../services/loggerService', () => ({
 
 // Mock Google Generative AI
 export const sendMessageStreamMock = vi.fn();
+export const startChatMock = vi.fn();
+
 vi.mock('@google/generative-ai', () => {
     return {
         GoogleGenerativeAI: vi.fn().mockImplementation(() => ({
             getGenerativeModel: vi.fn().mockReturnValue({
-                startChat: vi.fn().mockReturnValue({
+                startChat: startChatMock.mockImplementation(() => ({
                     sendMessageStream: sendMessageStreamMock
-                })
+                }))
             })
         })),
         SchemaType: {
@@ -377,6 +379,44 @@ describe('InferenceService', () => {
 
         // Should NOT call sendMessageStream because it terminated immediately
         expect(sendMessageStreamMock).not.toHaveBeenCalled();
+    });
+
+    it('should inject anticipated web results into context window', async () => {
+        const chatState = { messages: [], systemInstruction: 'Instruction', model: 'test-model' };
+        const toolExecutor = vi.fn().mockResolvedValue({ status: 'ok' });
+        const webResults = [{ query: 'test', results: [{ title: 'Result', snippet: 'Snippet', url: 'http://test.com' }] }];
+
+        (contextService.getUnfilteredHistory as any).mockResolvedValue([]);
+        (contextWindowService.constructContextWindow as any).mockResolvedValue([
+            { role: 'system', content: 'Instruction' },
+            { role: 'user', content: 'Hello' }
+        ]);
+
+        sendMessageStreamMock.mockResolvedValue({
+            stream: (async function* () {
+                yield { text: () => "Response.", functionCalls: () => null, candidates: [{ content: { parts: [{ text: "Response." }] } }] };
+            })()
+        });
+
+        const generator = sendMessageAndHandleTools(
+            chatState as any, 
+            'Hello', 
+            toolExecutor, 
+            'Instruction', 
+            'sess-1', 
+            undefined, 
+            undefined, 
+            webResults
+        );
+
+        for await (const _ of generator) {}
+
+        // Verify sendMessageStream was called with the injected results in the last message
+        const lastSendCall = sendMessageStreamMock.mock.calls[0][0];
+        const anticipatedPart = lastSendCall.find((p: any) => p.text?.includes('[ANTICIPATED WEB SEARCH RESULTS]'));
+        
+        expect(anticipatedPart).toBeDefined();
+        expect(anticipatedPart.text).toContain('http://test.com');
     });
 });
 

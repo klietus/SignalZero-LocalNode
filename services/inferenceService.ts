@@ -724,7 +724,8 @@ export async function* sendMessageAndHandleTools(
   systemInstruction?: string,
   contextSessionId?: string,
   userMessageId?: string,
-  userId?: string
+  userId?: string,
+  anticipatedWebResults?: any[]
 ): AsyncGenerator<
   { text?: string; toolCalls?: any[]; isComplete?: boolean },
   void,
@@ -889,6 +890,20 @@ export async function* sendMessageAndHandleTools(
 
       if (transientMessages.length > 0) {
         contextMessages = [...contextMessages, ...transientMessages];
+      }
+
+      // --- INJECT ANTICIPATED WEB RESULTS ---
+      if (loops === 0 && anticipatedWebResults && anticipatedWebResults.length > 0) {
+        const resultsBlock = `\n\n[ANTICIPATED WEB SEARCH RESULTS]\n${JSON.stringify(anticipatedWebResults, null, 2)}`;
+        const userMsg = contextMessages.find(m => m.role === 'user');
+        if (userMsg) {
+          userMsg.content += resultsBlock;
+        } else {
+          contextMessages.push({
+            role: 'system',
+            content: resultsBlock
+          });
+        }
       }
 
       loggerService.debug("sendMessageAndHandleTools: Context window messages counts", {
@@ -1236,25 +1251,58 @@ export const extractJson = (text: string): any => {
 export const primeSymbolicContext = async (
   message: string,
   contextSessionId: string,
-  userId?: string
-) => {
+  userId?: string,
+  isAdmin: boolean = false
+): Promise<{ symbols: SymbolDef[], webResults: any[] }> => {
+  const foundSymbols: SymbolDef[] = [];
+  const webResults: any[] = [];
+
   try {
     const settings = await settingsService.getInferenceSettings();
     const fastModel = settings.fastModel;
 
-    if (!fastModel) return;
+    if (!fastModel) return { symbols: [], webResults: [] };
 
-    loggerService.info("Priming symbolic context with fast model", { fastModel, contextSessionId });
+    // Fetch last 5 rounds of history (up to 10 messages)
+    const history = await contextService.getUnfilteredHistory(contextSessionId, userId, isAdmin);
+    const recentHistory = history.slice(-10);
+    const historyContext = recentHistory.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n');
 
-    const prompt = `Analyze the user message and identify 3-5 symbolic search queries, including synonyms and domain-specific terms, relevant to a symbolic knowledge graph. 
-    User Message: "${message}"
+    // Identify previous web searches to avoid duplicates
+    const previousSearches = history
+      .flatMap(m => {
+        const searches: string[] = [];
+        if (m.toolName === 'web_search' && m.toolArgs?.query) searches.push(m.toolArgs.query);
+        if (m.toolName === 'web_search' && Array.isArray(m.toolArgs?.queries)) {
+          m.toolArgs.queries.forEach((q: any) => searches.push(typeof q === 'string' ? q : q.query));
+        }
+        if (m.metadata?.kind === 'anticipated_web_search' && Array.isArray(m.metadata?.queries)) {
+          m.metadata.queries.forEach((q: string) => searches.push(q));
+        }
+        return searches;
+      })
+      .filter((q, i, self) => q && self.indexOf(q) === i);
+
+    loggerService.info("Priming symbolic context with fast model", { fastModel, contextSessionId, historyCount: recentHistory.length });
+
+    const prompt = `Analyze the conversation history and the new user message to identify symbolic search queries and determine if web search grounding is needed.
+
+    Conversation History:
+    ${historyContext || "No previous history."}
+
+    New User Message: "${message}"
+
+    Previous Web Searches (DO NOT REPEAT THESE):
+    ${previousSearches.length > 0 ? previousSearches.join(', ') : "None."}
     
     Output valid JSON only:
     {
-      "queries": ["query1", "query2", ...]
+      "queries": ["symbolic query1", "symbolic query2", ...],
+      "web_search_needed": boolean,
+      "web_search_queries": ["search query1", "search query2", ...]
     }`;
 
-    let queries: string[] = [];
+    let fastResponse: any = {};
 
     if (settings.provider === 'gemini') {
       const client = await getGeminiClient();
@@ -1263,8 +1311,8 @@ export const primeSymbolicContext = async (
         generationConfig: { responseMimeType: "application/json" }
       });
       const result = await model.generateContent(prompt);
-      const response = result.response.text();
-      queries = extractJson(response).queries || [];
+      const responseText = result.response.text();
+      fastResponse = extractJson(responseText);
     } else {
       const client = await getClient();
       const result = await client.chat.completions.create({
@@ -1272,18 +1320,21 @@ export const primeSymbolicContext = async (
         messages: [{ role: "user", content: prompt }],
         response_format: { type: "text" }
       });
-      const response = result.choices[0]?.message?.content || "{}";
-      queries = extractJson(response).queries || [];
+      const responseText = result.choices[0]?.message?.content || "{}";
+      fastResponse = extractJson(responseText);
     }
 
-    if (queries.length > 0) {
-      loggerService.info("Fast model generated queries", { queries, contextSessionId });
+    const symbolicQueries = fastResponse.queries || [];
+    const webSearchQueries = fastResponse.web_search_queries || [];
+
+    // --- EXECUTE SYMBOLIC QUERIES ---
+    if (symbolicQueries.length > 0) {
+      loggerService.info("Fast model generated symbolic queries", { symbolicQueries, contextSessionId });
 
       const allDomains = await domainService.listDomains(userId);
-      const foundSymbols: SymbolDef[] = [];
-
+      
       // Execute searches in parallel
-      const searchPromises = queries.map(query =>
+      const searchPromises = symbolicQueries.map((query: string) =>
         domainService.search(query, 5, {
           domains: allDomains,
           contextSessionId
@@ -1300,8 +1351,6 @@ export const primeSymbolicContext = async (
 
       if (foundSymbols.length > 0) {
         // --- 1-HOP TRAVERSAL ---
-        loggerService.info(`Executing 1-hop traversal for ${foundSymbols.length} seed symbols`, { contextSessionId });
-
         const linkedIds = new Set<string>();
         foundSymbols.forEach(s => {
           (s.linked_patterns || []).forEach((link: any) => {
@@ -1314,8 +1363,6 @@ export const primeSymbolicContext = async (
 
         if (linkedIds.size > 0) {
           const linkedSymbols = await domainService.loadSymbols(Array.from(linkedIds), userId);
-          loggerService.info(`Loaded ${linkedSymbols.length} linked symbols from 1-hop traversal`, { contextSessionId });
-
           linkedSymbols.forEach(s => {
             if (!foundSymbols.find(fs => fs.id === s.id)) {
               foundSymbols.push(s);
@@ -1323,13 +1370,80 @@ export const primeSymbolicContext = async (
           });
         }
 
-        loggerService.info(`Priming cache with ${foundSymbols.length} total symbols (seed + 1-hop)`, { contextSessionId });
+        loggerService.info(`Priming cache with ${foundSymbols.length} total symbols`, { contextSessionId });
         await symbolCacheService.batchUpsertSymbols(contextSessionId, foundSymbols);
       }
     }
+
+    // --- EXECUTE WEB SEARCH QUERIES ---
+    if (fastResponse.web_search_needed && webSearchQueries.length > 0) {
+      loggerService.info("Fast model anticipated web search", { webSearchQueries, contextSessionId });
+      
+      const serpSettings = await settingsService.getSerpApiSettings();
+      const serpApiKey = serpSettings.apiKey || process.env.SERPAPI_API_KEY;
+
+      if (serpApiKey) {
+        const executeSearch = async (q: string) => {
+          try {
+            const searchUrl = new URL('https://serpapi.com/search');
+            searchUrl.searchParams.set('api_key', serpApiKey);
+            searchUrl.searchParams.set('engine', 'google');
+            searchUrl.searchParams.set('q', q);
+            searchUrl.searchParams.set('num', '5');
+
+            const response = await fetch(searchUrl.toString());
+            if (response.ok) {
+              const json = await response.json();
+              const items = Array.isArray(json.organic_results) ? json.organic_results : [];
+              
+              // Emit event
+              eventBusService.emit(KernelEventType.WEB_SEARCH, { 
+                query: q, 
+                resultsCount: items.length, 
+                contextSessionId,
+                isAnticipated: true 
+              });
+
+              return {
+                query: q,
+                results: items.slice(0, 5).map((item: any) => ({
+                  title: item.title,
+                  snippet: item.snippet,
+                  url: item.link
+                }))
+              };
+            }
+          } catch (e) {
+            loggerService.error("Anticipated web search failed", { query: q, error: e });
+          }
+          return null;
+        };
+
+        const results = await Promise.all(webSearchQueries.map(executeSearch));
+        results.forEach(r => { if (r) webResults.push(r); });
+
+        // Record the fact that we did anticipated searches
+        if (webResults.length > 0 && contextSessionId) {
+          await contextService.recordMessage(contextSessionId, {
+            id: randomUUID(),
+            role: "system",
+            content: `[System] Executed ${webResults.length} anticipated web searches for grounding.`,
+            timestamp: new Date().toISOString(),
+            metadata: { 
+              kind: "anticipated_web_search", 
+              queries: webSearchQueries,
+              resultsCount: webResults.length 
+            }
+          }, userId, true);
+        }
+      }
+    }
+
   } catch (error) {
     loggerService.error("Failed to prime symbolic context", { error, contextSessionId });
   }
+
+  return { symbols: foundSymbols, webResults };
 };
 
 // --- Test Runner Functions ---
@@ -1344,10 +1458,10 @@ export const processMessageAsync = async (
 ) => {
   try {
     // Pre-flight: expansion search and cache priming
-    await primeSymbolicContext(message, contextSessionId, userId);
+    const { webResults } = await primeSymbolicContext(message, contextSessionId, userId, true);
 
     const chat = await getChatSession(systemInstruction, contextSessionId);
-    const stream = sendMessageAndHandleTools(chat, message, toolExecutor, systemInstruction, contextSessionId, userMessageId, userId);
+    const stream = sendMessageAndHandleTools(chat, message, toolExecutor, systemInstruction, contextSessionId, userMessageId, userId, webResults);
 
     // Consume the stream to drive execution
     for await (const _ of stream) {
@@ -1431,10 +1545,10 @@ export const runSignalZeroTest = async (
       loggerService.info("Starting executeTurn", { msgPreview: msg.slice(0, 50), contextSessionId });
 
       // Pre-flight for each turn in test
-      await primeSymbolicContext(msg, contextSessionId);
+      const { webResults } = await primeSymbolicContext(msg, contextSessionId, undefined, true);
 
       // Pass contextSessionId to enable full ContextWindowService logic
-      for await (const chunk of sendMessageAndHandleTools(chat, msg, toolExecutor, systemInstruction, contextSessionId)) {
+      for await (const chunk of sendMessageAndHandleTools(chat, msg, toolExecutor, systemInstruction, contextSessionId, undefined, undefined, webResults)) {
         if (chunk.text) turnText += chunk.text;
       }
       loggerService.info("executeTurn Complete", { turnTextLength: turnText.length });
