@@ -22,6 +22,7 @@ class TopologyService {
     private readonly CONFIDENCE_THRESHOLD = 0.85;
     private readonly REDUNDANCY_THRESHOLD = 0.98;
     private readonly RANK = 20; // Latent factor dimension
+    private isAnalyzing = false;
 
     constructor() {
         // Initialize backend - Prefer wasm, fallback to cpu in tests or if wasm fails
@@ -48,7 +49,14 @@ class TopologyService {
      * If overrideSettings is provided, it uses those instead of saved settings.
      */
     async analyze(userId?: string, specificStrategy?: string, overrideSettings?: GraphHygieneSettings): Promise<TopologyStats | null> {
+        if (this.isAnalyzing) {
+            loggerService.warn("TopologyService: Analysis already in progress, skipping request");
+            return null;
+        }
+
         try {
+            this.isAnalyzing = true;
+            tf.engine().startScope();
             await tf.ready();
             const hygiene = overrideSettings || await settingsService.getHygieneSettings();
 
@@ -129,9 +137,15 @@ class TopologyService {
             loggerService.info("TopologyService: Analysis complete", stats);
             return stats;
 
-        } catch (error) {
-            loggerService.error("TopologyService: Analysis failed", { error });
+        } catch (error: any) {
+            loggerService.error("TopologyService: Analysis failed", { 
+                error: error?.message || String(error),
+                stack: error?.stack
+            });
             return null;
+        } finally {
+            tf.engine().endScope();
+            this.isAnalyzing = false;
         }
     }
 
@@ -259,19 +273,6 @@ class TopologyService {
                 }
             }
 
-            A.dispose();
-            B.dispose();
-            C.dispose();
-
-            return { newLinks, redundantCount, reconstructionError: 0 };
-        } catch (error: any) {
-            loggerService.error("TopologyService: Positional analysis failed", { 
-                error: error.message, 
-                stack: error.stack 
-            });
-            return { newLinks: 0, redundantCount: 0 };
-        }
-    }
             A.dispose();
             B.dispose();
             C.dispose();
