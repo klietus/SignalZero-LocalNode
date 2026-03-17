@@ -11,6 +11,7 @@ vi.mock('../services/domainService.ts', () => ({
         addSymbol: vi.fn(),
         mergeSymbols: vi.fn(),
         loadSymbols: vi.fn(),
+        search: vi.fn().mockResolvedValue([]),
     }
 }));
 
@@ -73,7 +74,7 @@ describe('TopologyService', () => {
     });
 
     it('should run semantic analysis and identify redundancy', async () => {
-        vi.mocked(domainService.listDomains).mockResolvedValue(['dom1']);
+        vi.mocked(domainService.listDomains).mockResolvedValue([{ id: 'dom1' }] as any);
         vi.mocked(domainService.getSymbols).mockResolvedValue(mockSymbols as any);
 
         const stats = await topologyService.analyze();
@@ -86,7 +87,7 @@ describe('TopologyService', () => {
 
     it('should run triadic analysis and predict links', async () => {
         // S1 <-> S2, S2 <-> S3. Potential triad: S1 <-> S3
-        vi.mocked(domainService.listDomains).mockResolvedValue(['dom1']);
+        vi.mocked(domainService.listDomains).mockResolvedValue([{ id: 'dom1' }] as any);
         vi.mocked(domainService.getSymbols).mockResolvedValue(mockSymbols as any);
 
         const stats = await topologyService.analyze();
@@ -100,12 +101,26 @@ describe('TopologyService', () => {
             { id: 'S1', symbol_domain: 'dom1', linked_patterns: [{ id: 'NON_EXISTENT' }] },
             { id: 'S2', symbol_domain: 'dom1', linked_patterns: [] }
         ];
-        vi.mocked(domainService.listDomains).mockResolvedValue(['dom1']);
+        vi.mocked(domainService.listDomains).mockResolvedValue([{ id: 'dom1' }] as any);
         vi.mocked(domainService.getSymbols).mockResolvedValue(symbolsWithDeadLink as any);
 
         await topologyService.analyze();
 
         expect(symbolsWithDeadLink[0].linked_patterns.length).toBe(0);
         expect(domainService.addSymbol).toHaveBeenCalled();
+    });
+
+    it('should heal orphans via semantic search', async () => {
+        const orphan = { id: 'ORPHAN_1', name: 'Alone', role: 'No friends', symbol_domain: 'dom1', linked_patterns: [] };
+        const candidate = { id: 'FRIEND_1', name: 'Potential Friend', role: 'Matches well', symbol_domain: 'dom1' };
+        
+        vi.mocked(domainService.listDomains).mockResolvedValue([{ id: 'dom1' }] as any);
+        vi.mocked(domainService.getSymbols).mockResolvedValue([orphan, candidate] as any);
+        vi.mocked(domainService.search).mockResolvedValue([candidate] as any);
+
+        await topologyService.analyze();
+
+        expect(domainService.search).toHaveBeenCalledWith(expect.stringContaining('Alone'), 5, expect.any(Object), undefined);
+        expect(tentativeLinkService.processTrace).toHaveBeenCalled();
     });
 });

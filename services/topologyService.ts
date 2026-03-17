@@ -69,8 +69,8 @@ class TopologyService {
             // 1. Fetch all symbols
             const allDomains = await domainService.listDomains(userId);
             const symbols: SymbolDef[] = [];
-            for (const domainId of allDomains) {
-                const domainSymbols = await domainService.getSymbols(domainId, userId);
+            for (const d of allDomains) {
+                const domainSymbols = await domainService.getSymbols(d.id, userId);
                 symbols.push(...domainSymbols);
             }
 
@@ -502,8 +502,42 @@ class TopologyService {
 
         if (orphans.length > 0) {
             loggerService.info(`TopologyService: Found ${orphans.length} orphan symbols`);
+            
+            const allDomains = await domainService.listDomains(userId);
+            
             for (const orphan of orphans) {
                 eventBusService.emit(KernelEventType.ORPHAN_DETECTED, { symbolId: orphan.id, domainId: orphan.symbol_domain });
+                
+                // --- Semantic Healing for Orphans ---
+                // Search for symbols that might relate to this orphan's name or role
+                const searchQuery = `${orphan.name} ${orphan.role}`;
+                try {
+                    const candidates = await domainService.search(searchQuery, 5, { 
+                        domains: allDomains.map(d => d.id) 
+                    }, userId);
+
+                    const validCandidates = candidates.filter(c => c.id !== orphan.id);
+                    const predictedLinks = [];
+
+                    for (const cand of validCandidates) {
+                        const validation = await this.validateLink(orphan, cand);
+                        if (validation.shouldLink) {
+                            predictedLinks.push({
+                                sourceId: orphan.id,
+                                targetId: cand.id,
+                                linkType: validation.linkType || 'relates_to',
+                                confidence: 0.85
+                            });
+                        }
+                    }
+
+                    if (predictedLinks.length > 0) {
+                        loggerService.info(`TopologyService: Found ${predictedLinks.length} healing links for orphan ${orphan.id}`);
+                        await this.promoteToTentative(predictedLinks, userId);
+                    }
+                } catch (searchErr) {
+                    loggerService.error(`TopologyService: Failed semantic healing for orphan ${orphan.id}`, { error: searchErr });
+                }
             }
         }
     }
