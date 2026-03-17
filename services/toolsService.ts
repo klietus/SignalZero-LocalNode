@@ -14,6 +14,7 @@ import { contextService } from "./contextService.js";
 import { symbolCacheService } from "./symbolCacheService.js";
 import { eventBusService, KernelEventType } from "./eventBusService.js";
 import { documentMeaningService } from "./documentMeaningService.js";
+import { mcpClientService } from "./mcpClientService.js";
 import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
@@ -1551,13 +1552,26 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
       case 'list_secondary_tools': {
           const { request_tools } = args || {};
           
-          const availableTools = Object.keys(SECONDARY_TOOLS_MAP).map(name => ({
+          const internalTools = Object.keys(SECONDARY_TOOLS_MAP).map(name => ({
               name,
               description: SECONDARY_TOOLS_MAP[name].function.description
           }));
 
+          const mcpTools = (await mcpClientService.getAllTools()).map(t => ({
+              name: t.function.name,
+              description: t.function.description
+          }));
+
+          const availableTools = [...internalTools, ...mcpTools];
+
           if (Array.isArray(request_tools) && request_tools.length > 0) {
-              const validRequestedTools = request_tools.filter(t => SECONDARY_TOOLS_MAP[t]);
+              const allPossibleSecondary = { ...SECONDARY_TOOLS_MAP };
+              const remoteTools = await mcpClientService.getAllTools();
+              remoteTools.forEach(t => {
+                  allPossibleSecondary[t.function.name] = t;
+              });
+
+              const validRequestedTools = request_tools.filter(t => allPossibleSecondary[t]);
               
               if (validRequestedTools.length > 0 && contextSessionId) {
                   const session = await contextService.getSession(contextSessionId, userId, true);
@@ -1582,8 +1596,22 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           };
       }
 
-      default:
+      default: {
+        if (name.startsWith('mcp_')) {
+            // Format: mcp_{id}_{original_name}
+            const parts = name.split('_');
+            if (parts.length >= 3) {
+                const mcpId = parts[1];
+                const originalName = parts.slice(2).join('_');
+                try {
+                    return await mcpClientService.executeTool(mcpId, originalName, args);
+                } catch (e: any) {
+                    return { error: `MCP Tool Execution Failed: ${e.message}` };
+                }
+            }
+        }
         return { error: `Function ${name} not found.` };
+      }
     }
   };
 

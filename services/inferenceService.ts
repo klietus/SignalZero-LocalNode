@@ -19,6 +19,7 @@ import { symbolCacheService } from './symbolCacheService.js';
 import { tentativeLinkService } from './tentativeLinkService.js';
 import { contextWindowService } from './contextWindowService.js';
 import { redisService } from './redisService.js';
+import { mcpClientService } from './mcpClientService.js';
 
 interface ChatSessionState {
   messages: ChatCompletionMessageParam[];
@@ -922,25 +923,56 @@ export async function* sendMessageAndHandleTools(
       });
 
       // --- DYNAMIC TOOL LIST ---
-      let activeToolList = PRIMARY_TOOLS;
+      let activeToolList = [...PRIMARY_TOOLS];
+      let activeSystemInstruction = systemInstruction || chat.systemInstruction;
+
       if (contextSessionId) {
         try {
           const currentSession = await contextService.getSession(contextSessionId, userId, true);
           const requestedTools = currentSession?.metadata?.active_tools || [];
+          
+          // 1. Resolve Secondary Internal Tools
+          const secondaryTools = requestedTools
+            .map((name: string) => SECONDARY_TOOLS_MAP[name])
+            .filter(Boolean);
+          
+          // 2. Resolve MCP Tools
+          const remoteTools = await mcpClientService.getAllTools();
+          const activeRemoteTools = remoteTools.filter(rt => requestedTools.includes(rt.function.name));
+          
+          activeToolList = [...PRIMARY_TOOLS, ...secondaryTools, ...activeRemoteTools];
+
+          // 3. Resolve MCP Prompts for System Instruction injection
+          const remotePrompts = await mcpClientService.getAllPrompts();
+          const activeConfigs = await mcpClientService.getEnabledConfigs();
+          const activeConfigIds = activeConfigs.map(c => c.id);
+          
+          const relevantPrompts = remotePrompts.filter(rp => activeConfigIds.includes(rp.mcpId));
+          
+          if (relevantPrompts.length > 0) {
+              let dynamicSection = "\n\n### DYNAMIC TOOLS & CAPABILITIES\n";
+              relevantPrompts.forEach(p => {
+                  dynamicSection += `\n#### ${p.name}\n${p.content}\n`;
+              });
+              activeSystemInstruction += dynamicSection;
+          }
+
           if (requestedTools.length > 0) {
-            const secondaryTools = requestedTools
-              .map((name: string) => SECONDARY_TOOLS_MAP[name])
-              .filter(Boolean);
-            activeToolList = [...PRIMARY_TOOLS, ...secondaryTools];
             loggerService.info("Active dynamic tool list", {
               primaryCount: PRIMARY_TOOLS.length,
               secondaryCount: secondaryTools.length,
-              secondaryTools: requestedTools
+              mcpCount: activeRemoteTools.length,
+              requestedTools
             });
           }
         } catch (e) {
-          loggerService.warn("Failed to fetch active tools for turn", { error: e });
+          loggerService.warn("Failed to fetch active tools/prompts for turn", { error: e });
         }
+      }
+
+      // Update system message if instruction changed
+      if (contextMessages[0]?.role === 'system') {
+          contextMessages[0].content = activeSystemInstruction;
       }
 
       const assistantMessage = streamAssistantResponse(contextMessages as ChatCompletionMessageParam[], chat.model, activeToolList);
