@@ -715,6 +715,9 @@ export const stripThoughts = (text: string): string => {
   return text
     .replace(/<thought>[\s\S]*?<\/thought>/gi, '')
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<think>[\s\S]*$/gi, '') // Remove unclosed think blocks
+    .replace(/<\/think>/gi, '')      // Remove dangling close tags
+    .replace(/<\/thought>/gi, '')    // Remove dangling close tags
     .replace(/\[[\s\S]*?\]\(sz-think:thinking\)/g, '')
     .trim();
 };
@@ -981,17 +984,53 @@ export async function* sendMessageAndHandleTools(
       nextAssistant = null;
 
       let isFirstTextChunkInTurn = true;
+      let inThinkBlock = false;
+      let currentThinkTag = ""; // "think" or "thought"
+
       for await (const chunk of assistantMessage) {
         if (chunk.text) {
-          // Log the chunk size for debug (verbose)
-          // loggerService.debug(`Received text chunk: ${chunk.text.length} chars`);
-          let textToYield = chunk.text;
-          if (isFirstTextChunkInTurn && totalTextAccumulatedAcrossLoops.length > 0) {
-            textToYield = "\n\n" + textToYield;
+          let textToProcess = chunk.text;
+          let processedText = "";
+
+          // Simple stateful streaming thought stripper
+          // This handles basic <think>...</think> and <thought>...</thought> across chunks
+          let i = 0;
+          while (i < textToProcess.length) {
+            if (!inThinkBlock) {
+              const remaining = textToProcess.slice(i);
+              const thinkMatch = remaining.match(/^<(think|thought)>/i);
+              if (thinkMatch) {
+                inThinkBlock = true;
+                currentThinkTag = thinkMatch[1].toLowerCase();
+                i += thinkMatch[0].length;
+                continue;
+              }
+              // Not in block, not starting one
+              processedText += textToProcess[i];
+              i++;
+            } else {
+              const remaining = textToProcess.slice(i);
+              const endMatch = remaining.match(new RegExp(`^</${currentThinkTag}>`, "i"));
+              if (endMatch) {
+                inThinkBlock = false;
+                currentThinkTag = "";
+                i += endMatch[0].length;
+                continue;
+              }
+              // Skip inside block
+              i++;
+            }
           }
-          textAccumulatedInTurn += textToYield;
-          yield { text: textToYield };
-          isFirstTextChunkInTurn = false;
+
+          if (processedText) {
+            let textToYield = processedText;
+            if (isFirstTextChunkInTurn && totalTextAccumulatedAcrossLoops.length > 0) {
+              textToYield = "\n\n" + textToYield;
+            }
+            textAccumulatedInTurn += textToYield;
+            yield { text: textToYield };
+            isFirstTextChunkInTurn = false;
+          }
         }
         if (chunk.toolCalls) {
           yieldedToolCalls = chunk.toolCalls;
@@ -1476,6 +1515,43 @@ export const primeSymbolicContext = async (
               foundSymbols.push(s);
             }
           });
+        }
+
+        // --- LATTICE EXPANSION ---
+        // If we found any lattices, we need to ensure all their members are precached.
+        // We do this recursively (up to 3 levels) to capture nested structures.
+        let expansionPasses = 0;
+        let newlyFoundLattices = foundSymbols.filter(s => s.kind === 'lattice');
+        
+        while (newlyFoundLattices.length > 0 && expansionPasses < 3) {
+            const latticeMemberIds = new Set<string>();
+            newlyFoundLattices.forEach(lat => {
+                (lat.linked_patterns || []).forEach((link: any) => {
+                    const id = typeof link === 'string' ? link : link.id;
+                    if (id && !foundSymbols.find(fs => fs.id === id)) {
+                        latticeMemberIds.add(id);
+                    }
+                });
+            });
+
+            if (latticeMemberIds.size === 0) break;
+
+            const expandedSymbols = await domainService.loadSymbols(Array.from(latticeMemberIds), userId);
+            expandedSymbols.forEach(s => {
+                if (!foundSymbols.find(fs => fs.id === s.id)) {
+                    foundSymbols.push(s);
+                }
+            });
+
+            newlyFoundLattices = expandedSymbols.filter(s => s.kind === 'lattice');
+            expansionPasses++;
+            
+            if (newlyFoundLattices.length > 0) {
+                loggerService.info(`Lattice expansion pass ${expansionPasses}: found ${expandedSymbols.length} new symbols`, { 
+                    contextSessionId, 
+                    latticeCount: newlyFoundLattices.length 
+                });
+            }
         }
 
         loggerService.info(`Priming cache with ${foundSymbols.length} total symbols`, { contextSessionId });

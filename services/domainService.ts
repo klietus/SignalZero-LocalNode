@@ -830,6 +830,18 @@ export const domainService = {
   },
 
   /**
+   * Load multiple symbols by their IDs.
+   */
+  loadSymbols: async (ids: string[], userId?: string): Promise<SymbolDef[]> => {
+    const results: SymbolDef[] = [];
+    for (const id of ids) {
+      const symbol = await domainService.findById(id, userId);
+      if (symbol) results.push(symbol);
+    }
+    return results;
+  },
+
+  /**
    * Find by ID across all accessible domains.
    */
   findById: async (id: string, userId?: string): Promise<SymbolDef | null> => {
