@@ -52,7 +52,7 @@ vi.mock('../services/inferenceService.ts', () => ({
         chat: {
             completions: {
                 create: vi.fn().mockResolvedValue({
-                    choices: [{ message: { content: '{"shouldLink": true, "isSame": true}' } }]
+                    choices: [{ message: { content: '{"shouldLink": true, "isSame": true, "linkType": "relates_to"}' } }]
                 })
             }
         }
