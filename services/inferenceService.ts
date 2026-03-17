@@ -6,7 +6,7 @@ import type {
   ChatCompletionMessageParam,
   ChatCompletionMessageToolCall,
 } from "openai/resources/chat/completions";
-import { toolDeclarations } from "./toolsService.js";
+import { PRIMARY_TOOLS, SECONDARY_TOOLS_MAP } from "./toolsService.js";
 import { ACTIVATION_PROMPT } from "../symbolic_system/activation_prompt.js";
 import { EvaluationMetrics, TestMeta, SymbolDef } from "../types.js";
 import { domainService } from "./domainService.js";
@@ -353,7 +353,8 @@ export const normalizeMessages = (messages: ChatCompletionMessageParam[]): ChatC
 // Wrap the stream processing to catch and log errors
 const streamAssistantResponse = async function* (
   messages: ChatCompletionMessageParam[],
-  model: string
+  model: string,
+  activeTools: ChatCompletionTool[] = PRIMARY_TOOLS
 ): AsyncGenerator<{
   text?: string;
   toolCalls?: ChatCompletionMessageToolCall[];
@@ -361,7 +362,7 @@ const streamAssistantResponse = async function* (
 }> {
   try {
     const normalized = normalizeMessages(messages);
-    for await (const chunk of _streamAssistantResponseInternal(normalized, model)) {
+    for await (const chunk of _streamAssistantResponseInternal(normalized, model, activeTools)) {
       yield chunk;
     }
   } catch (error: any) {
@@ -377,7 +378,8 @@ const streamAssistantResponse = async function* (
 
 const _streamAssistantResponseInternal = async function* (
   messages: ChatCompletionMessageParam[],
-  model: string
+  model: string,
+  activeTools: ChatCompletionTool[] = PRIMARY_TOOLS
 ): AsyncGenerator<{
   text?: string;
   toolCalls?: ChatCompletionMessageToolCall[];
@@ -388,7 +390,7 @@ const _streamAssistantResponseInternal = async function* (
   if (settings.provider === 'gemini') {
     loggerService.info("Gemini Request Debug: Starting", {
       model,
-      toolCount: toolDeclarations.length,
+      toolCount: activeTools.length,
       messageCount: messages.length
     });
 
@@ -397,7 +399,7 @@ const _streamAssistantResponseInternal = async function* (
     });
 
     const client = await getGeminiClient();
-    const geminiTools = toGeminiTools(toolDeclarations);
+    const geminiTools = toGeminiTools(activeTools);
 
     // Log first few tool names
     loggerService.debug("Gemini Tools Sample:", {
@@ -621,7 +623,7 @@ const _streamAssistantResponseInternal = async function* (
   const stream = await client.chat.completions.create({
     model,
     messages,
-    tools: toolDeclarations,
+    tools: activeTools,
     stream: true,
     max_tokens: 4096
   });
@@ -743,6 +745,7 @@ export async function* sendMessageAndHandleTools(
   }
 
   let contextMetadata: Record<string, any> | undefined;
+  let traceNeeded = true; // Default to true if not specified
 
   if (contextSessionId) {
     try {
@@ -754,8 +757,15 @@ export async function* sendMessageAndHandleTools(
           id: session.id,
           type: session.type,
           lifecycle,
-          readonly: session.metadata?.readOnly === true
+          readonly: session.metadata?.readOnly === true,
+          trace_needed: session.metadata?.trace_needed,
+          trace_reason: session.metadata?.trace_reason
         };
+
+        // Check if trace is needed from session metadata
+        if (session.metadata?.trace_needed !== undefined) {
+          traceNeeded = !!session.metadata.trace_needed;
+        }
       }
     } catch (error) {
       loggerService.warn("Failed to load context metadata for system block", { contextSessionId, error });
@@ -911,7 +921,29 @@ export async function* sendMessageAndHandleTools(
         roles: contextMessages.reduce((acc: any, m) => { acc[m.role] = (acc[m.role] || 0) + 1; return acc; }, {})
       });
 
-      const assistantMessage = streamAssistantResponse(contextMessages as ChatCompletionMessageParam[], chat.model);
+      // --- DYNAMIC TOOL LIST ---
+      let activeToolList = PRIMARY_TOOLS;
+      if (contextSessionId) {
+        try {
+          const currentSession = await contextService.getSession(contextSessionId, userId, true);
+          const requestedTools = currentSession?.metadata?.active_tools || [];
+          if (requestedTools.length > 0) {
+            const secondaryTools = requestedTools
+              .map((name: string) => SECONDARY_TOOLS_MAP[name])
+              .filter(Boolean);
+            activeToolList = [...PRIMARY_TOOLS, ...secondaryTools];
+            loggerService.info("Active dynamic tool list", {
+              primaryCount: PRIMARY_TOOLS.length,
+              secondaryCount: secondaryTools.length,
+              secondaryTools: requestedTools
+            });
+          }
+        } catch (e) {
+          loggerService.warn("Failed to fetch active tools for turn", { error: e });
+        }
+      }
+
+      const assistantMessage = streamAssistantResponse(contextMessages as ChatCompletionMessageParam[], chat.model, activeToolList);
       textAccumulatedInTurn = "";
       yieldedToolCalls = undefined;
       nextAssistant = null;
@@ -1001,9 +1033,9 @@ export async function* sendMessageAndHandleTools(
       const hasNarrativeOutput = textAccumulatedInTurn.trim().length > 0 || totalTextAccumulatedAcrossLoops.trim().length > 0;
       const hasVoiceOutput = hasCalledSpeak || isCallingSpeakThisTurn;
 
-      // Check 1: Missing Trace (ALWAYS REQUIRED for any response)
-      if (isEndingTurn && !hasLoggedTrace && !isCallingTraceThisTurn) {
-        auditMessage += "⚠️ SYSTEM AUDIT FAILURE: You generated a response but failed to log a symbolic trace. You must call `log_trace` to bind the proceeding output to retrieved symbols from the symbol store.  This trace must be comprehensive and contain all symbols used in the response.  This audit message is not a driver for symbolic analysis.  Do not acknowledge this message or repeat previous information.\n";
+      // Check 1: Missing Trace (Required for complex analytic operations, skipped for casual conversation)
+      if (traceNeeded && isEndingTurn && !hasLoggedTrace && !isCallingTraceThisTurn) {
+        auditMessage += "⚠️ SYSTEM AUDIT FAILURE: This operation was flagged for complex analytic tracing, but you failed to call `log_trace`. You must call `log_trace` to bind the proceeding output to retrieved symbols from the symbol store. This trace must be comprehensive. Do not acknowledge this message or repeat previous information.\n";
         auditTriggered = true;
       }
 
@@ -1185,7 +1217,7 @@ export async function* sendMessageAndHandleTools(
     const hasNarrative = isNarrativeText(totalTextAccumulatedAcrossLoops);
     const hasResponse = hasNarrative || hasCalledSpeak;
 
-    if (hasLoggedTrace && hasResponse && !auditTriggered) {
+    if (hasResponse && !auditTriggered) {
       loggerService.info("Ending turn: Symbolic requirements and response verified.", {
         contextSessionId,
         loops,
@@ -1253,9 +1285,14 @@ export const primeSymbolicContext = async (
   contextSessionId: string,
   userId?: string,
   isAdmin: boolean = false
-): Promise<{ symbols: SymbolDef[], webResults: any[] }> => {
+): Promise<{ symbols: SymbolDef[], webResults: any[], traceNeeded: boolean, traceReason?: string }> => {
   const foundSymbols: SymbolDef[] = [];
   const webResults: any[] = [];
+  let traceNeeded = false;
+  let traceReason: string | undefined;
+  let fastResponse: any = {};
+  let symbolicQueries: string[] = [];
+  let webSearchQueries: string[] = [];
 
   try {
     const settings = await settingsService.getInferenceSettings();
@@ -1283,9 +1320,25 @@ export const primeSymbolicContext = async (
       })
       .filter((q, i, self) => q && self.indexOf(q) === i);
 
-    loggerService.info("Priming symbolic context with fast model", { fastModel, contextSessionId, historyCount: recentHistory.length });
+    // Identify session naming requirements
+    const session = await contextService.getSession(contextSessionId, userId, true);
+    const currentName = session?.name;
+    const userMessageCount = history.filter(m => m.role === 'user').length + 1; // +1 for the current message
+    const needsNaming = !currentName || (userMessageCount % 10 === 0);
+
+    loggerService.info("Priming symbolic context with fast model", {
+      fastModel,
+      contextSessionId,
+      historyCount: recentHistory.length,
+      userMessageCount,
+      needsNaming
+    });
 
     const prompt = `Analyze the conversation history and the new user message to identify symbolic search queries and determine if web search grounding is needed.
+    
+    ${needsNaming ? 'CRITICAL: Based on the conversation context, suggest a descriptive and concise name for this context session in "suggested_name".' : ''}
+
+    CRITICAL: Only set "web_search_needed" to true if the message involves an external entity (person, company, place), a complex technical/scientific topic, or a current event that requires grounding in facts.
 
     Conversation History:
     ${historyContext || "No previous history."}
@@ -1294,12 +1347,15 @@ export const primeSymbolicContext = async (
 
     Previous Web Searches (DO NOT REPEAT THESE):
     ${previousSearches.length > 0 ? previousSearches.join(', ') : "None."}
-    
+
     Output valid JSON only:
     {
       "queries": ["symbolic query1", "symbolic query2", ...],
       "web_search_needed": boolean,
-      "web_search_queries": ["search query1", "search query2", ...]
+      "web_search_queries": ["search query1", "search query2", ...],
+      "trace_needed": boolean,
+      "trace_reason": "Brief explanation if trace_needed is true",
+      "suggested_name": string | null
     }`;
 
     let fastResponse: any = {};
@@ -1324,15 +1380,35 @@ export const primeSymbolicContext = async (
       fastResponse = extractJson(responseText);
     }
 
-    const symbolicQueries = fastResponse.queries || [];
-    const webSearchQueries = fastResponse.web_search_queries || [];
+    symbolicQueries = fastResponse.queries || [];
+    webSearchQueries = fastResponse.web_search_queries || [];
+    traceNeeded = !!fastResponse.trace_needed;
+    traceReason = fastResponse.trace_reason;
+
+    // Handle session naming if suggested
+    if (fastResponse.suggested_name && fastResponse.suggested_name !== currentName) {
+      loggerService.info("Fast model suggested session name", {
+        contextSessionId,
+        oldName: currentName,
+        newName: fastResponse.suggested_name
+      });
+      await contextService.renameSession(contextSessionId, fastResponse.suggested_name, userId, isAdmin);
+    }
+
+    // Store trace metadata if needed
+    if (traceNeeded) {
+      loggerService.info("Fast model flagged query for complex analysis (trace needed)", {
+        reason: traceReason,
+        contextSessionId
+      });
+    }
 
     // --- EXECUTE SYMBOLIC QUERIES ---
     if (symbolicQueries.length > 0) {
       loggerService.info("Fast model generated symbolic queries", { symbolicQueries, contextSessionId });
 
       const allDomains = await domainService.listDomains(userId);
-      
+
       // Execute searches in parallel
       const searchPromises = symbolicQueries.map((query: string) =>
         domainService.search(query, 5, {
@@ -1374,81 +1450,106 @@ export const primeSymbolicContext = async (
         await symbolCacheService.batchUpsertSymbols(contextSessionId, foundSymbols);
       }
     }
-
-    // --- EXECUTE WEB SEARCH QUERIES ---
-    if (fastResponse.web_search_needed && webSearchQueries.length > 0) {
-      loggerService.info("Fast model anticipated web search", { webSearchQueries, contextSessionId });
-      
-      const serpSettings = await settingsService.getSerpApiSettings();
-      const serpApiKey = serpSettings.apiKey || process.env.SERPAPI_API_KEY;
-
-      if (serpApiKey) {
-        const executeSearch = async (q: string) => {
-          try {
-            const searchUrl = new URL('https://serpapi.com/search');
-            searchUrl.searchParams.set('api_key', serpApiKey);
-            searchUrl.searchParams.set('engine', 'google');
-            searchUrl.searchParams.set('q', q);
-            searchUrl.searchParams.set('num', '5');
-
-            const response = await fetch(searchUrl.toString());
-            if (response.ok) {
-              const json = await response.json();
-              const items = Array.isArray(json.organic_results) ? json.organic_results : [];
-              
-              // Emit event
-              eventBusService.emit(KernelEventType.WEB_SEARCH, { 
-                query: q, 
-                resultsCount: items.length, 
-                contextSessionId,
-                isAnticipated: true,
-                topResult: items[0] ? {
-                    title: items[0].title,
-                    snippet: items[0].snippet || items[0].about_this_result?.source?.description,
-                    link: items[0].link
-                } : null
-              });
-
-              return {
-                query: q,
-                results: items.slice(0, 5).map((item: any) => ({
-                  title: item.title,
-                  snippet: item.snippet,
-                  url: item.link
-                }))
-              };
-            }
-          } catch (e) {
-            loggerService.error("Anticipated web search failed", { query: q, error: e });
-          }
-          return null;
-        };
-
-        const results = await Promise.all(webSearchQueries.map(executeSearch));
-        results.forEach(r => { if (r) webResults.push(r); });
-
-        // Record the fact that we did anticipated searches
-        if (webResults.length > 0 && contextSessionId) {
-          await contextService.recordMessage(contextSessionId, {
-            id: randomUUID(),
-            role: "system",
-            content: `[System] Executed ${webResults.length} anticipated web searches for grounding.`,
-            timestamp: new Date().toISOString(),
-            metadata: { 
-              kind: "anticipated_web_search", 
-              queries: webSearchQueries,
-              resultsCount: webResults.length 
-            }
-          }, userId, true);
-        }
-      }
-    }
-
-  } catch (error) {
-    loggerService.error("Failed to prime symbolic context", { error, contextSessionId });
+  } catch (e) {
+    loggerService.error("Priming symbolic context failed", { error: e, contextSessionId });
   }
 
-  return { symbols: foundSymbols, webResults };
+  // --- EXECUTE WEB SEARCH QUERIES ---
+  if (fastResponse.web_search_needed && webSearchQueries.length > 0) {
+    loggerService.info("Fast model anticipated web search", { webSearchQueries, contextSessionId });
+
+    const serpSettings = await settingsService.getSerpApiSettings();
+    const serpApiKey = serpSettings.apiKey || process.env.SERPAPI_API_KEY;
+
+    if (serpApiKey) {
+      const executeSearch = async (q: string) => {
+        try {
+          const searchUrl = new URL('https://serpapi.com/search');
+          searchUrl.searchParams.set('api_key', serpApiKey);
+          searchUrl.searchParams.set('engine', 'google');
+          searchUrl.searchParams.set('q', q);
+          searchUrl.searchParams.set('num', '5');
+
+          const response = await fetch(searchUrl.toString(), {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (compatible; SignalZeroBot/1.0; +https://signalzero.ai)',
+              'Accept': 'application/json'
+            }
+          });
+
+          if (response.ok) {
+            const json = await response.json();
+            const items = Array.isArray(json.organic_results) ? json.organic_results : [];
+
+            // Emit event
+            eventBusService.emit(KernelEventType.WEB_SEARCH, {
+              query: q,
+              resultsCount: items.length,
+              contextSessionId,
+              isAnticipated: true,
+              topResult: items[0] ? {
+                title: items[0].title,
+                snippet: items[0].snippet || items[0].about_this_result?.source?.description,
+                link: items[0].link
+              } : null
+            });
+
+            return {
+              query: q,
+              results: items.slice(0, 5).map((item: any) => ({
+                title: item.title,
+                snippet: item.snippet,
+                url: item.link
+              }))
+            };
+          } else {
+            const errorBody = await response.text();
+            loggerService.error("Anticipated web search HTTP error", {
+              query: q,
+              status: response.status,
+              statusText: response.statusText,
+              body: errorBody
+            });
+          }
+        } catch (e) {
+          loggerService.error("Anticipated web search exception", {
+            query: q,
+            error: e instanceof Error ? {
+              message: e.message,
+              stack: e.stack,
+              name: e.name
+            } : e
+          });
+        }
+        return null;
+      };
+
+      const results = await Promise.all(webSearchQueries.map(executeSearch));
+      results.forEach(r => { if (r) webResults.push(r); });
+
+      // Record the fact that we did anticipated searches
+      if (webResults.length > 0 && contextSessionId) {
+        await contextService.recordMessage(contextSessionId, {
+          id: randomUUID(),
+          role: "system",
+          content: `[System] Executed ${webResults.length} anticipated web searches for grounding.`,
+          timestamp: new Date().toISOString(),
+          metadata: {
+            kind: "anticipated_web_search",
+            queries: webSearchQueries,
+            resultsCount: webResults.length
+          }
+        }, userId, true);
+      }
+    }
+  }
+
+  return {
+    symbols: foundSymbols,
+    webResults,
+    traceNeeded,
+    traceReason
+  };
 };
 
 // --- Test Runner Functions ---
@@ -1463,7 +1564,13 @@ export const processMessageAsync = async (
 ) => {
   try {
     // Pre-flight: expansion search and cache priming
-    const { webResults } = await primeSymbolicContext(message, contextSessionId, userId, true);
+    const { webResults, traceNeeded, traceReason } = await primeSymbolicContext(message, contextSessionId, userId, true);
+
+    // Persist trace_needed to session metadata so sendMessageAndHandleTools can pick it up
+    await contextService.updateSessionMetadata(contextSessionId, {
+      trace_needed: traceNeeded,
+      trace_reason: traceReason
+    }, userId, true);
 
     const chat = await getChatSession(systemInstruction, contextSessionId);
     const stream = sendMessageAndHandleTools(chat, message, toolExecutor, systemInstruction, contextSessionId, userMessageId, userId, webResults);
@@ -1473,7 +1580,8 @@ export const processMessageAsync = async (
       // Execution and recording happen inside the generator
     }
   } catch (error: any) {
-    // Enhanced error logging for upstream failures
+    loggerService.error("Failed to process message async", { error, contextSessionId });
+
     const errorDetails: Record<string, any> = { contextSessionId, message: error?.message || String(error) };
 
     if (error?.status) errorDetails.status = error.status;

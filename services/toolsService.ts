@@ -144,7 +144,162 @@ const TRACE_DATA_SCHEMA = {
 };
 
 // 1. Define the Schema for the tools
-export const toolDeclarations: ChatCompletionTool[] = [
+export const SECONDARY_TOOLS_MAP: Record<string, ChatCompletionTool> = {
+  upsert_agent: {
+    type: 'function',
+    function: {
+      name: 'upsert_agent',
+      description: 'Create or update an autonomous agent definition. Agents can be scheduled or event-driven (using send_message).',
+      parameters: {
+        type: 'object',
+        properties: {
+          agent_id: { type: 'string', description: 'Unique identifier for the agent.' },
+          prompt: { type: 'string', description: "System prompt defining the agent's behavior." },
+          schedule: { type: 'string', description: 'Optional cron expression for scheduled agents.' },
+          enabled: { type: 'boolean', description: 'Set to true to enable the agent.' },
+        },
+        required: ['agent_id', 'prompt'],
+      },
+    },
+  },
+  list_agent_executions: {
+    type: 'function',
+    function: {
+      name: 'list_agent_executions',
+      description: 'List recent agent execution logs.',
+      parameters: {
+        type: 'object',
+        properties: {
+          agent_id: { type: 'string', description: 'Filter executions to a specific agent id.' },
+          limit: { type: 'integer', description: 'Maximum number of executions to return (default 20).' },
+          include_traces: { type: 'boolean', description: 'Include symbolic traces captured during each execution.' }
+        },
+      },
+    },
+  },
+  list_test_runs: {
+    type: 'function',
+    function: {
+      name: 'list_test_runs',
+      description: 'Retrieve a list of all historical and active test runs with their summary metadata. This tool can be used in parallel with any other tool.',
+      parameters: {
+        type: 'object',
+        properties: {}
+      }
+    }
+  },
+  list_test_failures: {
+    type: 'function',
+    function: {
+      name: 'list_test_failures',
+      description: 'Get a detailed report of failed test cases for a specific test run. This tool can be used in parallel with any other tool.',
+      parameters: {
+        type: 'object',
+        properties: {
+          run_id: { type: 'string', description: 'The unique ID of the test run to analyze.' }
+        },
+        required: ['run_id']
+      }
+    }
+  },
+  store_secret: {
+    type: 'function',
+    function: {
+      name: 'store_secret',
+      description: 'Create or update a secret in Google Secret Manager. If the secret does not exist, it creates it. Then it adds a new version with the provided value. This tool can be used in parallel with any other tool.',
+      parameters: {
+        type: 'object',
+        properties: {
+          secret_id: {
+            type: 'string',
+            description: 'The ID of the secret to create or update (e.g., "my-api-key").'
+          },
+          value: {
+            type: 'string',
+            description: 'The string value of the secret to store.'
+          },
+          project_id: {
+            type: 'string',
+            description: 'Optional GCP project ID override.'
+          }
+        },
+        required: ['secret_id', 'value']
+      }
+    }
+  },
+  list_secrets: {
+    type: 'function',
+    function: {
+      name: 'list_secrets',
+      description: 'List secrets from Google Secret Manager using the configured service account credentials. This tool can be used in parallel with any other tool.',
+      parameters: {
+        type: 'object',
+        properties: {
+          project_id: {
+            type: 'string',
+            description: 'Optional GCP project ID override. Defaults to GCP_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variables.'
+          },
+          page_size: {
+            type: 'integer',
+            description: 'Number of secrets to fetch (1-250). Defaults to the Secret Manager service default.'
+          },
+          page_token: {
+            type: 'string',
+            description: 'Pagination token from a previous list_secrets call.'
+          }
+        },
+        required: []
+      }
+    }
+  },
+  get_secret: {
+    type: 'function',
+    function: {
+      name: 'get_secret',
+      description: 'Retrieve a secret value from Google Secret Manager using the configured service account credentials. This tool can be used in parallel with any other tool.',
+      parameters: {
+        type: 'object',
+        properties: {
+          secret_id: {
+            type: 'string',
+            description: 'ID of the secret to retrieve (without the project path).'
+          },
+          version: {
+            type: 'string',
+            description: "Secret version to access (defaults to 'latest')."
+          },
+          project_id: {
+            type: 'string',
+            description: 'Optional GCP project ID override. Defaults to GCP_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variables.'
+          }
+        },
+        required: ['secret_id']
+      }
+    }
+  },
+  sys_info: {
+    type: 'function',
+    function: {
+      name: 'sys_info',
+      description: 'Query information about the host system including time, CPU load, memory, disk space, and running processes. This tool can be used in parallel with any other tool.',
+      parameters: {
+        type: 'object',
+        properties: {
+          categories: {
+            type: 'array',
+            items: {
+                type: 'string',
+                enum: ['time', 'cpu', 'memory', 'disk', 'processes', 'network', 'os']
+            },
+            description: 'List of information categories to retrieve. Defaults to all if omitted.'
+          }
+        }
+      }
+    }
+  }
+};
+
+export const PRIMARY_TOOLS: ChatCompletionTool[] = [
   // --- SignalZero Symbol Store Tools (Local Cache Only) ---
   {
     type: 'function',
@@ -270,23 +425,6 @@ export const toolDeclarations: ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'upsert_agent',
-      description: 'Create or update an autonomous agent definition. Agents can be scheduled or event-driven (using send_message).',
-      parameters: {
-        type: 'object',
-        properties: {
-          agent_id: { type: 'string', description: 'Unique identifier for the agent.' },
-          prompt: { type: 'string', description: "System prompt defining the agent's behavior." },
-          schedule: { type: 'string', description: 'Optional cron expression for scheduled agents.' },
-          enabled: { type: 'boolean', description: 'Set to true to enable the agent.' },
-        },
-        required: ['agent_id', 'prompt'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
       name: 'list_agents',
       description: 'List configured autonomous agents with their schedules, prompts, and status flags.',
       parameters: {
@@ -294,62 +432,6 @@ export const toolDeclarations: ChatCompletionTool[] = [
         properties: {},
       },
     },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'list_agent_executions',
-      description: 'List recent agent execution logs.',
-      parameters: {
-        type: 'object',
-        properties: {
-          agent_id: { type: 'string', description: 'Filter executions to a specific agent id.' },
-          limit: { type: 'integer', description: 'Maximum number of executions to return (default 20).' },
-          include_traces: { type: 'boolean', description: 'Include symbolic traces captured during each execution.' }
-        },
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'list_test_runs',
-      description: 'Retrieve a list of all historical and active test runs with their summary metadata. This tool can be used in parallel with any other tool.',
-      parameters: {
-        type: 'object',
-        properties: {}
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'list_test_failures',
-      description: 'Get a detailed report of failed test cases for a specific test run. This tool can be used in parallel with any other tool.',
-      parameters: {
-        type: 'object',
-        properties: {
-          run_id: { type: 'string', description: 'The unique ID of the test run to analyze.' }
-        },
-        required: ['run_id']
-      }
-    }
-  },
-    {
-      type: 'function',
-      function: {
-        name: 'reindex_vector_store',
-      description: 'Reset the ChromaDB collection and rebuild the vector index from the current symbol store. This tool can be used in parallel with any other tool.',
-      parameters: {
-        type: 'object',
-        properties: {
-          include_disabled: {
-            type: 'boolean',
-            description: 'If true, include symbols from disabled domains in the reindex job.'
-          }
-        }
-      }
-    }
   },
   {
     type: 'function',
@@ -434,81 +516,6 @@ export const toolDeclarations: ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'store_secret',
-      description: 'Create or update a secret in Google Secret Manager. If the secret does not exist, it creates it. Then it adds a new version with the provided value. This tool can be used in parallel with any other tool.',
-      parameters: {
-        type: 'object',
-        properties: {
-          secret_id: {
-            type: 'string',
-            description: 'The ID of the secret to create or update (e.g., "my-api-key").'
-          },
-          value: {
-            type: 'string',
-            description: 'The string value of the secret to store.'
-          },
-          project_id: {
-            type: 'string',
-            description: 'Optional GCP project ID override.'
-          }
-        },
-        required: ['secret_id', 'value']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'list_secrets',
-      description: 'List secrets from Google Secret Manager using the configured service account credentials. This tool can be used in parallel with any other tool.',
-      parameters: {
-        type: 'object',
-        properties: {
-          project_id: {
-            type: 'string',
-            description: 'Optional GCP project ID override. Defaults to GCP_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variables.'
-          },
-          page_size: {
-            type: 'integer',
-            description: 'Number of secrets to fetch (1-250). Defaults to the Secret Manager service default.'
-          },
-          page_token: {
-            type: 'string',
-            description: 'Pagination token from a previous list_secrets call.'
-          }
-        },
-        required: []
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'get_secret',
-      description: 'Retrieve a secret value from Google Secret Manager using the configured service account credentials. This tool can be used in parallel with any other tool.',
-      parameters: {
-        type: 'object',
-        properties: {
-          secret_id: {
-            type: 'string',
-            description: 'ID of the secret to retrieve (without the project path).'
-          },
-          version: {
-            type: 'string',
-            description: "Secret version to access (defaults to 'latest')."
-          },
-          project_id: {
-            type: 'string',
-            description: 'Optional GCP project ID override. Defaults to GCP_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variables.'
-          }
-        },
-        required: ['secret_id']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
       name: 'log_trace',
       description: 'Log a symbolic reasoning trace. This must be called for every symbolic operation or deduction chain to maintain the recursive log. This tool can be used in parallel with any other tool.',
       parameters: {
@@ -517,26 +524,6 @@ export const toolDeclarations: ChatCompletionTool[] = [
           trace: TRACE_DATA_SCHEMA
         },
         required: ['trace']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'sys_info',
-      description: 'Query information about the host system including time, CPU load, memory, disk space, and running processes. This tool can be used in parallel with any other tool.',
-      parameters: {
-        type: 'object',
-        properties: {
-          categories: {
-            type: 'array',
-            items: {
-                type: 'string',
-                enum: ['time', 'cpu', 'memory', 'disk', 'processes', 'network', 'os']
-            },
-            description: 'List of information categories to retrieve. Defaults to all if omitted.'
-          }
-        }
       }
     }
   },
@@ -558,7 +545,7 @@ export const toolDeclarations: ChatCompletionTool[] = [
                 'af_heart', 'af_alloy', 'af_aoede', 'af_bella', 'af_jessica',
                 'af_kore', 'af_nicole', 'af_nova', 'af_river', 'af_sarah',
                 'af_sky', 'am_adam', 'am_echo', 'am_eric', 'am_fenrir',
-                'am_liam', 'am_michael', 'am_onyx', 'am_puck', 'am_santa'
+                'am_liam', 'am_ michael', 'am_onyx', 'am_puck', 'am_santa'
             ],
             description: 'The voice to use for speech generation. Defaults to af_sarah.'
           }
@@ -608,27 +595,6 @@ export const toolDeclarations: ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'name_context',
-      description: 'Rename a context session to something more descriptive.',
-      parameters: {
-        type: 'object',
-        properties: {
-          name: {
-            type: 'string',
-            description: 'The new name for the context.'
-          },
-          context_id: {
-            type: 'string',
-            description: 'The ID of the context to rename. Defaults to current context if omitted.'
-          }
-        },
-        required: ['name']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
       name: 'list_agent_contexts',
       description: 'List all available agent context sessions.',
       parameters: {
@@ -640,22 +606,24 @@ export const toolDeclarations: ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'symbol_transaction',
-      description: 'Manage a batch of symbol operations. When a transaction is active, all upsert_symbols and delete_symbols calls are queued until committed. This tool can be used in parallel with any other tool.',
+      name: 'list_secondary_tools',
+      description: 'List all secondary tools available for this session. Secondary tools include specialized diagnostic, administrative, and testing utilities. You can request to include specific tools in the next turn by providing their names.',
       parameters: {
         type: 'object',
         properties: {
-          action: {
-            type: 'string',
-            enum: ['start', 'commit', 'rollback'],
-            description: 'The transaction action to perform.'
+          request_tools: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'List of tool names to activate for the remainder of this session context.'
           }
-        },
-        required: ['action']
+        }
       }
     }
   }
 ];
+
+// Compatibility alias for existing code
+export const toolDeclarations = PRIMARY_TOOLS;
 
 // 2. Define the execution logic
 export const createToolExecutor = (getApiKey: () => string | null, contextSessionId?: string, userId?: string, isAdmin: boolean = false) => {
@@ -1159,20 +1127,6 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           };
       }
 
-      case 'reindex_vector_store': {
-          const { include_disabled } = args || {};
-          const result = await indexingService.reindexSymbols(include_disabled === true);
-          return {
-              status: result.status,
-              indexed: result.indexedCount,
-              total: result.totalSymbols,
-              reset_performed: result.resetPerformed,
-              failed_ids: result.failedIds,
-              last_reindex_at: result.lastReindexAt,
-              queue: result.queue
-          };
-      }
-
       case 'web_fetch': {
           const { url, headers } = args;
           if (!url || typeof url !== 'string') {
@@ -1576,20 +1530,6 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           }
       }
 
-      case 'name_context': {
-          const { name, context_id } = args;
-          const targetId = context_id || contextSessionId;
-          if (!targetId) return { error: "No context specified" };
-          
-          try {
-              const result = await contextService.renameSession(targetId, name, userId, isAdmin);
-              if (!result) return { error: "Context not found" };
-              return { status: "success", id: targetId, new_name: name };
-          } catch (e: any) {
-              return { error: `Failed to rename: ${e.message}` };
-          }
-      }
-
       case 'list_agent_contexts': {
           try {
               const sessions = await contextService.listSessions(userId, isAdmin);
@@ -1608,56 +1548,38 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
           }
       }
 
-      case 'symbol_transaction': {
-          const { action } = args;
-          if (!contextSessionId) return { error: "Transaction requires contextSessionId" };
-          const queueKey = `transaction:queue:${contextSessionId}`;
+      case 'list_secondary_tools': {
+          const { request_tools } = args || {};
+          
+          const availableTools = Object.keys(SECONDARY_TOOLS_MAP).map(name => ({
+              name,
+              description: SECONDARY_TOOLS_MAP[name].function.description
+          }));
 
-          if (action === 'start') {
-              await redisService.request(['DEL', queueKey]);
-              await redisService.request(['SET', `transaction:active:${contextSessionId}`, 'true', 'EX', '3600']);
-              return { status: "Transaction started. Subsequent upsert/delete calls will be queued." };
-          }
+          if (Array.isArray(request_tools) && request_tools.length > 0) {
+              const validRequestedTools = request_tools.filter(t => SECONDARY_TOOLS_MAP[t]);
+              
+              if (validRequestedTools.length > 0 && contextSessionId) {
+                  const session = await contextService.getSession(contextSessionId, userId, true);
+                  const currentActive = session?.metadata?.active_tools || [];
+                  const newActive = Array.from(new Set([...currentActive, ...validRequestedTools]));
+                  
+                  await contextService.updateSessionMetadata(contextSessionId, {
+                      active_tools: newActive
+                  }, userId, true);
 
-          if (action === 'commit') {
-              const active = await redisService.request(['GET', `transaction:active:${contextSessionId}`]);
-              if (!active) return { error: "No active transaction to commit" };
-
-              const queueRaw = await redisService.request(['GET', queueKey]);
-              const queue = queueRaw ? JSON.parse(queueRaw) : [];
-
-              if (queue.length === 0) {
-                  await redisService.request(['DEL', `transaction:active:${contextSessionId}`]);
-                  return { status: "Transaction committed (0 operations)." };
+                  return {
+                      message: `Activated ${validRequestedTools.length} tools for the remainder of this session.`,
+                      activated_tools: validRequestedTools,
+                      available_secondary_tools: availableTools
+                  };
               }
-
-              const results = [];
-              for (const op of queue) {
-                  try {
-                      const res = await executor(op.name, { ...op.args, _internal_bypass_queue: true });
-                      if (res && typeof res === 'object' && res.error) {
-                          results.push({ name: op.name, status: "failed", error: res.error });
-                      } else {
-                          results.push({ name: op.name, status: "success", result: res });
-                      }
-                  } catch (e: any) {
-                      results.push({ name: op.name, status: "failed", error: e.message || String(e) });
-                  }
-              }
-
-              await redisService.request(['DEL', queueKey]);
-              await redisService.request(['DEL', `transaction:active:${contextSessionId}`]);
-
-              return { status: "Transaction committed.", operations: results.length, details: results };
           }
 
-          if (action === 'rollback') {
-              await redisService.request(['DEL', queueKey]);
-              await redisService.request(['DEL', `transaction:active:${contextSessionId}`]);
-              return { status: "Transaction rolled back. Queue cleared." };
-          }
-
-          return { error: `Invalid action: ${action}` };
+          return {
+              available_secondary_tools: availableTools,
+              instruction: "To use any of these tools, call list_secondary_tools with the names of the tools you want to activate in the 'request_tools' array."
+          };
       }
 
       default:
