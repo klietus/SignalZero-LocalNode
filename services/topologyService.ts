@@ -288,7 +288,7 @@ class TopologyService {
     }
 
     private async runSemanticAnalysis(symbols: SymbolDef[], hygiene: GraphHygieneSettings, userId?: string) {
-        loggerService.info("TopologyService: Starting semantic analysis");
+        loggerService.info("TopologyService: Starting semantic analysis", { symbolCount: symbols.length });
         let newLinksCount = 0;
         let redundantCount = 0;
 
@@ -306,7 +306,7 @@ class TopologyService {
         const N = symbols.length;
         if (embeddings.length !== N) return { newLinks: 0, redundantCount: 0 };
 
-        // Normalize all embeddings first (as arrays for memory stability)
+        // Normalize all embeddings first
         const normalizedEmbeddings: number[][] = [];
         for (let i = 0; i < N; i++) {
             const emb = embeddings[i];
@@ -314,12 +314,11 @@ class TopologyService {
             normalizedEmbeddings.push(emb.map(val => val / (norm + 1e-9)));
         }
 
-        // To avoid memory limits with large similarity matrices,
-        // we process the similarities in chunks using tensors for the heavy math.
         const chunkSize = 200;
         const allNormEmb = tf.tensor2d(normalizedEmbeddings);
         
         if (hygiene.semantic.autoCompress) {
+            loggerService.info("TopologyService: Checking for semantic redundancy");
             const redundantGroups: string[][] = [];
             const visited = new Set<number>();
 
@@ -339,24 +338,29 @@ class TopologyService {
                             visited.add(absJ);
                         }
                     }
-                    if (group.length > 1) redundantGroups.push(group);
+                    if (group.length > 1) {
+                        redundantGroups.push(group);
+                        visited.add(absI);
+                    }
                 }
                 chunk.dispose();
             }
 
             if (redundantGroups.length > 0) {
+                loggerService.info(`TopologyService: Found ${redundantGroups.length} potential redundant groups`);
                 const validated = [];
                 for (const group of redundantGroups) {
                     if (await this.validateCompression(group, symbols)) validated.push(group);
                 }
                 if (validated.length > 0) {
                     await this.mergeRedundantSymbols(validated, userId);
-                    redundantCount = validated.flat().length;
+                    redundantCount = validated.reduce((acc, g) => acc + g.length - 1, 0);
                 }
             }
         }
 
         if (hygiene.semantic.autoLink) {
+            loggerService.info("TopologyService: Checking for semantic link opportunities");
             const predicted = [];
             for (let i = 0; i < N; i += chunkSize) {
                 const end = Math.min(i + chunkSize, N);
@@ -366,17 +370,21 @@ class TopologyService {
                 for (let row = 0; row < chunkSimilarities.length; row++) {
                     const absI = i + row;
                     for (let absJ = absI + 1; absJ < N; absJ++) {
-                        if (chunkSimilarities[row][absJ] > this.CONFIDENCE_THRESHOLD) {
+                        // Use a slightly lower threshold for potential links than for redundancy
+                        if (chunkSimilarities[row][absJ] > this.CONFIDENCE_THRESHOLD && chunkSimilarities[row][absJ] <= this.REDUNDANCY_THRESHOLD) {
                             const hasLink = symbols[absI].linked_patterns?.some(l => l.id === symbols[absJ].id) ||
                                             symbols[absJ].linked_patterns?.some(l => l.id === symbols[absI].id);
                             
                             if (!hasLink) {
-                                predicted.push({
-                                    sourceId: symbols[absI].id,
-                                    targetId: symbols[absJ].id,
-                                    linkType: 'semantic_inference',
-                                    confidence: chunkSimilarities[row][absJ]
-                                });
+                                // LLM Validation for link
+                                if (await this.validateLink(symbols[absI], symbols[absJ])) {
+                                    predicted.push({
+                                        sourceId: symbols[absI].id,
+                                        targetId: symbols[absJ].id,
+                                        linkType: 'semantic_inference',
+                                        confidence: chunkSimilarities[row][absJ]
+                                    });
+                                }
                             }
                         }
                     }
@@ -396,10 +404,76 @@ class TopologyService {
     }
 
     private async runTriadicAnalysis(symbols: SymbolDef[], hygiene: GraphHygieneSettings, userId?: string) {
-        loggerService.info("TopologyService: Starting triadic analysis");
+        loggerService.info("TopologyService: Starting triadic analysis", { symbolCount: symbols.length });
         let redundantCount = 0;
         let newLinksCount = 0;
 
+        // 1. Build Adjacency List for efficient neighbor lookup
+        const adj = new Map<string, Set<string>>();
+        const idToSymbol = new Map<string, SymbolDef>();
+        
+        symbols.forEach(s => {
+            idToSymbol.set(s.id, s);
+            const neighbors = new Set((s.linked_patterns || []).map(l => l.id));
+            adj.set(s.id, neighbors);
+        });
+
+        // 2. Identify potential triadic links (A-B, B-C, but no A-C)
+        const candidates = new Map<string, { count: number, source: string, target: string }>();
+        
+        for (const [A, neighborsA] of adj.entries()) {
+            for (const B of neighborsA) {
+                const neighborsB = adj.get(B);
+                if (!neighborsB) continue;
+
+                for (const C of neighborsB) {
+                    if (A === C || neighborsA.has(C)) continue;
+
+                    // Candidate link between A and C
+                    const key = [A, C].sort().join(':::');
+                    const existing = candidates.get(key) || { count: 0, source: A, target: C };
+                    existing.count++;
+                    candidates.set(key, existing);
+                }
+            }
+        }
+
+        // 3. Filter and Validate Candidates
+        if (hygiene.triadic.autoLink) {
+            const predicted = [];
+            // Sort by number of common neighbors (triadic strength)
+            const sortedCandidates = Array.from(candidates.values())
+                .filter(c => c.count >= 1) // Even 1 common neighbor is a triadic start
+                .sort((a, b) => b.count - a.count);
+
+            loggerService.info(`TopologyService: Found ${sortedCandidates.length} triadic candidates`);
+
+            // Limit validation to top 50 to avoid prompt explosion
+            const topCandidates = sortedCandidates.slice(0, 50);
+
+            for (const cand of topCandidates) {
+                const s1 = idToSymbol.get(cand.source);
+                const s2 = idToSymbol.get(cand.target);
+                
+                if (s1 && s2) {
+                    if (await this.validateLink(s1, s2)) {
+                        predicted.push({
+                            sourceId: s1.id,
+                            targetId: s2.id,
+                            linkType: 'triadic_closure',
+                            confidence: 0.9 // High confidence for validated triads
+                        });
+                    }
+                }
+            }
+
+            if (predicted.length > 0) {
+                await this.promoteToTentative(predicted, userId);
+                newLinksCount = predicted.length;
+            }
+        }
+
+        // 4. Triadic Compression (Rare, but handle if triad tag matches)
         if (hygiene.triadic.autoCompress) {
             const triadicGroups = new Map<string, string[]>();
             symbols.forEach(s => {
@@ -418,37 +492,8 @@ class TopologyService {
                 }
                 if (validated.length > 0) {
                     await this.mergeRedundantSymbols(validated, userId);
-                    redundantCount = validated.flat().length;
+                    redundantCount = validated.reduce((acc, g) => acc + g.length - 1, 0);
                 }
-            }
-        }
-
-        if (hygiene.triadic.autoLink) {
-            const predicted = [];
-            for (let i = 0; i < symbols.length; i++) {
-                const triadI = symbols[i].triad;
-                if (!triadI) continue;
-
-                for (let j = i + 1; j < symbols.length; j++) {
-                    const triadJ = symbols[j].triad;
-                    if (triadI === triadJ) {
-                        const hasLink = symbols[i].linked_patterns?.some(l => l.id === symbols[j].id) ||
-                                        symbols[j].linked_patterns?.some(l => l.id === symbols[i].id);
-                        
-                        if (!hasLink) {
-                            predicted.push({
-                                sourceId: symbols[i].id,
-                                targetId: symbols[j].id,
-                                linkType: 'triadic_resonance',
-                                confidence: 1.0
-                            });
-                        }
-                    }
-                }
-            }
-            if (predicted.length > 0) {
-                await this.promoteToTentative(predicted, userId);
-                newLinksCount = predicted.length;
             }
         }
 
@@ -583,6 +628,60 @@ class TopologyService {
 
         } catch (error) {
             loggerService.error("TopologyService: LLM Validation failed", { error });
+            return false;
+        }
+    }
+
+    private async validateLink(s1: SymbolDef, s2: SymbolDef): Promise<boolean> {
+        try {
+            const settings = await settingsService.getInferenceSettings();
+            const fastModel = settings.fastModel;
+            if (!fastModel) return true;
+
+            const prompt = `Analyze the two symbols from a symbolic knowledge graph. Determine if there is a STRONG and MEANINGFUL semantic relationship between them that justifies an automated link.
+            
+            Symbol 1:
+            Name: ${s1.name}
+            Role: ${s1.role}
+            Macro: ${s1.macro}
+            
+            Symbol 2:
+            Name: ${s2.name}
+            Role: ${s2.role}
+            Macro: ${s2.macro}
+            
+            Should these symbols be linked? Output valid JSON only:
+            {
+              "shouldLink": true/false,
+              "reason": "Brief explanation",
+              "linkType": "Optional specific relationship type"
+            }`;
+
+            let shouldLink = false;
+
+            if (settings.provider === 'gemini') {
+                const client = await getGeminiClient();
+                const model = client.getGenerativeModel({ 
+                    model: fastModel,
+                    generationConfig: { responseMimeType: "application/json" }
+                });
+                const result = await model.generateContent(prompt);
+                const response = result.response.text();
+                shouldLink = !!extractJson(response).shouldLink;
+            } else {
+                const client = await getClient();
+                const result = await client.chat.completions.create({
+                    model: fastModel,
+                    messages: [{ role: "user", content: prompt }],
+                    response_format: { type: "text" }
+                });
+                const response = result.choices[0]?.message?.content || "{}";
+                shouldLink = !!extractJson(response).shouldLink;
+            }
+
+            return shouldLink;
+        } catch (error) {
+            loggerService.error("TopologyService: Link validation failed", { error });
             return false;
         }
     }
