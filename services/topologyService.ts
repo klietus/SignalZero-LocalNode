@@ -585,10 +585,10 @@ class TopologyService {
             if (groupSymbols.length < 2) return false;
 
             const symbolInfo = groupSymbols.map(s => {
-                return `ID: ${s.id}\nName: ${s.name}\nRole: ${s.role}\nMacro: ${s.macro}`;
+                return `ID: ${s.id}\nName: ${s.name}\nRole: ${s.role}\nMacro: ${s.macro}\nActivation Conditions: ${JSON.stringify(s.activation_conditions || [])}`;
             }).join('\n\n---\n\n');
 
-            const prompt = `Analyze the following symbols from a symbolic knowledge graph. Determine if they represent the EXACT SAME concept and can be safely merged into a single canonical symbol.
+            const prompt = `Analyze the following symbols from a symbolic knowledge graph. Determine if they represent the EXACT SAME concept, have compatible activation conditions, and can be safely merged into a single canonical symbol.
             
             Symbols to compare:
             ${symbolInfo}
@@ -642,11 +642,13 @@ class TopologyService {
             Name: ${s1.name}
             Role: ${s1.role}
             Macro: ${s1.macro}
+            Activation Conditions: ${JSON.stringify(s1.activation_conditions || [])}
             
             Symbol 2:
             Name: ${s2.name}
             Role: ${s2.role}
             Macro: ${s2.macro}
+            Activation Conditions: ${JSON.stringify(s2.activation_conditions || [])}
             
             Should these symbols be linked? Output valid JSON only.
             If "shouldLink" is true, you MUST choose the most appropriate "linkType" from this list:
