@@ -125,6 +125,11 @@ class TopologyService {
                 await this.analyzeOrphans(symbols, userId);
             }
 
+            // --- STRATEGY: Link Promotion ---
+            if (specificStrategy === 'promotion' || specificStrategy === undefined) {
+                await this.promoteRelatesToLinks(symbols, userId);
+            }
+
             const stats: TopologyStats = {
                 symbolCount: symbols.length,
                 linkCount,
@@ -538,6 +543,35 @@ class TopologyService {
                 } catch (searchErr) {
                     loggerService.error(`TopologyService: Failed semantic healing for orphan ${orphan.id}`, { error: searchErr });
                 }
+            }
+        }
+    }
+
+    private async promoteRelatesToLinks(symbols: SymbolDef[], userId?: string) {
+        loggerService.info("TopologyService: Starting link promotion analysis");
+        const idToSymbol = new Map<string, SymbolDef>();
+        symbols.forEach(s => idToSymbol.set(s.id, s));
+
+        for (const s of symbols) {
+            if (!s.linked_patterns) continue;
+
+            let updated = false;
+            for (const link of s.linked_patterns) {
+                if (link.link_type === 'relates_to') {
+                    const target = idToSymbol.get(link.id);
+                    if (target) {
+                        const validation = await this.validateLink(s, target);
+                        if (validation.shouldLink && validation.linkType && validation.linkType !== 'relates_to') {
+                            loggerService.info(`TopologyService: Promoting link ${s.id} -> ${target.id} to ${validation.linkType}`);
+                            link.link_type = validation.linkType;
+                            updated = true;
+                        }
+                    }
+                }
+            }
+
+            if (updated) {
+                await domainService.addSymbol(s.symbol_domain, s, userId, true);
             }
         }
     }
