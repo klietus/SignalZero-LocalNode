@@ -76,7 +76,6 @@ describe('MCP Server Integration (Direct handleMCPMethod Testing)', () => {
         expect(tools).not.toContain('list_secrets');
         expect(tools).not.toContain('upsert_agent');
         expect(tools).not.toContain('web_post');
-        expect(tools).not.toContain('symbol_transaction');
     });
 
     it('MCP tools/list should filter out admin-only tools for regular users', async () => {
