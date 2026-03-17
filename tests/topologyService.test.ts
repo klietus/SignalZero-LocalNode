@@ -53,7 +53,7 @@ vi.mock('../services/inferenceService.ts', () => ({
         chat: {
             completions: {
                 create: vi.fn().mockResolvedValue({
-                    choices: [{ message: { content: '{"shouldLink": true, "isSame": true, "linkType": "relates_to"}' } }]
+                    choices: [{ message: { content: '{"shouldLink": true, "isSame": true, "linkType": "depends_on"}' } }]
                 })
             }
         }
@@ -122,5 +122,18 @@ describe('TopologyService', () => {
 
         expect(domainService.search).toHaveBeenCalledWith(expect.stringContaining('Alone'), 5, expect.any(Object), undefined);
         expect(tentativeLinkService.processTrace).toHaveBeenCalled();
+    });
+
+    it('should promote relates_to links to specific types', async () => {
+        const s1 = { id: 'S1', symbol_domain: 'dom1', linked_patterns: [{ id: 'S2', link_type: 'relates_to' }] };
+        const s2 = { id: 'S2', symbol_domain: 'dom1', linked_patterns: [] };
+        
+        vi.mocked(domainService.listDomains).mockResolvedValue([{ id: 'dom1' }] as any);
+        vi.mocked(domainService.getSymbols).mockResolvedValue([s1, s2] as any);
+
+        await topologyService.analyze();
+
+        expect(s1.linked_patterns[0].link_type).toBe('depends_on');
+        expect(domainService.addSymbol).toHaveBeenCalledWith('dom1', expect.objectContaining({ id: 'S1' }), undefined, true);
     });
 });
