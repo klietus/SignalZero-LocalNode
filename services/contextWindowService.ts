@@ -131,7 +131,9 @@ export class ContextWindowService {
             id: session?.id,
             type: session?.type,
             lifecycle: session?.status === 'closed' ? 'zombie' : 'live',
-            readonly: session?.metadata?.readOnly === true
+            readonly: session?.metadata?.readOnly === true,
+            trace_needed: session?.metadata?.trace_needed,
+            trace_reason: session?.metadata?.trace_reason
         });
 
         const systemMetadataStr = JSON.stringify(systemMetadata, null, 2);
