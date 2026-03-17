@@ -194,7 +194,8 @@ describe('SettingsService', () => {
                 triadic: { autoCompress: false, autoLink: false },
                 deadLinkCleanup: false,
                 orphanAnalysis: false
-            }
+            },
+            mcpConfigs: []
         });
     });
 
@@ -258,7 +259,8 @@ describe('SettingsService', () => {
                 triadic: { autoCompress: false, autoLink: false },
                 deadLinkCleanup: false,
                 orphanAnalysis: false
-            }
+            },
+            mcpConfigs: []
         });
     });
 
@@ -285,5 +287,16 @@ describe('SettingsService', () => {
         
         // Clean up after ourselves
         settingsService.clearCache();
+    });
+
+    it('should handle MCP configurations', async () => {
+        const configs = [
+            { id: 'm1', name: 'MCP 1', endpoint: 'http://m1', enabled: true }
+        ];
+
+        await settingsService.setMcpConfigs(configs);
+        const retrieved = await settingsService.getMcpConfigs();
+        
+        expect(retrieved).toEqual(configs);
     });
 });
