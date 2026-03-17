@@ -102,7 +102,11 @@ describe('Turn Ending and Audit Logic Refined', () => {
             model: 'test-model'
         });
 
-        (contextService.getSession as any).mockResolvedValue({ id: 'sess-1', status: 'open' });
+        (contextService.getSession as any).mockResolvedValue({ 
+            id: 'sess-1', 
+            status: 'open',
+            metadata: { trace_needed: true }
+        });
         (contextWindowService.constructContextWindow as any).mockResolvedValue([]);
         (symbolCacheService.getSymbols as any).mockResolvedValue([{ id: 'S1' }]);
     });
@@ -224,6 +228,34 @@ describe('Turn Ending and Audit Logic Refined', () => {
 
         // Original + 3 audit retries = 4 per loop. 2 loops = 8.
         expect(sendMessageStreamMock).toHaveBeenCalledTimes(8);
+    });
+
+    it('should SKIP audit if trace_needed is false', async () => {
+        (contextService.getSession as any).mockResolvedValue({ 
+            id: 'sess-1', 
+            status: 'open',
+            metadata: { trace_needed: false }
+        });
+
+        const chatState = { messages: [], systemInstruction: 'Instruction', model: 'test-model' };
+        const toolExecutor = vi.fn().mockResolvedValue({ status: 'ok' });
+
+        // Loop 0: Narrative without trace
+        sendMessageStreamMock.mockResolvedValueOnce({
+            stream: (async function* () {
+                yield {
+                    text: () => "Casual narrative without trace.",
+                    functionCalls: () => null,
+                    candidates: [{ content: { parts: [{ text: "Casual narrative without trace." }] } }]
+                };
+            })()
+        });
+
+        const generator = sendMessageAndHandleTools(chatState as any, 'How are you?', toolExecutor, 'Instruction', 'sess-1');
+        for await (const _ of generator) {}
+
+        // Should NOT trigger audit retries. Total calls = 1.
+        expect(sendMessageStreamMock).toHaveBeenCalledTimes(1);
     });
 });
 

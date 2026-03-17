@@ -148,51 +148,19 @@ describe('ToolsService', () => {
         expect(res).toHaveProperty('time');
     });
 
-    it('symbol_transaction queues and commits operations', async () => {
-        // 1. Start Transaction
-        const startRes = await toolExecutor('symbol_transaction', { action: 'start' });
-        expect(startRes.status).toContain('Transaction started');
+    it('list_secondary_tools returns available tools and allows activation', async () => {
+        vi.spyOn(contextService, 'getSession').mockResolvedValue({ id: 'test-session', metadata: {} } as any);
+        vi.spyOn(contextService, 'updateSessionMetadata').mockResolvedValue(true);
 
-        // 2. Upsert (should be queued)
-        const sym = { ...VALID_SYMBOL, id: 'queued-1', symbol_domain: 'dom' };
-        const upsertRes = await toolExecutor('upsert_symbols', { symbols: [{ symbol_data: sym }] });
-        expect(upsertRes.status).toBe('Queued for transaction.');
-        expect(domainService.bulkUpsert).not.toHaveBeenCalled();
+        // 1. List tools
+        const listRes = await toolExecutor('list_secondary_tools', {});
+        expect(listRes.available_secondary_tools.length).toBeGreaterThan(0);
+        expect(listRes.available_secondary_tools.some((t: any) => t.name === 'upsert_agent')).toBe(true);
 
-        // 3. Commit
-        const commitRes = await toolExecutor('symbol_transaction', { action: 'commit' });
-        expect(commitRes.status).toBe('Transaction committed.');
-        expect(commitRes.operations).toBe(1);
-        expect(domainService.bulkUpsert).toHaveBeenCalledWith('dom', [sym], { userId: undefined, isAdmin: false, contextSessionId: 'test-session' });
-    });
-
-    it('symbol_transaction rollback clears the queue', async () => {
-        // 1. Start
-        await toolExecutor('symbol_transaction', { action: 'start' });
-
-        // 2. Queue an op
-        await toolExecutor('upsert_symbols', { symbols: [{ symbol_data: { ...VALID_SYMBOL, id: 'to-roll-back' } }] });
-
-        // 3. Rollback
-        const rollbackRes = await toolExecutor('symbol_transaction', { action: 'rollback' });
-        expect(rollbackRes.status).toContain('rolled back');
-
-        // 4. Commit (should fail or be empty depending on implementation, here it returns error if no active)
-        const commitRes = await toolExecutor('symbol_transaction', { action: 'commit' });
-        expect(commitRes.error).toBe('No active transaction to commit');
-        expect(domainService.bulkUpsert).not.toHaveBeenCalled();
-    });
-
-    it('symbol_transaction handles commit error in one of the operations', async () => {
-        await toolExecutor('symbol_transaction', { action: 'start' });
-        
-        // Mock a failure for a specific ID
-        vi.mocked(domainService.bulkUpsert).mockRejectedValueOnce(new Error('Persistence Failure'));
-
-        await toolExecutor('upsert_symbols', { symbols: [{ symbol_data: { ...VALID_SYMBOL, id: 'fail-me' } }] });
-        
-        const commitRes = await toolExecutor('symbol_transaction', { action: 'commit' });
-        expect(commitRes.details[0].status).toBe('failed');
-        expect(commitRes.details[0].error).toContain('Persistence Failure');
+        // 2. Activate tool
+        const activateRes = await toolExecutor('list_secondary_tools', { request_tools: ['upsert_agent'] });
+        expect(activateRes.message).toContain('Activated 1 tools');
+        expect(activateRes.activated_tools).toEqual(['upsert_agent']);
+        expect(contextService.updateSessionMetadata).toHaveBeenCalledWith('test-session', { active_tools: ['upsert_agent'] }, undefined, true);
     });
 });
