@@ -43,6 +43,14 @@ export interface VoiceSettings {
   wakeWord?: string;
 }
 
+export interface McpConfiguration {
+  id: string;
+  name: string;
+  endpoint: string;
+  token?: string;
+  enabled: boolean;
+}
+
 export interface InferenceSettings {
   provider: 'local' | 'openai' | 'gemini' | 'kimi2';
   apiKey: string;
@@ -81,6 +89,7 @@ export interface SystemSettings {
     apiKey?: string;
   };
   hygiene?: GraphHygieneSettings;
+  mcpConfigs?: McpConfiguration[];
 }
 
 // In-memory cache for settings (reduces Redis calls)
@@ -513,13 +522,29 @@ export const settingsService = {
     }
   },
 
+  // --- MCP Settings (Stored in Redis) ---
+  getMcpConfigs: async (): Promise<McpConfiguration[]> => {
+    const settings = await getSettings();
+    return settings.mcpConfigs || [];
+  },
+
+  setMcpConfigs: async (configs: McpConfiguration[]) => {
+    const current = await getSettings();
+    current.mcpConfigs = configs;
+    await saveToRedis(current);
+    if (!isStateless()) {
+      saveToFile(current);
+    }
+  },
+
   // --- Aggregated Settings ---
   get: async (): Promise<SystemSettings> => {
-    const [inference, serpApi, voice, hygiene] = await Promise.all([
+    const [inference, serpApi, voice, hygiene, mcpConfigs] = await Promise.all([
       settingsService.getInferenceSettings(),
       settingsService.getSerpApiSettings(),
       settingsService.getVoiceSettings(),
       settingsService.getHygieneSettings(),
+      settingsService.getMcpConfigs(),
     ]);
     
     const redisSettings = getRedisSettingsFromEnv();
@@ -540,6 +565,7 @@ export const settingsService = {
       serpApi,
       voice,
       hygiene,
+      mcpConfigs,
     };
   },
 
@@ -582,6 +608,10 @@ export const settingsService = {
 
     if (settings.hygiene) {
       await settingsService.setHygieneSettings(settings.hygiene);
+    }
+
+    if (settings.mcpConfigs) {
+      await settingsService.setMcpConfigs(settings.mcpConfigs);
     }
   },
 
