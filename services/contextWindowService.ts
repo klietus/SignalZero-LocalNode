@@ -15,15 +15,14 @@ export class ContextWindowService {
 
     /**
      * Constructs the full context window for an LLM request.
-     * Optimized for Prompt Caching:
-     * 1. System Prompt
-     * 2. Stable Symbolic Context (Domains, Core, Personas) -> Cache Anchor
-     * 3. Sliding History Window
-     * 4. Dynamic Symbolic Context (Identity, Preferences, State) -> Volatile
-     * 
-     * @param contextSessionId - The session ID for context
-     * @param systemPrompt - Base system prompt
-     * @param userId - Optional user ID for domain isolation (filters user/state domains)
+     * Optimized for Prompt Caching (Context Checkpoints):
+     * 1. System Prompt (Static Anchor)
+     * 2. Stable Symbolic Context (Kernel/Domains)
+     * 3. Mature Symbols (turnCount > 3) -> Sorted by ID
+     * 4. History Summary (Compressed prefix)
+     * 5. Conversation History (Sliding window of last 3-5 rounds)
+     * 6. New Symbols (turnCount <= 3) -> Volatile tail
+     * 7. System Metadata (Turn-specific state)
      */
     async constructContextWindow(
         contextSessionId: string,
@@ -52,11 +51,28 @@ export class ContextWindowService {
             content: `[KERNEL]\n${stableContext}`
         });
 
-        // Calculate tokens used by static context
+        // 3. Mature Symbols (Cache Anchor Expansion)
+        // Symbols that have survived decay (turnCount > 3) are stable.
+        const { mature, newSymbols } = await symbolCacheService.getPartitionedSymbols(contextSessionId);
+        if (mature.length > 0) {
+            messages.push({
+                role: 'system',
+                content: `[MATURE_SYMBOLS]\n${this.formatSymbols(mature)}`
+            });
+        }
+
+        // 4. History Summary (Stable Prefix of History)
+        if (session?.summary) {
+            messages.push({
+                role: 'system',
+                content: `[HISTORY_SUMMARY]\n${session.summary}`
+            });
+        }
+
+        // Calculate tokens used by static prefix (Sections 1-4)
         let currentTokens = messages.reduce((sum, m) => sum + this.estimateTokens(JSON.stringify(m)), 0);
 
-        // 3. Sliding History Window (Sliding Cache)
-        // Placing history BEFORE dynamic context allows the conversation prefix to remain cached.
+        // 5. Sliding History Window (Sliding Cache)
         const rawHistory = await contextService.getUnfilteredHistory(contextSessionId, effectiveUserId, true);
         const historyMessages: ChatCompletionMessageParam[] = [];
 
@@ -76,9 +92,10 @@ export class ContextWindowService {
             rounds.push(currentRound);
         }
 
-        // Process rounds
+        // Process rounds (Limit to 5 rounds if summary exists, else 10)
+        const maxRounds = session?.summary ? 5 : 10;
         for (let index = 0; index < rounds.length; index++) {
-            if (index >= 10) {
+            if (index >= maxRounds) {
                 loggerService.info(`Context window round limit reached for ${contextSessionId}. Included ${index} rounds.`);
                 break;
             }
@@ -115,9 +132,9 @@ export class ContextWindowService {
             messages.push(...historyMessages);
         }
 
-        // 4. Dynamic Symbolic Context (Volatile)
-        // LRU Cache and user-specific recursive symbols change frequently.
-        const dynamicContext = await this.buildDynamicContext(contextSessionId, type, effectiveUserId);
+        // 6. New Symbols (Volatile Tail)
+        // Recently activated symbols (turnCount <= 3) change frequently.
+        const dynamicContext = await this.buildDynamicContext(contextSessionId, type, effectiveUserId, newSymbols);
         if (dynamicContext.trim().length > 0) {
             messages.push({
                 role: 'system',
@@ -125,7 +142,7 @@ export class ContextWindowService {
             });
         }
 
-        // 5. System Metadata (Highly Volatile)
+        // 7. System Metadata (Highly Volatile)
         // Contains current time and lifecycle status - changes every turn.
         const systemMetadata = buildSystemMetadataBlock({
             id: session?.id,
@@ -146,9 +163,9 @@ export class ContextWindowService {
         const totalTokens = messages.reduce((sum, m) => sum + this.estimateTokens(JSON.stringify(m)), 0);
         loggerService.info(`Constructed Context Window for ${contextSessionId}`, {
             type,
-            historyRounds: rounds.length,
+            historyRounds: Math.min(rounds.length, maxRounds),
             historyMessages: historyMessages.length,
-            historyTokens: currentTokens, // This is cumulative context size now
+            historyTokens: currentTokens,
             totalMessages: messages.length,
             totalTokens
         });
@@ -328,16 +345,16 @@ export class ContextWindowService {
             await this.recursiveSymbolLoad('SELF-RECURSIVE-CORE', 3, coreSet, userId);
 
             const coreSymbols = Array.from(coreSet.values());
-            symbolCacheService.batchUpsertSymbols(contextSessionId, coreSymbols);
-            //results.push(`\n[SELF]\n${this.formatSymbols(coreSymbols)}`);
+            // Inject with turnCount 4 to stabilize immediately in the mature block
+            symbolCacheService.batchUpsertSymbols(contextSessionId, coreSymbols, 4);
 
             // Query 3: Root Domain
             const rootSet = new Map<string, SymbolDef>();
             await this.recursiveSymbolLoad('ROOT-SYNTHETIC-CORE', 3, rootSet, userId);
 
             const rootSymbols = Array.from(rootSet.values());
-            symbolCacheService.batchUpsertSymbols(contextSessionId, rootSymbols);
-            //results.push(`\n[ROOT]\n${this.formatSymbols(rootSymbols)}`);
+            // Inject with turnCount 4 to stabilize immediately
+            symbolCacheService.batchUpsertSymbols(contextSessionId, rootSymbols, 4);
 
 
             const fullContext = results.join('');
@@ -375,7 +392,12 @@ export class ContextWindowService {
      * Fetches dynamic symbols (Identity, Preferences, Recent State) that change frequently.
      * User and state domains are filtered by userId.
      */
-    private async buildDynamicContext(contextSessionId: string, type: ContextKind = 'conversation', userId?: string): Promise<string> {
+    private async buildDynamicContext(
+        contextSessionId: string, 
+        type: ContextKind = 'conversation', 
+        userId?: string,
+        newSymbols: SymbolDef[] = []
+    ): Promise<string> {
         try {
             const results: string[] = [];
             let userCoreCount = 0;
@@ -388,18 +410,13 @@ export class ContextWindowService {
 
                 const userSymbols = Array.from(userSet.values());
                 userCoreCount = userSymbols.length;
-                symbolCacheService.batchUpsertSymbols(contextSessionId, userSymbols);
-                //results.push(`[USER]\n${this.formatSymbols(userSymbols)}`);
+                // Inject with turnCount 4 to stabilize immediately
+                symbolCacheService.batchUpsertSymbols(contextSessionId, userSymbols, 4);
             }
 
-            // Symbol Cache Injection
-            let cacheCount = 0;
-            if (contextSessionId) {
-                const cachedSymbols = await symbolCacheService.getSymbols(contextSessionId);
-                if (cachedSymbols.length > 0) {
-                    cacheCount = cachedSymbols.length;
-                    results.push(`\n[SYMBOL CACHE]\n${this.formatSymbols(cachedSymbols)}`);
-                }
+            // Symbol Cache Injection (New/Volatile Symbols)
+            if (newSymbols.length > 0) {
+                results.push(`\n[SYMBOL CACHE]\n${this.formatSymbols(newSymbols)}`);
             }
             await symbolCacheService.emitCacheLoad(contextSessionId);
 
@@ -407,7 +424,7 @@ export class ContextWindowService {
             loggerService.info(`Built Dynamic Context`, {
                 type,
                 userCoreSymbols: userCoreCount,
-                symbolCacheCount: cacheCount,
+                symbolCacheCount: newSymbols.length,
                 chars: fullContext.length
             });
             return fullContext;

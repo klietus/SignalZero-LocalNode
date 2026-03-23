@@ -455,6 +455,13 @@ export const contextService = {
   },
 
   /**
+   * Update session metadata or summary
+   */
+  async updateSession(session: ContextSession): Promise<void> {
+    await persistSession(session);
+  },
+
+  /**
    * Check if write operations are allowed for a session
    */
   async isWriteAllowed(sessionId: string | undefined, toolName: string): Promise<boolean> {
