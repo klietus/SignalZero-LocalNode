@@ -114,7 +114,7 @@ describe('ContextWindowService', () => {
         });
         
         const window = await service.constructContextWindow('sess-1', 'Prompt');
-        const dynamicContent = window.find(m => m.content?.includes('[DYNAMIC_STATE]'))?.content || '';
+        const dynamicContent = window.find(m => m.content?.includes('[DYNAMIC_SYMBOLS]'))?.content || '';
         
         expect(dynamicContent).toContain('[SYMBOL CACHE]');
         expect(dynamicContent).toContain('| SYM-1 | Test Symbol | [A, B, C] | 🧩 | Logic |');

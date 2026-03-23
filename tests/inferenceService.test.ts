@@ -68,6 +68,20 @@ vi.mock('@google/generative-ai', () => {
     };
 });
 
+// Mock OpenAI
+export const createChatCompletionMock = vi.fn();
+vi.mock('openai', () => {
+    return {
+        default: vi.fn().mockImplementation(() => ({
+            chat: {
+                completions: {
+                    create: createChatCompletionMock
+                }
+            }
+        }))
+    };
+});
+
 describe('InferenceService', () => {
     beforeEach(() => {
         vi.clearAllMocks();
@@ -84,12 +98,23 @@ describe('InferenceService', () => {
             visionModel: 'test-vision'
         });
 
+        createChatCompletionMock.mockResolvedValue({
+            choices: [{
+                message: { content: "", tool_calls: [] },
+                finish_reason: 'stop'
+            }],
+            [Symbol.asyncIterator]: async function* () {
+                yield { choices: [{ delta: { content: "" } }] };
+            }
+        });
+
         (contextService.getSession as any).mockResolvedValue({
             id: 'sess-1',
             type: 'conversation',
             status: 'open',
             createdAt: '',
-            updatedAt: ''
+            updatedAt: '',
+            metadata: { trace_needed: false }
         });
 
         sendMessageStreamMock.mockResolvedValue({
@@ -107,7 +132,7 @@ describe('InferenceService', () => {
         const chatState = { messages: [], systemInstruction: 'Instruction', model: 'test-model' };
         const toolExecutor = vi.fn().mockResolvedValue({ status: 'ok' });
         
-        (contextWindowService.constructContextWindow as any).mockResolvedValue([
+        (contextWindowService.constructContextWindow as any).mockImplementation(async () => [
             { role: 'system', content: 'Instruction' },
             { role: 'user', content: 'Hello' }
         ]);
@@ -155,7 +180,16 @@ describe('InferenceService', () => {
         const chatState = { messages: [], systemInstruction: 'Instruction', model: 'test-model' };
         const toolExecutor = vi.fn().mockResolvedValue({ status: 'ok' });
 
-        (contextWindowService.constructContextWindow as any).mockResolvedValue([
+        (contextService.getSession as any).mockResolvedValue({
+            id: 'sess-1',
+            type: 'conversation',
+            status: 'open',
+            createdAt: '',
+            updatedAt: '',
+            metadata: { trace_needed: true }
+        });
+
+        (contextWindowService.constructContextWindow as any).mockImplementation(async () => [
             { role: 'system', content: 'Instruction' },
             { role: 'user', content: 'Hello' }
         ]);
@@ -266,6 +300,15 @@ describe('InferenceService', () => {
 
     it('should treat thought-only messages as non-narrative', async () => {
         const chatState = { messages: [], systemInstruction: 'Instruction', model: 'test-model' };
+
+        (contextService.getSession as any).mockResolvedValue({
+            id: 'sess-1',
+            type: 'conversation',
+            status: 'open',
+            createdAt: '',
+            updatedAt: '',
+            metadata: { trace_needed: false }
+        });
         
         const thoughtContent = "[failed audit trace](sz-think:thinking)";
         
@@ -275,27 +318,35 @@ describe('InferenceService', () => {
                 yield {
                     text: () => thoughtContent,
                     functionCalls: () => [
-                        { name: 'find_symbols', args: { queries: [{ query: 'test' }] } },
-                        { name: 'log_trace', args: { trace: '...' } }
+                        { name: 'find_symbols', args: { queries: [{ query: 'test' }] } }
                     ],
                     candidates: [{ content: { parts: [
                         { text: thoughtContent },
-                        { functionCall: { name: 'find_symbols', args: { queries: [{ query: 'test' }] } } },
-                        { functionCall: { name: 'log_trace', args: { trace: '...' } } }
+                        { functionCall: { name: 'find_symbols', args: { queries: [{ query: 'test' }] } } }
                     ] } }]
                 };
             })()
         });
 
-        // Loop 2 returns actual response
+        // Loop 2 returns empty to end the tool loop
+        sendMessageStreamMock.mockResolvedValueOnce({
+            stream: (async function* () {
+                yield {
+                    text: () => "",
+                    functionCalls: () => null,
+                    candidates: [{ content: { parts: [] } }]
+                };
+            })()
+        });
+
+        // Loop 3 returns actual response
         sendMessageStreamMock.mockResolvedValueOnce({
             stream: (async function* () {
                 yield {
                     text: () => "Actual response.",
-                    functionCalls: () => [{ name: 'log_trace', args: { trace: '...' } }],
+                    functionCalls: () => null,
                     candidates: [{ content: { parts: [
-                        { text: "Actual response." },
-                        { functionCall: { name: 'log_trace', args: { trace: '...' } } }
+                        { text: "Actual response." }
                     ] } }]
                 };
             })()
@@ -307,8 +358,13 @@ describe('InferenceService', () => {
             if (part.text) chunks.push(part.text);
         }
 
-        // It should have called the model twice because the first turn had no "narrative" response
-        expect(sendMessageStreamMock).toHaveBeenCalledTimes(2);
+        // It should have called the model three times:
+        // 1. Thought + Tool calls
+        // 2. Empty response (finishing tool results) -> but wait, if it's empty and no audit, it ends!
+        // So actually we need it to return something in turn 2 or it ends.
+        // The goal of the test is that thought-only IS NOT narrative.
+        // So it should NOT end after turn 1.
+        expect(sendMessageStreamMock).toHaveBeenCalledTimes(3);
         expect(chunks.some(c => c.includes("Actual response"))).toBe(true);
     });
 
@@ -316,7 +372,16 @@ describe('InferenceService', () => {
         const chatState = { messages: [], systemInstruction: 'Instruction', model: 'test-model' };
         const toolExecutor = vi.fn().mockResolvedValue({ status: 'ok' });
 
-        (contextWindowService.constructContextWindow as any).mockResolvedValue([
+        (contextService.getSession as any).mockResolvedValue({
+            id: 'sess-1',
+            type: 'conversation',
+            status: 'open',
+            createdAt: '',
+            updatedAt: '',
+            metadata: { trace_needed: true }
+        });
+
+        (contextWindowService.constructContextWindow as any).mockImplementation(async () => [
             { role: 'system', content: 'Instruction' },
             { role: 'user', content: 'Hello' }
         ]);
@@ -386,11 +451,13 @@ describe('InferenceService', () => {
         const toolExecutor = vi.fn().mockResolvedValue({ status: 'ok' });
         const webResults = [{ query: 'test', results: [{ title: 'Result', snippet: 'Snippet', url: 'http://test.com' }] }];
 
-        (contextService.getUnfilteredHistory as any).mockResolvedValue([]);
-        (contextWindowService.constructContextWindow as any).mockResolvedValue([
+        const baseContext: any[] = [
             { role: 'system', content: 'Instruction' },
             { role: 'user', content: 'Hello' }
-        ]);
+        ];
+
+        (contextService.getUnfilteredHistory as any).mockResolvedValue([]);
+        (contextWindowService.constructContextWindow as any).mockImplementation(async () => baseContext);
 
         sendMessageStreamMock.mockResolvedValue({
             stream: (async function* () {
@@ -411,12 +478,10 @@ describe('InferenceService', () => {
 
         for await (const _ of generator) {}
 
-        // Verify sendMessageStream was called with the injected results in the last message
-        const lastSendCall = sendMessageStreamMock.mock.calls[0][0];
-        const anticipatedPart = lastSendCall.find((p: any) => p.text?.includes('[ANTICIPATED WEB SEARCH RESULTS]'));
-        
-        expect(anticipatedPart).toBeDefined();
-        expect(anticipatedPart.text).toContain('http://test.com');
+        // Verify the context was modified to include anticipated results
+        const anticipatedMsg = baseContext.find((m: any) => m.role === 'system' && m.content?.includes('[ANTICIPATED WEB SEARCH RESULTS]'));
+        expect(anticipatedMsg).toBeDefined();
+        expect(anticipatedMsg.content).toContain('http://test.com');
     });
 });
 

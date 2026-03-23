@@ -37,7 +37,7 @@ export class ContextWindowService {
         const type = session?.type || 'conversation';
         const effectiveUserId = userId || session?.userId || undefined;
 
-        // 1. System Prompt
+        // 1. System Prompt (Stable Anchor)
         let effectiveSystemPrompt = systemPrompt;
         if (type === 'agent' && session?.metadata?.agentPrompt) {
             effectiveSystemPrompt = `${systemPrompt}\n\n[Agent Prompt]\n${session.metadata.agentPrompt}`;
@@ -45,6 +45,7 @@ export class ContextWindowService {
         messages.push({ role: 'system', content: effectiveSystemPrompt });
 
         // 2. Stable Symbolic Context (Cache Anchor)
+        // Domains and core recursive symbols are mostly static.
         const stableContext = await this.buildStableContext(contextSessionId, effectiveUserId);
         messages.push({
             role: 'system',
@@ -54,7 +55,8 @@ export class ContextWindowService {
         // Calculate tokens used by static context
         let currentTokens = messages.reduce((sum, m) => sum + this.estimateTokens(JSON.stringify(m)), 0);
 
-        // 3. Sliding History Window (Token based)
+        // 3. Sliding History Window (Sliding Cache)
+        // Placing history BEFORE dynamic context allows the conversation prefix to remain cached.
         const rawHistory = await contextService.getUnfilteredHistory(contextSessionId, effectiveUserId, true);
         const historyMessages: ChatCompletionMessageParam[] = [];
 
@@ -84,7 +86,6 @@ export class ContextWindowService {
             let round = rounds[index];
 
             // Strip tools from older rounds (index > 0)
-            // For the latest round (index 0), we keep them initially to show execution results
             if (index > 0) {
                 round = this.stripTools(round);
             }
@@ -97,11 +98,8 @@ export class ContextWindowService {
             // Check if adding this round exceeds limit
             if (currentTokens + roundTokens > this.TOKEN_LIMIT) {
                 if (index === 0) {
-                    // Critical: The LATEST round is NEVER truncated. 
-                    // We allow it to exceed the limit to ensure model sees the full prompt/execution.
                     loggerService.info(`Latest round preserved despite size (${roundTokens} tokens).`);
                 } else {
-                    // Older rounds: just drop them
                     loggerService.info(`Context window limit reached for ${contextSessionId}. Included ${historyMessages.length} messages.`);
                     break;
                 }
@@ -112,21 +110,23 @@ export class ContextWindowService {
             currentTokens += roundTokens;
         }
 
-        // Inject Dynamic Content marker if history exists
         if (historyMessages.length > 0) {
-            // Find the first user message and prepend marker? 
-            // Actually, we just want to ensure the model knows where dynamic content starts.
-            // But historyMessages[0] is the oldest user message in the window.
-            // The original code unshifted a separate message.
-            historyMessages.unshift({ role: 'user', content: `[DYNAMIC_CONTENT_START]` });
+            messages.push({ role: 'user', content: `[CONVERSATION_HISTORY_START]` });
+            messages.push(...historyMessages);
         }
 
-        messages.push(...historyMessages);
-
         // 4. Dynamic Symbolic Context (Volatile)
+        // LRU Cache and user-specific recursive symbols change frequently.
         const dynamicContext = await this.buildDynamicContext(contextSessionId, type, effectiveUserId);
+        if (dynamicContext.trim().length > 0) {
+            messages.push({
+                role: 'system',
+                content: `[DYNAMIC_SYMBOLS]\n${dynamicContext}`
+            });
+        }
 
-        // Generate fresh system metadata
+        // 5. System Metadata (Highly Volatile)
+        // Contains current time and lifecycle status - changes every turn.
         const systemMetadata = buildSystemMetadataBlock({
             id: session?.id,
             type: session?.type,
@@ -140,13 +140,7 @@ export class ContextWindowService {
 
         messages.push({
             role: 'system',
-            content: `[DYNAMIC_STATE]\n${systemMetadataStr}\n${dynamicContext}`
-        });
-
-        // Append system metadata again at the end for recency bias
-        messages.push({
-            role: 'system',
-            content: `[SYSTEM_METADATA]\n${systemMetadataStr}`
+            content: `[SYSTEM_STATE]\n${systemMetadataStr}`
         });
 
         const totalTokens = messages.reduce((sum, m) => sum + this.estimateTokens(JSON.stringify(m)), 0);
@@ -257,10 +251,9 @@ export class ContextWindowService {
         // Format symbols using DSL: | ID | Name | Triad | Kind |
         // This reduces token usage significantly compared to JSON.
         return uniqueSymbols.map(s => {
-            // Remove updated_at from the symbol object to ensure it is not used in formatting
-            // (Though our DSL below doesn't use it, this is a safety measure if DSL changes)
-            const { updated_at, ...symbolWithoutUpdate } = s;
-            const sym = symbolWithoutUpdate as any;
+            // Remove volatile fields to ensure the string representation is identical if the semantic content hasn't changed.
+            // Even if DSL doesn't use all fields, we want a clean object for any future changes.
+            const { updated_at, turnCount, lastUsed, ...sym } = s as any;
 
             let triadDisplay = "";
             let kindDisplay = KIND_MAP[sym.kind || 'pattern'] || (sym.kind || 'pattern');
