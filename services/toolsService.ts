@@ -15,6 +15,7 @@ import { symbolCacheService } from "./symbolCacheService.js";
 import { eventBusService, KernelEventType } from "./eventBusService.js";
 import { documentMeaningService } from "./documentMeaningService.js";
 import { mcpClientService } from "./mcpClientService.js";
+import { synthesizeWebResults } from "./inferenceService.ts";
 import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
@@ -1317,6 +1318,19 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
             };
 
             const results = await Promise.all(queryList.map(executeSerpSearch));
+            
+            // Synthesize all results into a single Knowledge Brief
+            const validResults = results.filter((r: any) => r && !r.error);
+            if (validResults.length > 0) {
+                loggerService.info("Synthesizing tool-based web search results", { contextSessionId, queryCount: validResults.length });
+                const brief = await synthesizeWebResults(validResults as any);
+                return {
+                    knowledge_brief: brief,
+                    queries_executed: queryList,
+                    raw_count: validResults.length
+                };
+            }
+
             if (results.length === 1) return results[0];
             return { batch_results: results };
           }
