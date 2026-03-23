@@ -731,7 +731,8 @@ export async function* sendMessageAndHandleTools(
   contextSessionId?: string,
   userMessageId?: string,
   userId?: string,
-  anticipatedWebResults?: any[]
+  anticipatedWebResults?: any[],
+  anticipatedWebBrief?: string
 ): AsyncGenerator<
   { text?: string; toolCalls?: any[]; isComplete?: boolean },
   void,
@@ -908,12 +909,19 @@ export async function* sendMessageAndHandleTools(
 
       // --- INJECT ANTICIPATED WEB RESULTS ---
       // Placing these at the END of the context window to preserve caching of the history prefix.
-      if (loops === 0 && anticipatedWebResults && anticipatedWebResults.length > 0) {
-        const resultsBlock = `\n\n[ANTICIPATED WEB SEARCH RESULTS]\n${JSON.stringify(anticipatedWebResults, null, 2)}`;
-        contextMessages.push({
-          role: 'system',
-          content: resultsBlock
-        });
+      if (loops === 0) {
+        if (anticipatedWebBrief) {
+          contextMessages.push({
+            role: 'system',
+            content: `\n\n[ANTICIPATED WEB SEARCH BRIEF]\n${anticipatedWebBrief}`
+          });
+        } else if (anticipatedWebResults && anticipatedWebResults.length > 0) {
+          const resultsBlock = `\n\n[ANTICIPATED WEB SEARCH RESULTS]\n${JSON.stringify(anticipatedWebResults, null, 2)}`;
+          contextMessages.push({
+            role: 'system',
+            content: resultsBlock
+          });
+        }
       }
 
       loggerService.debug("sendMessageAndHandleTools: Context window messages counts", {
@@ -1423,6 +1431,61 @@ export const summarizeHistory = async (
 };
 
 /**
+ * Synthesizes multiple web search results into a dense Knowledge Brief using the fast model.
+ */
+export const synthesizeWebResults = async (
+  queryResults: { query: string, results: { title: string, snippet: string, url: string }[] }[]
+): Promise<string> => {
+  const settings = await settingsService.getInferenceSettings();
+  const fastModel = settings.fastModel;
+  if (!fastModel || queryResults.length === 0) return "";
+
+  let resultsText = "";
+  queryResults.forEach(qr => {
+    resultsText += `\n[RESULTS FOR QUERY: "${qr.query}"]\n`;
+    qr.results.forEach((r, i) => {
+      resultsText += `${i + 1}. ${r.title}\n   Snippet: ${r.snippet}\n   URL: ${r.url}\n`;
+    });
+  });
+
+  const prompt = `You are a high-speed research synthesizer. 
+Target: Create a "Knowledge Brief" for the main reasoning model.
+
+Input Data:
+${resultsText}
+
+Instructions:
+1. MERGE overlapping information into a single dense narrative.
+2. FILTER out SEO noise and irrelevant snippets.
+3. STRUCTURE: 
+   - [FACTS]: A dense, information-dense paragraph of verified information.
+   - [ENTITIES]: A comma-separated list of mentioned key entities.
+   - [SOURCES]: A markdown list of the top 5 most relevant unique URLs mentioned.
+
+Output valid Markdown. DO NOT include any conversational filler.`;
+
+  try {
+    if (settings.provider === 'gemini') {
+      const client = await getGeminiClient();
+      const model = client.getGenerativeModel({ model: fastModel });
+      const result = await model.generateContent(prompt);
+      return result.response.text().trim();
+    }
+
+    const client = await getClient();
+    const result = await client.chat.completions.create({
+      model: fastModel,
+      messages: [{ role: "user", content: prompt }]
+    });
+
+    return result.choices[0]?.message?.content?.trim() ?? "";
+  } catch (error) {
+    loggerService.error("Web result synthesis failed", { error });
+    return "";
+  }
+};
+
+/**
  * Uses a fast model to generate expansion queries and prime the symbol cache
  * before the main reasoning loop starts.
  */
@@ -1431,7 +1494,7 @@ export const primeSymbolicContext = async (
   contextSessionId: string,
   userId?: string,
   isAdmin: boolean = false
-): Promise<{ symbols: SymbolDef[], webResults: any[], traceNeeded: boolean, traceReason?: string }> => {
+): Promise<{ symbols: SymbolDef[], webResults: any[], webBrief?: string, traceNeeded: boolean, traceReason?: string }> => {
   const foundSymbols: SymbolDef[] = [];
   const webResults: any[] = [];
   let traceNeeded = true; // Default to true to ensure audit if priming fails
@@ -1732,9 +1795,16 @@ export const primeSymbolicContext = async (
     }
   }
 
+  let webBrief: string | undefined;
+  if (webResults.length > 0) {
+    loggerService.info("Synthesizing anticipated web search results", { contextSessionId, queryCount: webResults.length });
+    webBrief = await synthesizeWebResults(webResults);
+  }
+
   return {
     symbols: foundSymbols,
     webResults,
+    webBrief,
     traceNeeded,
     traceReason
   };
@@ -1752,7 +1822,7 @@ export const processMessageAsync = async (
 ) => {
   try {
     // Pre-flight: expansion search and cache priming
-    const { webResults, traceNeeded, traceReason } = await primeSymbolicContext(message, contextSessionId, userId, true);
+    const { webResults, webBrief, traceNeeded, traceReason } = await primeSymbolicContext(message, contextSessionId, userId, true);
 
     // Persist trace_needed to session metadata so sendMessageAndHandleTools can pick it up
     await contextService.updateSessionMetadata(contextSessionId, {
@@ -1761,7 +1831,7 @@ export const processMessageAsync = async (
     }, userId, true);
 
     const chat = await getChatSession(systemInstruction, contextSessionId);
-    const stream = sendMessageAndHandleTools(chat, message, toolExecutor, systemInstruction, contextSessionId, userMessageId, userId, webResults);
+    const stream = sendMessageAndHandleTools(chat, message, toolExecutor, systemInstruction, contextSessionId, userMessageId, userId, webResults, webBrief);
 
     // Consume the stream to drive execution
     for await (const _ of stream) {
