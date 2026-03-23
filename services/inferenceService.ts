@@ -1089,17 +1089,17 @@ export async function* sendMessageAndHandleTools(
     let auditTriggered = false;
     let auditMessage = "";
 
+    const currentToolNames = new Set((yieldedToolCalls || []).map(tc => {
+      let name = tc.function?.name || "";
+      if (name.endsWith('?')) name = name.slice(0, -1);
+      return name;
+    }));
+
+    const isEndingTurn = !yieldedToolCalls || yieldedToolCalls.length === 0;
+    const isCallingTraceThisTurn = currentToolNames.has('log_trace');
+    const isCallingSpeakThisTurn = currentToolNames.has('speak');
+
     if (ENABLE_SYSTEM_AUDIT && contextSessionId && auditRetries < MAX_AUDIT_RETRIES) {
-      const currentToolNames = new Set((yieldedToolCalls || []).map(tc => {
-        let name = tc.function?.name || "";
-        if (name.endsWith('?')) name = name.slice(0, -1);
-        return name;
-      }));
-
-      const isCallingTraceThisTurn = currentToolNames.has('log_trace');
-      const isCallingSpeakThisTurn = currentToolNames.has('speak');
-      const isEndingTurn = !yieldedToolCalls || yieldedToolCalls.length === 0;
-
       // Determine if there is actual response output (text or voice)
       const hasNarrativeOutput = textAccumulatedInTurn.trim().length > 0 || totalTextAccumulatedAcrossLoops.trim().length > 0;
       const hasVoiceOutput = hasCalledSpeak || isCallingSpeakThisTurn;
@@ -1288,12 +1288,13 @@ export async function* sendMessageAndHandleTools(
     const hasNarrative = isNarrativeText(totalTextAccumulatedAcrossLoops);
     const hasResponse = hasNarrative || hasCalledSpeak;
 
-    if (hasResponse && !auditTriggered && (!traceNeeded || hasLoggedTrace)) {
+    if (isEndingTurn && hasResponse && !auditTriggered && (!traceNeeded || hasLoggedTrace)) {
       loggerService.info("Ending turn: Symbolic requirements and response verified.", {
         contextSessionId,
         loops,
         hasCalledSpeak,
         hasNarrative,
+        isEndingTurn,
         textLength: totalTextAccumulatedAcrossLoops.length
       });
       break;
@@ -1359,7 +1360,7 @@ export const primeSymbolicContext = async (
 ): Promise<{ symbols: SymbolDef[], webResults: any[], traceNeeded: boolean, traceReason?: string }> => {
   const foundSymbols: SymbolDef[] = [];
   const webResults: any[] = [];
-  let traceNeeded = false;
+  let traceNeeded = true; // Default to true to ensure audit if priming fails
   let traceReason: string | undefined;
   let fastResponse: any = {};
   let symbolicQueries: string[] = [];
@@ -1369,7 +1370,14 @@ export const primeSymbolicContext = async (
     const settings = await settingsService.getInferenceSettings();
     const fastModel = settings.fastModel;
 
-    if (!fastModel) return { symbols: [], webResults: [] };
+    // Identify session and previous requirements early
+    const session = await contextService.getSession(contextSessionId, userId, true);
+    if (session && session.metadata?.trace_needed !== undefined) {
+      traceNeeded = !!session.metadata.trace_needed;
+      traceReason = session.metadata.trace_reason;
+    }
+
+    if (!fastModel) return { symbols: [], webResults: [], traceNeeded };
 
     // Fetch last 5 rounds of history (up to 10 messages)
     const history = await contextService.getUnfilteredHistory(contextSessionId, userId, isAdmin);
@@ -1391,8 +1399,6 @@ export const primeSymbolicContext = async (
       })
       .filter((q, i, self) => q && self.indexOf(q) === i);
 
-    // Identify session naming requirements
-    const session = await contextService.getSession(contextSessionId, userId, true);
     const currentName = session?.name;
     const userMessageCount = history.filter(m => m.role === 'user').length + 1; // +1 for the current message
     const needsNaming = !currentName || (userMessageCount % 10 === 0);
