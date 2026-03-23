@@ -1325,6 +1325,28 @@ export async function* sendMessageAndHandleTools(
     loops++;
   }
 
+  // --- POST-TURN: HISTORY SUMMARIZATION ---
+  // Periodically summarize history to maintain a stable cache anchor.
+  if (contextSessionId) {
+    try {
+      const session = await contextService.getSession(contextSessionId, userId, true);
+      const history = await contextService.getUnfilteredHistory(contextSessionId, userId, true);
+      
+      // Summarize if history is growing (e.g., > 6 rounds / ~12 messages)
+      if (session && history.length > 12) {
+        loggerService.info("Triggering history summarization", { contextSessionId, historyCount: history.length });
+        const newSummary = await summarizeHistory(history, session.summary);
+        if (newSummary !== session.summary) {
+          session.summary = newSummary;
+          await contextService.updateSession(session);
+          loggerService.info("History summary updated", { contextSessionId, summaryLength: newSummary.length });
+        }
+      }
+    } catch (err) {
+      loggerService.warn("Failed to update history summary", { error: err, contextSessionId });
+    }
+  }
+
   yield { isComplete: true };
 }
 
@@ -1354,6 +1376,49 @@ export const extractJson = (text: string): any => {
       }
     }
     throw e;
+  }
+};
+
+/**
+ * Summarizes conversation history using the fast model to maintain a stable cache anchor.
+ */
+export const summarizeHistory = async (
+  history: ContextMessage[],
+  currentSummary?: string
+): Promise<string> => {
+  const settings = await settingsService.getInferenceSettings();
+  const fastModel = settings.fastModel;
+  if (!fastModel) return currentSummary || "";
+
+  const historyText = history.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n');
+  const prompt = `Summarize the following conversation history into a concise, information-dense paragraph. 
+  Focus on facts, user preferences, and the current state of the analysis.
+  
+  ${currentSummary ? `Previous Summary: ${currentSummary}\n` : ''}
+  
+  History to summarize:
+  ${historyText}
+  
+  SUMMARY:`;
+
+  try {
+    if (settings.provider === 'gemini') {
+      const client = await getGeminiClient();
+      const model = client.getGenerativeModel({ model: fastModel });
+      const result = await model.generateContent(prompt);
+      return result.response.text().trim();
+    }
+
+    const client = await getClient();
+    const result = await client.chat.completions.create({
+      model: fastModel,
+      messages: [{ role: "user", content: prompt }]
+    });
+
+    return result.choices[0]?.message?.content?.trim() ?? (currentSummary || "");
+  } catch (error) {
+    loggerService.error("History summarization failed", { error });
+    return currentSummary || "";
   }
 };
 

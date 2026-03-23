@@ -19,7 +19,7 @@ export class SymbolCacheService {
     }
 
     /**
-     * Get all symbols in the cache for a session, sorted by turnCount ASC, then lastUsed DESC.
+     * Get all symbols in the cache for a session, sorted by Symbol ID for determinism.
      */
     async getSymbols(sessionId: string): Promise<SymbolDef[]> {
         const key = this.getCacheKey(sessionId);
@@ -29,15 +29,35 @@ export class SymbolCacheService {
         const cache: Record<string, CacheEntry> = JSON.parse(data);
         const entries = Object.values(cache);
 
-        // Sort: lowest turn count first (stable), then newest first (LRU)
-        entries.sort((a, b) => {
-            if (a.turnCount !== b.turnCount) {
-                return a.turnCount - b.turnCount;
-            }
-            return b.lastUsed - a.lastUsed;
-        });
+        // Sort by ID for deterministic output (crucial for prompt caching)
+        entries.sort((a, b) => a.symbol.id.localeCompare(b.symbol.id));
 
         return entries.map(e => e.symbol);
+    }
+
+    /**
+     * Partition symbols into Mature (turnCount > 3) and New (turnCount <= 3).
+     * Both blocks are sorted by ID for determinism.
+     */
+    async getPartitionedSymbols(sessionId: string): Promise<{ mature: SymbolDef[], newSymbols: SymbolDef[] }> {
+        const key = this.getCacheKey(sessionId);
+        const data = await redisService.request(['GET', key]);
+        if (!data) return { mature: [], newSymbols: [] };
+
+        const cache: Record<string, CacheEntry> = JSON.parse(data);
+        const entries = Object.values(cache);
+
+        const matureEntries = entries.filter(e => e.turnCount > 3);
+        const newEntries = entries.filter(e => e.turnCount <= 3);
+
+        // Sort both by ID for deterministic output
+        matureEntries.sort((a, b) => a.symbol.id.localeCompare(b.symbol.id));
+        newEntries.sort((a, b) => a.symbol.id.localeCompare(b.symbol.id));
+
+        return {
+            mature: matureEntries.map(e => e.symbol),
+            newSymbols: newEntries.map(e => e.symbol)
+        };
     }
 
     /**
@@ -59,10 +79,11 @@ export class SymbolCacheService {
     }
 
     /**
-     * Add or update multiple symbols in the cache. Resets their turnCount to 0 and lastUsed to now.
-     * Emits a single batched CACHE_LOAD event.
+     * Add or update multiple symbols in the cache. 
+     * If a symbol is already present, its turnCount is preserved.
+     * If new, it starts with initialTurnCount (defaults to 0).
      */
-    async batchUpsertSymbols(sessionId: string, symbols: SymbolDef[]): Promise<void> {
+    async batchUpsertSymbols(sessionId: string, symbols: SymbolDef[], initialTurnCount: number = 0): Promise<void> {
         if (!sessionId || symbols.length === 0) return;
 
         const key = this.getCacheKey(sessionId);
@@ -71,11 +92,20 @@ export class SymbolCacheService {
 
         const now = Date.now();
         for (const symbol of symbols) {
-            cache[symbol.id] = {
-                symbol,
-                turnCount: 0,
-                lastUsed: now
-            };
+            // Preserve turnCount if symbol already exists
+            if (cache[symbol.id]) {
+                cache[symbol.id] = {
+                    ...cache[symbol.id],
+                    symbol,
+                    lastUsed: now
+                };
+            } else {
+                cache[symbol.id] = {
+                    symbol,
+                    turnCount: initialTurnCount,
+                    lastUsed: now
+                };
+            }
         }
 
         await redisService.request(['SET', key, JSON.stringify(cache), 'EX', '86400']);

@@ -114,10 +114,9 @@ describe('ContextWindowService', () => {
         });
         
         const window = await service.constructContextWindow('sess-1', 'Prompt');
-        const dynamicContent = window.find(m => m.content?.includes('[DYNAMIC_SYMBOLS]'))?.content || '';
+        const matureSymbols = window.find(m => m.content?.includes('[MATURE_SYMBOLS]'))?.content || '';
         
-        expect(dynamicContent).toContain('[SYMBOL CACHE]');
-        expect(dynamicContent).toContain('| SYM-1 | Test Symbol | [A, B, C] | 🧩 | Logic |');
+        expect(matureSymbols).toContain('| SYM-1 | Test Symbol | [A, B, C] | 🧩 | Logic |');
     });
 
     it('should strip tool outputs from older rounds', async () => {

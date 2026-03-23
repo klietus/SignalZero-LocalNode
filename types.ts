@@ -314,6 +314,7 @@ export interface ContextMessage {
 export interface ContextSession {
   id: string;
   name?: string;
+  summary?: string; // High-level summary of history for prompt caching
   type: ContextKind;
   status: ContextStatus;
   createdAt: string;

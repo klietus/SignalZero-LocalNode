@@ -99,17 +99,17 @@ describe('SymbolCache Tests', () => {
             expect(symbols).toHaveLength(1); // Should still be there because touch reset it
         });
 
-        it('should sort symbols by turn count ASC', async () => {
+        it('should sort symbols by Symbol ID for determinism', async () => {
             const s1 = { ...MOCK_SYMBOL, id: 'S1' };
             const s2 = { ...MOCK_SYMBOL, id: 'S2' };
             
-            await symbolCacheService.upsertSymbol('sess-1', s1);
-            await symbolCacheService.incrementTurns('sess-1');
             await symbolCacheService.upsertSymbol('sess-1', s2);
+            await symbolCacheService.incrementTurns('sess-1');
+            await symbolCacheService.upsertSymbol('sess-1', s1);
             
             const symbols = await symbolCacheService.getSymbols('sess-1');
-            expect(symbols[0].id).toBe('S2'); // turnCount 0
-            expect(symbols[1].id).toBe('S1'); // turnCount 1
+            expect(symbols[0].id).toBe('S1'); // Sorted by ID
+            expect(symbols[1].id).toBe('S2');
         });
 
         it('should clear cache when clearCache is called', async () => {
@@ -133,10 +133,10 @@ describe('SymbolCache Tests', () => {
             await symbolCacheService.upsertSymbol('sess-1', MOCK_SYMBOL);
             
             const window = await contextWindowService.constructContextWindow('sess-1', 'Prompt');
-            const dynamicState = window.find(m => m.content?.includes('[DYNAMIC_STATE]'))?.content || '';
+            const dynamicSymbols = window.find(m => m.content?.includes('[DYNAMIC_SYMBOLS]'))?.content || '';
             
-            expect(dynamicState).toContain('[SYMBOL CACHE]');
-            expect(dynamicState).toContain('| S1 | Sym 1 |');
+            expect(dynamicSymbols).toContain('[SYMBOL CACHE]');
+            expect(dynamicSymbols).toContain('| S1 | Sym 1 |');
         });
     });
 
