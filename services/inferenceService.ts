@@ -1419,7 +1419,10 @@ export const summarizeHistory = async (
   try {
     if (settings.provider === 'gemini') {
       const client = await getGeminiClient();
-      const model = client.getGenerativeModel({ model: fastModel });
+      const model = client.getGenerativeModel({ 
+        model: fastModel,
+        generationConfig: { maxOutputTokens: 800 }
+      });
       const result = await model.generateContent(prompt);
       return result.response.text().trim();
     }
@@ -1427,7 +1430,8 @@ export const summarizeHistory = async (
     const client = await getClient();
     const result = await client.chat.completions.create({
       model: fastModel,
-      messages: [{ role: "user", content: prompt }]
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: 800
     });
 
     return result.choices[0]?.message?.content?.trim() ?? (currentSummary || "");
@@ -1474,7 +1478,10 @@ Output valid Markdown. DO NOT include any conversational filler.`;
   try {
     if (settings.provider === 'gemini') {
       const client = await getGeminiClient();
-      const model = client.getGenerativeModel({ model: fastModel });
+      const model = client.getGenerativeModel({ 
+        model: fastModel,
+        generationConfig: { maxOutputTokens: 800 }
+      });
       const result = await model.generateContent(prompt);
       return result.response.text().trim();
     }
@@ -1482,7 +1489,8 @@ Output valid Markdown. DO NOT include any conversational filler.`;
     const client = await getClient();
     const result = await client.chat.completions.create({
       model: fastModel,
-      messages: [{ role: "user", content: prompt }]
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: 800
     });
 
     return result.choices[0]?.message?.content?.trim() ?? "";
