@@ -907,17 +907,13 @@ export async function* sendMessageAndHandleTools(
       }
 
       // --- INJECT ANTICIPATED WEB RESULTS ---
+      // Placing these at the END of the context window to preserve caching of the history prefix.
       if (loops === 0 && anticipatedWebResults && anticipatedWebResults.length > 0) {
         const resultsBlock = `\n\n[ANTICIPATED WEB SEARCH RESULTS]\n${JSON.stringify(anticipatedWebResults, null, 2)}`;
-        const userMsg = contextMessages.find(m => m.role === 'user');
-        if (userMsg) {
-          userMsg.content += resultsBlock;
-        } else {
-          contextMessages.push({
-            role: 'system',
-            content: resultsBlock
-          });
-        }
+        contextMessages.push({
+          role: 'system',
+          content: resultsBlock
+        });
       }
 
       loggerService.debug("sendMessageAndHandleTools: Context window messages counts", {
@@ -957,7 +953,12 @@ export async function* sendMessageAndHandleTools(
             relevantPrompts.forEach(p => {
               dynamicSection += `\n#### ${p.name}\n${p.content}\n`;
             });
-            activeSystemInstruction += dynamicSection;
+            // Inject dynamic prompts as a SEPARATE system message at the end of contextMessages
+            // to avoid modifying the first system message (the cache anchor).
+            contextMessages.push({
+                role: 'system',
+                content: dynamicSection
+            });
           }
 
           if (requestedTools.length > 0) {
@@ -973,10 +974,8 @@ export async function* sendMessageAndHandleTools(
         }
       }
 
-      // Update system message if instruction changed
-      if (contextMessages[0]?.role === 'system') {
-        contextMessages[0].content = activeSystemInstruction;
-      }
+      // Note: activeSystemInstruction is now only the base prompt (plus any core changes)
+      // Dynamic sections are added as separate system messages above to preserve caching.
 
       const assistantMessage = streamAssistantResponse(contextMessages as ChatCompletionMessageParam[], chat.model, activeToolList);
       textAccumulatedInTurn = "";
@@ -1099,9 +1098,9 @@ export async function* sendMessageAndHandleTools(
     const isCallingTraceThisTurn = currentToolNames.has('log_trace');
     const isCallingSpeakThisTurn = currentToolNames.has('speak');
 
-    if (ENABLE_SYSTEM_AUDIT && contextSessionId && auditRetries < MAX_AUDIT_RETRIES) {
+    if (ENABLE_SYSTEM_AUDIT && auditRetries < MAX_AUDIT_RETRIES) {
       // Determine if there is actual response output (text or voice)
-      const hasNarrativeOutput = textAccumulatedInTurn.trim().length > 0 || totalTextAccumulatedAcrossLoops.trim().length > 0;
+      const hasNarrativeOutput = isNarrativeText(textAccumulatedInTurn) || isNarrativeText(totalTextAccumulatedAcrossLoops);
       const hasVoiceOutput = hasCalledSpeak || isCallingSpeakThisTurn;
 
       // Check 1: Missing Trace (Required for complex analytic operations, skipped for casual conversation)
@@ -1288,13 +1287,23 @@ export async function* sendMessageAndHandleTools(
     const hasNarrative = isNarrativeText(totalTextAccumulatedAcrossLoops);
     const hasResponse = hasNarrative || hasCalledSpeak;
 
-    if (isEndingTurn && hasResponse && !auditTriggered && (!traceNeeded || hasLoggedTrace)) {
-      loggerService.info("Ending turn: Symbolic requirements and response verified.", {
+    // We break if:
+    // 1. We have no pending tool calls (isEndingTurn).
+    // AND EITHER:
+    //    a) We have a verified response (hasResponse and trace conditions met)
+    //    b) OR We failed the audit (auditTriggered is true), which handles the retry.
+    //    c) OR we have nothing else to do and no audit was triggered.
+    const traceVerified = !traceNeeded || hasLoggedTrace;
+    const responseVerified = hasResponse && traceVerified;
+
+    if (isEndingTurn && !auditTriggered) {
+      loggerService.info("Ending turn: Symbolic requirements and response verified or no audit triggered.", {
         contextSessionId,
         loops,
         hasCalledSpeak,
         hasNarrative,
         isEndingTurn,
+        auditTriggered,
         textLength: totalTextAccumulatedAcrossLoops.length
       });
       break;
