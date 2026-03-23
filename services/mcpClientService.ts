@@ -56,7 +56,11 @@ class McpClientService {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    ...(config.token ? { 'Authorization': `Bearer ${config.token}`, 'X-API-Key': config.token } : {})
+                    ...(config.token ? { 
+                        'Authorization': `Bearer ${config.token}`, 
+                        'X-API-Key': config.token,
+                        'x-api-key': config.token 
+                    } : {})
                 },
                 body: JSON.stringify({
                     jsonrpc: '2.0',
@@ -93,7 +97,11 @@ class McpClientService {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    ...(config.token ? { 'Authorization': `Bearer ${config.token}`, 'X-API-Key': config.token } : {})
+                    ...(config.token ? { 
+                        'Authorization': `Bearer ${config.token}`, 
+                        'X-API-Key': config.token,
+                        'x-api-key': config.token 
+                    } : {})
                 },
                 body: JSON.stringify({
                     jsonrpc: '2.0',
@@ -167,7 +175,11 @@ class McpClientService {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    ...(config.token ? { 'Authorization': `Bearer ${config.token}`, 'X-API-Key': config.token } : {})
+                    ...(config.token ? { 
+                        'Authorization': `Bearer ${config.token}`, 
+                        'X-API-Key': config.token,
+                        'x-api-key': config.token 
+                    } : {})
                 },
                 body: JSON.stringify({
                     jsonrpc: '2.0',

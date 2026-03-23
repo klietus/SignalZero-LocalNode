@@ -933,31 +933,31 @@ export async function* sendMessageAndHandleTools(
         try {
           const currentSession = await contextService.getSession(contextSessionId, userId, true);
           const requestedTools = currentSession?.metadata?.active_tools || [];
-          
+
           // 1. Resolve Secondary Internal Tools
           const secondaryTools = requestedTools
             .map((name: string) => SECONDARY_TOOLS_MAP[name])
             .filter(Boolean);
-          
+
           // 2. Resolve MCP Tools
           const remoteTools = await mcpClientService.getAllTools();
           const activeRemoteTools = remoteTools.filter(rt => requestedTools.includes(rt.function.name));
-          
+
           activeToolList = [...PRIMARY_TOOLS, ...secondaryTools, ...activeRemoteTools];
 
           // 3. Resolve MCP Prompts for System Instruction injection
           const remotePrompts = await mcpClientService.getAllPrompts();
           const activeConfigs = await mcpClientService.getEnabledConfigs();
           const activeConfigIds = activeConfigs.map(c => c.id);
-          
+
           const relevantPrompts = remotePrompts.filter(rp => activeConfigIds.includes(rp.mcpId));
-          
+
           if (relevantPrompts.length > 0) {
-              let dynamicSection = "\n\n### DYNAMIC TOOLS & CAPABILITIES\n";
-              relevantPrompts.forEach(p => {
-                  dynamicSection += `\n#### ${p.name}\n${p.content}\n`;
-              });
-              activeSystemInstruction += dynamicSection;
+            let dynamicSection = "\n\n### DYNAMIC TOOLS & CAPABILITIES\n";
+            relevantPrompts.forEach(p => {
+              dynamicSection += `\n#### ${p.name}\n${p.content}\n`;
+            });
+            activeSystemInstruction += dynamicSection;
           }
 
           if (requestedTools.length > 0) {
@@ -975,7 +975,7 @@ export async function* sendMessageAndHandleTools(
 
       // Update system message if instruction changed
       if (contextMessages[0]?.role === 'system') {
-          contextMessages[0].content = activeSystemInstruction;
+        contextMessages[0].content = activeSystemInstruction;
       }
 
       const assistantMessage = streamAssistantResponse(contextMessages as ChatCompletionMessageParam[], chat.model, activeToolList);
@@ -1288,7 +1288,7 @@ export async function* sendMessageAndHandleTools(
     const hasNarrative = isNarrativeText(totalTextAccumulatedAcrossLoops);
     const hasResponse = hasNarrative || hasCalledSpeak;
 
-    if (hasResponse && !auditTriggered) {
+    if (hasResponse && !auditTriggered && (!traceNeeded || hasLoggedTrace)) {
       loggerService.info("Ending turn: Symbolic requirements and response verified.", {
         contextSessionId,
         loops,
@@ -1522,36 +1522,36 @@ export const primeSymbolicContext = async (
         // We do this recursively (up to 3 levels) to capture nested structures.
         let expansionPasses = 0;
         let newlyFoundLattices = foundSymbols.filter(s => s.kind === 'lattice');
-        
+
         while (newlyFoundLattices.length > 0 && expansionPasses < 3) {
-            const latticeMemberIds = new Set<string>();
-            newlyFoundLattices.forEach(lat => {
-                (lat.linked_patterns || []).forEach((link: any) => {
-                    const id = typeof link === 'string' ? link : link.id;
-                    if (id && !foundSymbols.find(fs => fs.id === id)) {
-                        latticeMemberIds.add(id);
-                    }
-                });
+          const latticeMemberIds = new Set<string>();
+          newlyFoundLattices.forEach(lat => {
+            (lat.linked_patterns || []).forEach((link: any) => {
+              const id = typeof link === 'string' ? link : link.id;
+              if (id && !foundSymbols.find(fs => fs.id === id)) {
+                latticeMemberIds.add(id);
+              }
             });
+          });
 
-            if (latticeMemberIds.size === 0) break;
+          if (latticeMemberIds.size === 0) break;
 
-            const expandedSymbols = await domainService.loadSymbols(Array.from(latticeMemberIds), userId);
-            expandedSymbols.forEach(s => {
-                if (!foundSymbols.find(fs => fs.id === s.id)) {
-                    foundSymbols.push(s);
-                }
-            });
-
-            newlyFoundLattices = expandedSymbols.filter(s => s.kind === 'lattice');
-            expansionPasses++;
-            
-            if (newlyFoundLattices.length > 0) {
-                loggerService.info(`Lattice expansion pass ${expansionPasses}: found ${expandedSymbols.length} new symbols`, { 
-                    contextSessionId, 
-                    latticeCount: newlyFoundLattices.length 
-                });
+          const expandedSymbols = await domainService.loadSymbols(Array.from(latticeMemberIds), userId);
+          expandedSymbols.forEach(s => {
+            if (!foundSymbols.find(fs => fs.id === s.id)) {
+              foundSymbols.push(s);
             }
+          });
+
+          newlyFoundLattices = expandedSymbols.filter(s => s.kind === 'lattice');
+          expansionPasses++;
+
+          if (newlyFoundLattices.length > 0) {
+            loggerService.info(`Lattice expansion pass ${expansionPasses}: found ${expandedSymbols.length} new symbols`, {
+              contextSessionId,
+              latticeCount: newlyFoundLattices.length
+            });
+          }
         }
 
         loggerService.info(`Priming cache with ${foundSymbols.length} total symbols`, { contextSessionId });

@@ -16,9 +16,17 @@ async function main() {
         enabled: true
     };
 
+    const polyConfig = {
+        id: 'poly',
+        name: 'Polymarket',
+        endpoint: 'http://polymarket-mcp:3005/mcp',
+        token: 'none', // Public access allowed for some tools
+        enabled: true
+    };
+
     const currentConfigs = await settingsService.getMcpConfigs();
-    const updatedConfigs = currentConfigs.filter(c => c.id !== 'skills');
-    updatedConfigs.push(skillsConfig);
+    const updatedConfigs = currentConfigs.filter(c => c.id !== 'skills' && c.id !== 'poly');
+    updatedConfigs.push(skillsConfig, polyConfig);
 
     await settingsService.setMcpConfigs(updatedConfigs);
     console.log('Skills MCP configuration added successfully.');

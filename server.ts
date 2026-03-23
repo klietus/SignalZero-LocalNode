@@ -673,8 +673,8 @@ app.get('/api/settings', async (req, res) => {
 
 app.post('/api/settings', async (req, res) => {
     try {
-        const { redis, chroma, inference, serpApi, voice, hygiene } = req.body || {};
-        await settingsService.setSystemSettings({ redis, chroma, inference, serpApi, voice, hygiene });
+        const { redis, chroma, inference, serpApi, voice, hygiene, mcpConfigs } = req.body || {};
+        await settingsService.setSystemSettings({ redis, chroma, inference, serpApi, voice, hygiene, mcpConfigs });
         const updated = await settingsService.getSystemSettings();
         res.json(updated);
     } catch (e) {
