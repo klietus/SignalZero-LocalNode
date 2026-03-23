@@ -1398,7 +1398,14 @@ export const summarizeHistory = async (
   const fastModel = settings.fastModel;
   if (!fastModel) return currentSummary || "";
 
-  const historyText = history.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n');
+  // Strip tool outputs and thoughts to drastically reduce token usage for the summarization prompt
+  const cleanHistory = contextWindowService.stripTools(history);
+  const historyText = cleanHistory.map(m => {
+    const role = m.role.toUpperCase();
+    const content = stripThoughts(m.content || "");
+    return `${role}: ${content}`;
+  }).filter(line => line.length > 10).join('\n'); // Filter out very short/empty lines
+
   const prompt = `Summarize the following conversation history into a concise, information-dense paragraph. 
   Focus on facts, user preferences, and the current state of the analysis.
   

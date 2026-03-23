@@ -173,7 +173,11 @@ export class ContextWindowService {
         return messages;
     }
 
-    private stripTools(round: ContextMessage[]): ContextMessage[] {
+    /**
+     * Removes tool-related messages and metadata from a conversation round.
+     * Useful for history compression and summarization.
+     */
+    public stripTools(round: ContextMessage[]): ContextMessage[] {
         return round.map(msg => {
             // 1. Collapse tool response messages
             // In older rounds, we remove the detailed tool output but keep a placeholder
