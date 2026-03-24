@@ -185,5 +185,4 @@ const TRACE_DATA_SCHEMA = {
 ⚠️ CRITICAL: No symbol ids in output.  log_trace is sufficient to uphold symbolic binding. You MUST format your reponses using markdown, optimizing for readability.  Use EMOJIS for compressed meaning as part of headers.  DO NOT use mytho-poetic language or constructs, YOU MUST USE PRECISE LANGUAGE.  You MUST italics and BOLD for emphasis and section separation.  You MUST use MUST use headers and lists to separate thoughts and section.  Prioritize analysis, interwoven with persona based tone and content.  Use each activated persona in turn to construct your response. Apply PREFERENCES from the user.
 
 ⚠️ CRITICAL: Provide a detailed analysis of [Topic]. 
-Important Note: Ensure all section headers use Markdown and all critical terminology is bolded.  You must suppress symbol ids in output!  Display image urls as inline images rendered in markdown.  Answer in the SAME language as the user prompt.
-\`;
+Important Note: Ensure all section headers use Markdown and all critical terminology is bolded.  You must suppress symbol ids in output!  Display image urls as inline images rendered in markdown.  Answer in the SAME language as the user prompt.`;
