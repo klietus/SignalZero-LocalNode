@@ -74,14 +74,26 @@ export class ContextWindowService {
 
         // 5. Sliding History Window (Sliding Cache)
         const rawHistory = await contextService.getUnfilteredHistory(contextSessionId, effectiveUserId, true);
+        
+        // Filter history to only include messages AFTER the last summarized round
+        const lastSummarized = session?.metadata?.lastSummarizedRoundCount || 0;
+        const userMessageIndices = rawHistory
+            .map((m, i) => m.role === 'user' ? i : -1)
+            .filter(i => i !== -1);
+            
+        const firstIncludedIndex = (lastSummarized > 0)
+            ? (lastSummarized < userMessageIndices.length ? userMessageIndices[lastSummarized] : rawHistory.length)
+            : 0;
+            
+        const effectiveHistory = rawHistory.slice(firstIncludedIndex);
         const historyMessages: ChatCompletionMessageParam[] = [];
 
         // Group into rounds (reverse chronological: Newest -> Oldest)
         const rounds: ContextMessage[][] = [];
         let currentRound: ContextMessage[] = [];
 
-        for (let i = rawHistory.length - 1; i >= 0; i--) {
-            const msg = rawHistory[i];
+        for (let i = effectiveHistory.length - 1; i >= 0; i--) {
+            const msg = effectiveHistory[i];
             currentRound.unshift(msg);
             if (msg.role === 'user') {
                 rounds.push(currentRound);

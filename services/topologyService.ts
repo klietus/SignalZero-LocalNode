@@ -652,7 +652,7 @@ class TopologyService {
                 const result = await client.chat.completions.create({
                     model: fastModel,
                     messages: [{ role: "user", content: prompt }],
-                    response_format: { type: "text" }
+                    max_tokens: 800
                 });
                 const response = result.choices[0]?.message?.content || "{}";
                 isSame = !!extractJson(response).isSame;
@@ -720,7 +720,7 @@ class TopologyService {
                 const result = await client.chat.completions.create({
                     model: fastModel,
                     messages: [{ role: "user", content: prompt }],
-                    response_format: { type: "text" }
+                    max_tokens: 800
                 });
                 const response = result.choices[0]?.message?.content || "{}";
                 resultJson = extractJson(response);

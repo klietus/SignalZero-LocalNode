@@ -220,8 +220,7 @@ app.use((req, res, next) => {
         req.url.includes('/history') || 
         req.url.startsWith('/api/traces') ||
         req.url.startsWith('/api/domains') ||
-        req.url === '/api/voice/mic/status' ||
-        req.url === '/api/voice/story/status'
+        req.url === '/api/voice/mic/status'
     );
     
     if (!isPolling) {
@@ -277,8 +276,7 @@ const requireAuth = async (req: AuthenticatedRequest, res: express.Response, nex
                 req.url.includes('/history') || 
                 req.url.startsWith('/api/traces') ||
                 req.url.startsWith('/api/domains') ||
-                req.url === '/api/voice/mic/status' ||
-                req.url === '/api/voice/story/status'
+                req.url === '/api/voice/mic/status'
             );
             
             if (!isPolling) {
@@ -1759,28 +1757,6 @@ app.post('/api/voice/mic/toggle', async (req, res) => {
         const { enabled } = req.body;
         const endpoint = enabled ? 'on' : 'off';
         const resp = await fetch(`http://voiceservice:8000/mic/${endpoint}`, { method: 'POST' });
-        const data = await resp.json();
-        res.json({ enabled });
-    } catch (e) {
-        res.status(500).json({ error: 'Voice service unreachable' });
-    }
-});
-
-app.get('/api/voice/story/status', async (req, res) => {
-    try {
-        const resp = await fetch('http://voiceservice:8000/story/status');
-        const data = await resp.json();
-        res.json(data);
-    } catch (e) {
-        res.status(500).json({ error: 'Voice service unreachable' });
-    }
-});
-
-app.post('/api/voice/story/toggle', async (req, res) => {
-    try {
-        const { enabled } = req.body;
-        const endpoint = enabled ? 'on' : 'off';
-        const resp = await fetch(`http://voiceservice:8000/story/${endpoint}`, { method: 'POST' });
         const data = await resp.json();
         res.json({ enabled });
     } catch (e) {
