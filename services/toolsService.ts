@@ -540,16 +540,6 @@ export const PRIMARY_TOOLS: ChatCompletionTool[] = [
           text: {
             type: 'string',
             description: 'The text to speak.'
-          },
-          voice: {
-            type: 'string',
-            enum: [
-                'af_heart', 'af_alloy', 'af_aoede', 'af_bella', 'af_jessica',
-                'af_kore', 'af_nicole', 'af_nova', 'af_river', 'af_sarah',
-                'af_sky', 'am_adam', 'am_echo', 'am_eric', 'am_fenrir',
-                'am_liam', 'am_ michael', 'am_onyx', 'am_puck', 'am_santa'
-            ],
-            description: 'The voice to use for speech generation. Defaults to af_sarah.'
           }
         },
         required: ['text']
@@ -1470,16 +1460,19 @@ export const createToolExecutor = (getApiKey: () => string | null, contextSessio
       }
 
       case 'speak': {
-          const { text, voice } = args;
+          const { text } = args;
           if (!text) return { error: "Missing text" };
 
           try {
+              const settings = await settingsService.get();
+              const configuredVoice = settings.voice?.voice || 'af_sarah';
+
               const response = await fetch('http://voiceservice:8000/speak', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
                       text,
-                      voice: voice || 'af_sarah', // Default voice
+                      voice: configuredVoice,
                       speed: 1.0,
                       pitch: 50,
                       device: 'Channel_1__Channel_2.2'

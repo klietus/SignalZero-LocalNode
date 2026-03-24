@@ -41,6 +41,7 @@ export interface AdminUser {
 export interface VoiceSettings {
   pulseServer?: string;
   wakeWord?: string;
+  voice?: string;
 }
 
 export interface McpConfiguration {
@@ -440,6 +441,7 @@ export const settingsService = {
     return {
       pulseServer: settings.voice?.pulseServer || process.env.PULSE_SERVER || '',
       wakeWord: settings.voice?.wakeWord || process.env.WAKE_WORD || 'axiom',
+      voice: settings.voice?.voice || 'af_sarah',
     };
   },
 
@@ -448,6 +450,7 @@ export const settingsService = {
     current.voice = {
       pulseServer: settings.pulseServer ?? current.voice?.pulseServer ?? '',
       wakeWord: settings.wakeWord ?? current.voice?.wakeWord ?? 'axiom',
+      voice: settings.voice ?? current.voice?.voice ?? 'af_sarah',
     };
     await saveToRedis(current);
     
@@ -455,20 +458,19 @@ export const settingsService = {
     if (settings.wakeWord !== undefined) process.env.WAKE_WORD = settings.wakeWord;
     
     // Push config to Voice Server
-    if (settings.pulseServer || settings.wakeWord) {
-      const voiceUrl = 'http://voiceservice:8000';
-      fetch(`${voiceUrl}/config`, {
-          method: 'POST',
-          headers: { 
-              'Content-Type': 'application/json',
-              'x-internal-key': process.env.INTERNAL_SERVICE_KEY || ''
-          },
-          body: JSON.stringify({
-              pulse_server: settings.pulseServer,
-              wake_word: settings.wakeWord
-          })
-      }).catch(err => loggerService.error("Failed to push config to Voice Server", { error: err }));
-    }
+    const voiceUrl = 'http://voiceservice:8000';
+    fetch(`${voiceUrl}/config`, {
+        method: 'POST',
+        headers: { 
+            'Content-Type': 'application/json',
+            'x-internal-key': process.env.INTERNAL_SERVICE_KEY || ''
+        },
+        body: JSON.stringify({
+            pulse_server: settings.pulseServer,
+            wake_word: settings.wakeWord,
+            voice: settings.voice
+        })
+    }).catch(err => loggerService.error("Failed to push config to Voice Server", { error: err }));
     
     if (!isStateless()) {
       saveToFile(current);

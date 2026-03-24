@@ -186,7 +186,8 @@ describe('SettingsService', () => {
             },
             voice: {
                 pulseServer: '',
-                wakeWord: 'axiom'
+                wakeWord: 'axiom',
+                voice: 'af_sarah'
             },
             hygiene: {
                 positional: { autoCompress: false, autoLink: false },
@@ -251,7 +252,8 @@ describe('SettingsService', () => {
             },
             voice: {
                 pulseServer: '',
-                wakeWord: 'axiom'
+                wakeWord: 'axiom',
+                voice: 'af_sarah'
             },
             hygiene: {
                 positional: { autoCompress: false, autoLink: false },

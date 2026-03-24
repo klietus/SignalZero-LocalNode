@@ -1334,20 +1334,50 @@ export async function* sendMessageAndHandleTools(
   }
 
   // --- POST-TURN: HISTORY SUMMARIZATION ---
-  // Periodically summarize history to maintain a stable cache anchor.
+  // Periodically summarize history (every 12 rounds) to maintain a stable cache anchor.
   if (contextSessionId) {
     try {
       const session = await contextService.getSession(contextSessionId, userId, true);
       const history = await contextService.getUnfilteredHistory(contextSessionId, userId, true);
       
-      // Summarize if history is growing (e.g., > 6 rounds / ~12 messages)
-      if (session && history.length > 12) {
-        loggerService.info("Triggering history summarization", { contextSessionId, historyCount: history.length });
-        const newSummary = await summarizeHistory(history, session.summary);
+      const userMessageIndices = history
+        .map((m, i) => m.role === 'user' ? i : -1)
+        .filter(i => i !== -1);
+      
+      const totalRounds = userMessageIndices.length;
+      const lastSummarizedCount = session?.metadata?.lastSummarizedRoundCount || 0;
+      
+      // Summarize if we have reached a new 12-round boundary
+      if (session && totalRounds >= lastSummarizedCount + 12) {
+        const roundsToSummarizeCount = 12;
+        const startIndex = lastSummarizedCount === 0 ? 0 : userMessageIndices[lastSummarizedCount];
+        const endIndex = userMessageIndices[lastSummarizedCount + roundsToSummarizeCount] || history.length;
+        
+        const historySegment = history.slice(startIndex, endIndex);
+        
+        loggerService.info("Triggering periodic history summarization", { 
+          contextSessionId, 
+          fromRound: lastSummarizedCount, 
+          toRound: lastSummarizedCount + roundsToSummarizeCount,
+          segmentMessages: historySegment.length 
+        });
+
+        const newSummary = await summarizeHistory(historySegment, session.summary);
         if (newSummary !== session.summary) {
           session.summary = newSummary;
+          // Update lastSummarizedRoundCount
+          const newMetadata = {
+            ...(session.metadata || {}),
+            lastSummarizedRoundCount: lastSummarizedCount + roundsToSummarizeCount
+          };
+          session.metadata = newMetadata;
+          
           await contextService.updateSession(session);
-          loggerService.info("History summary updated", { contextSessionId, summaryLength: newSummary.length });
+          loggerService.info("History summary and metadata updated", { 
+            contextSessionId, 
+            summaryLength: newSummary.length,
+            lastSummarizedRoundCount: newMetadata.lastSummarizedRoundCount
+          });
         }
       }
     } catch (err) {
@@ -1603,7 +1633,7 @@ export const primeSymbolicContext = async (
       const result = await client.chat.completions.create({
         model: fastModel,
         messages: [{ role: "user", content: prompt }],
-        response_format: { type: "text" }
+        max_tokens: 1000
       });
       const responseText = result.choices[0]?.message?.content || "{}";
       fastResponse = extractJson(responseText);
