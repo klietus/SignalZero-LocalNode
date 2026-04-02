@@ -964,8 +964,8 @@ export async function* sendMessageAndHandleTools(
             // Inject dynamic prompts as a SEPARATE system message at the end of contextMessages
             // to avoid modifying the first system message (the cache anchor).
             contextMessages.push({
-                role: 'system',
-                content: dynamicSection
+              role: 'system',
+              content: dynamicSection
             });
           }
 
@@ -1339,27 +1339,27 @@ export async function* sendMessageAndHandleTools(
     try {
       const session = await contextService.getSession(contextSessionId, userId, true);
       const history = await contextService.getUnfilteredHistory(contextSessionId, userId, true);
-      
+
       const userMessageIndices = history
         .map((m, i) => m.role === 'user' ? i : -1)
         .filter(i => i !== -1);
-      
+
       const totalRounds = userMessageIndices.length;
       const lastSummarizedCount = session?.metadata?.lastSummarizedRoundCount || 0;
-      
+
       // Summarize if we have reached a new 12-round boundary
       if (session && totalRounds >= lastSummarizedCount + 12) {
         const roundsToSummarizeCount = 12;
         const startIndex = lastSummarizedCount === 0 ? 0 : userMessageIndices[lastSummarizedCount];
         const endIndex = userMessageIndices[lastSummarizedCount + roundsToSummarizeCount] || history.length;
-        
+
         const historySegment = history.slice(startIndex, endIndex);
-        
-        loggerService.info("Triggering periodic history summarization", { 
-          contextSessionId, 
-          fromRound: lastSummarizedCount, 
+
+        loggerService.info("Triggering periodic history summarization", {
+          contextSessionId,
+          fromRound: lastSummarizedCount,
           toRound: lastSummarizedCount + roundsToSummarizeCount,
-          segmentMessages: historySegment.length 
+          segmentMessages: historySegment.length
         });
 
         const newSummary = await summarizeHistory(historySegment, session.summary);
@@ -1371,10 +1371,10 @@ export async function* sendMessageAndHandleTools(
             lastSummarizedRoundCount: lastSummarizedCount + roundsToSummarizeCount
           };
           session.metadata = newMetadata;
-          
+
           await contextService.updateSession(session);
-          loggerService.info("History summary and metadata updated", { 
-            contextSessionId, 
+          loggerService.info("History summary and metadata updated", {
+            contextSessionId,
             summaryLength: newSummary.length,
             lastSummarizedRoundCount: newMetadata.lastSummarizedRoundCount
           });
@@ -1449,7 +1449,7 @@ export const summarizeHistory = async (
   try {
     if (settings.provider === 'gemini') {
       const client = await getGeminiClient();
-      const model = client.getGenerativeModel({ 
+      const model = client.getGenerativeModel({
         model: fastModel,
         generationConfig: { maxOutputTokens: 800 }
       });
@@ -1508,7 +1508,7 @@ Output valid Markdown. DO NOT include any conversational filler.`;
   try {
     if (settings.provider === 'gemini') {
       const client = await getGeminiClient();
-      const model = client.getGenerativeModel({ 
+      const model = client.getGenerativeModel({
         model: fastModel,
         generationConfig: { maxOutputTokens: 800 }
       });

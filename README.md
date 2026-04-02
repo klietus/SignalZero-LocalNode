@@ -82,6 +82,4 @@ The kernel exposes a RESTful API on port `3001` (by default).
 
 ## License
 
-**Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)**
-
-Commercial use of this software is strictly prohibited under this license. To obtain a license for commercial use, please contact: `klietus@gmail.com`.
+This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for the full text.
