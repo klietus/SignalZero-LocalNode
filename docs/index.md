@@ -38,7 +38,7 @@ For running SignalZero in production:
 
 - [OpenAPI Specification](../openapi.yaml) - Complete API spec
 - [README](../README.md) - Project overview
-- [LICENSE](../LICENSE) - CC BY-NC 4.0 License
+- [LICENSE](../LICENSE) - MIT License
 
 ## Document Structure
 

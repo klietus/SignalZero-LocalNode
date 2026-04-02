@@ -48,6 +48,4 @@ SignalZero-LocalNode/
 
 ## License
 
-Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)
-
-Commercial use prohibited without explicit license. Contact: klietus@gmail.com
+This project is licensed under the **MIT License**. See the [LICENSE](../LICENSE) file for the full text.
